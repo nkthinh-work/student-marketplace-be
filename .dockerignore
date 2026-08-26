@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Git & IDE
+.git/
+.gitignore
+.vscode/
+
+# Environment variables & secrets
+.env
+
+# Secrets must never be baked into Docker images
+secrets/
+firebase-service-account.json
+*-firebase-adminsdk-*.json
