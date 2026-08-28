@@ -381,7 +381,7 @@ class ProductService:
 
         try:
             upload_result = upload_image(
-                file_bytes, folder=f"products/{product_id}"
+                file_bytes, folder_key="products", product_id=product_id
             )
         except CloudinaryNotConfiguredError as e:
             raise HTTPException(

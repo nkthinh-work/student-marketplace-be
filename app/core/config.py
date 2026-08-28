@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: Optional[str] = None
     CLOUDINARY_API_KEY: Optional[str] = None
     CLOUDINARY_API_SECRET: Optional[str] = None
+    CLOUDINARY_ROOT_FOLDER: str = "student-marketplace"
 
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None

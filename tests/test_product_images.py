@@ -153,7 +153,7 @@ async def test_upload_image_db_failure_triggers_cleanup(test_client: AsyncClient
 
     mock_upload_result = {
         "secure_url": "https://res.cloudinary.com/demo/image/upload/v12345/prod_img_cleanup.jpg",
-        "public_id": "student_marketplace/products/prod_img_cleanup",
+        "public_id": "student-marketplace/products/prod_img_cleanup_unique",
     }
 
     with patch("app.modules.auth.dependencies.verify_firebase_token", return_value={"uid": "fb_seller_img", "email": seller.email, "name": seller.full_name}):
@@ -168,8 +168,8 @@ async def test_upload_image_db_failure_triggers_cleanup(test_client: AsyncClient
                         headers={"Authorization": "Bearer seller_token"},
                     )
                     assert res.status_code == 500
-                    # Kiểm tra hàm destroy_image được gọi để bồi hoàn
-                    mock_destroy.assert_called_once_with("student_marketplace/products/prod_img_cleanup")
+                    # Kiểm tra hàm destroy_image được gọi đúng với public_id trả về từ Cloudinary
+                    mock_destroy.assert_called_once_with("student-marketplace/products/prod_img_cleanup_unique")
 
 
 @pytest.mark.asyncio

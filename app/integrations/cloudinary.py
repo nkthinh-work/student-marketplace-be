@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 import cloudinary
 import cloudinary.uploader
 import cloudinary.utils
@@ -8,6 +8,9 @@ import cloudinary.utils
 from app.core.config import settings
 
 logger = logging.getLogger("app")
+
+CloudinaryFolderKey = Literal["products", "avatars"]
+SUPPORTED_CLOUDINARY_FOLDERS: set[str] = {"products", "avatars"}
 
 
 class CloudinaryNotConfiguredError(Exception):
@@ -44,12 +47,38 @@ def init_cloudinary() -> None:
         )
 
 
+def get_cloudinary_folder(folder_key: CloudinaryFolderKey) -> str:
+    """
+    Phân giải namespace folder trên Cloudinary từ cấu hình root.
+    products -> student-marketplace/products
+    avatars  -> student-marketplace/avatars
+    """
+    if folder_key not in SUPPORTED_CLOUDINARY_FOLDERS:
+        raise ValueError(
+            f"Unsupported Cloudinary folder key: '{folder_key}'. Supported: {', '.join(sorted(SUPPORTED_CLOUDINARY_FOLDERS))}"
+        )
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/{folder_key}"
+
+
+def get_product_cloudinary_folder(product_id: int) -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho một product cụ thể:
+    student-marketplace/products/product-{product_id}
+    """
+    base = get_cloudinary_folder("products")
+    return f"{base}/product-{product_id}"
+
+
 def upload_image(
     file: Any,
-    folder: str = "products",
+    folder_key: CloudinaryFolderKey = "products",
+    product_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """
-    Uploads an image file to Cloudinary.
+    Uploads an image file to Cloudinary under the resolved folder namespace.
+    If folder_key is "products" and product_id is provided, uploads to `{root}/products/product-{product_id}`.
+    Default folder resolves to `{settings.CLOUDINARY_ROOT_FOLDER}/products` ('student-marketplace/products').
     Raises CloudinaryNotConfiguredError if credentials are not configured.
     Raises CloudinaryUploadError if upload fails.
     """
@@ -58,10 +87,15 @@ def upload_image(
             "Cloudinary storage service is not configured."
         )
 
+    if folder_key == "products" and product_id is not None:
+        target_folder = get_product_cloudinary_folder(product_id)
+    else:
+        target_folder = get_cloudinary_folder(folder_key)
+
     try:
         result = cloudinary.uploader.upload(
             file,
-            folder=f"student_marketplace/{folder}",
+            folder=target_folder,
             resource_type="image",
         )
         return result

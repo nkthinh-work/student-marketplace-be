@@ -69,7 +69,7 @@ services:
     environment:
       - POSTGRES_SERVER=postgres
       - REDIS_HOST=redis
-       - FIREBASE_CREDENTIALS_PATH=/app/secrets/firebase-service-account.json
+      - FIREBASE_CREDENTIALS_PATH=/app/secrets/firebase-service-account.json
     depends_on:
       postgres:
         condition: service_healthy
