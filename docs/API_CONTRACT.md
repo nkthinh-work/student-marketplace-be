@@ -55,7 +55,7 @@ Tài liệu này định nghĩa API contract chính thức cho backend `student-
   "phone": "0912345678",
   "avatar_url": "https://lh3.googleusercontent.com/a/.../photo.jpg",
   "bio": "Sinh viên năm 3 CNTT",
-  "default_meetup_area": "Sảnh A, Toà H1, ĐHBK",
+  "delivery_area": "Hà Đông, Thanh Xuân, Cầu Giấy",
   "role": "STUDENT",
   "status": "ACTIVE",
   "last_active_at": "2026-08-25T09:50:00",
@@ -95,7 +95,7 @@ Tài liệu này định nghĩa API contract chính thức cho backend `student-
   "full_name": "Nguyen Van A (Updated)",
   "phone": "0987654321",
   "bio": "Sinh viên năm cuối CNTT",
-  "default_meetup_area": "Căn tin B1"
+  "delivery_area": "Hà Đông, Thanh Xuân, Cầu Giấy"
 }
 ```
 *Ghi chú*: Mọi trường đều là optional. `avatar_url` được quản lý và đồng bộ tự động từ tài khoản Google/Firebase của người dùng khi đăng nhập, không được phép chỉnh sửa qua endpoint này. Tuyệt đối không cho phép client cập nhật: `avatar_url`, `user_id`, `email`, `role`, `status`, `created_at`, `updated_at`, `provider_uid`. Nếu client gửi `avatar_url` hoặc các trường ngoài danh mục cho phép, request sẽ bị từ chối với `422 Unprocessable Entity`.
@@ -110,7 +110,7 @@ Trích xuất `UserResponse` đã được cập nhật:
   "phone": "0987654321",
   "avatar_url": "https://lh3.googleusercontent.com/a/.../photo.jpg",
   "bio": "Sinh viên năm cuối CNTT",
-  "default_meetup_area": "Căn tin B1",
+  "delivery_area": "Hà Đông, Thanh Xuân, Cầu Giấy",
   "role": "STUDENT",
   "status": "ACTIVE",
   "last_active_at": "2026-08-25T09:50:00",
@@ -203,6 +203,29 @@ Trích xuất `UserResponse` đã được cập nhật:
 - **Status Requirement**: `ACTIVE`
 - **Business Rule**: Xóa thông tin tài khoản ngân hàng khỏi hồ sơ cá nhân. Không ảnh hưởng đến các đơn hàng đã xác nhận snapshot trước đó.
 - **Response: `204 No Content`**.
+
+---
+
+### 2.7. `GET /api/v1/users/{user_id}` — Hồ sơ công khai của người dùng
+
+- **Method**: `GET`
+- **Path**: `/api/v1/users/{user_id}`
+- **Authentication**: Không bắt buộc / Public
+- **Business Rule**: Trả về thông tin công khai (tên, avatar, bio, phạm vi giao / nhận hàng, ngày tham gia). Tuyệt đối không để lộ thông tin riêng tư (email, số điện thoại, tài khoản ngân hàng).
+- **Response: `200 OK`**:
+```json
+{
+  "user_id": 1,
+  "full_name": "Nguyen Van A",
+  "avatar_url": "https://lh3.googleusercontent.com/a/.../photo.jpg",
+  "bio": "Sinh viên năm 3 CNTT",
+  "delivery_area": "Hà Đông, Thanh Xuân, Cầu Giấy",
+  "role": "STUDENT",
+  "created_at": "2026-08-25T09:40:00"
+}
+```
+- **Error Responses**:
+  - `404 Not Found`: Người dùng không tồn tại hoặc tài khoản đã bị khóa/ngừng hoạt động.
 
 ---
 
@@ -705,5 +728,210 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - Khóa dòng sản phẩm `FOR UPDATE`, giải phóng tồn kho giữ `reserved_stock -= quantity`.
   - Chuyển đơn sang `status = 'CANCELLED'`, ghi nhận `cancelled_by`, `cancel_reason`, `cancelled_at = now()`.
 - **Response**: `200 OK` (`OrderDetailResponse`)
+
+---
+
+## 7. Danh sách Endpoints Phase 5 — Đấu giá (Auctions)
+
+### 7.1. Bật đấu giá sản phẩm (Enable Auction / New Round)
+- **Method**: `POST`
+- **Path**: `/api/v1/auctions`
+- **Auth**: Bắt buộc (Chỉ Seller sở hữu sản phẩm)
+- **Request Body (Immediate Start - MVP Preferred)**:
+```json
+{
+  "product_id": 10,
+  "bid_step": 20000,
+  "duration_minutes": 180
+}
+```
+*(Hoặc legacy format với `ends_at`)*:
+```json
+{
+  "product_id": 10,
+  "bid_step": 20000,
+  "starts_at": "2026-08-30T12:00:00Z",
+  "ends_at": "2026-08-30T15:00:00Z"
+}
+```
+- **Business Rules**:
+  - `product.stock == 1`, `product.reserved_stock == 0`, `product.status == 'AVAILABLE'`.
+  - Snapshot cố định `starting_price = product.price` (hỗ trợ `starting_price >= 0`).
+  - Chuyển `product.listing_type = 'AUCTION'`.
+  - `bid_step > 0`, `duration_minutes > 0`.
+  - Tự động bắt đầu ngay: `starts_at = now_utc()`, `ends_at = now_utc() + duration_minutes`, `status = ACTIVE`.
+- **Response**: `201 Created` (`AuctionDetailResponse`)
+
+---
+
+### 7.2. Lấy chi tiết phiên đấu giá (Auction Detail)
+- **Method**: `GET`
+- **Path**: `/api/v1/auctions/{auction_id}`
+- **Auth**: Public / Optional Auth
+- **Privacy-safe Rules**:
+  - Tuyệt đối không để lộ `winner_id` ra client công khai.
+  - Sử dụng các cờ ngữ cảnh: `has_winner`, `is_current_user_winner`, `is_current_user_highest_bidder`, `winner_checkout_state` (`NOT_APPLICABLE`, `WAITING`, `ORDER_CREATED`, `EXPIRED`, `NO_BIDS`), `winner_order_id`.
+- **Response**: `200 OK`
+```json
+{
+  "auction_id": 1,
+  "product_id": 10,
+  "status": "ACTIVE",
+  "starting_price": 50000,
+  "bid_step": 20000,
+  "current_price": 70000,
+  "highest_bid": 70000,
+  "bid_count": 1,
+  "minimum_next_bid": 90000,
+  "starts_at": "2026-08-30T10:00:00Z",
+  "ends_at": "2026-08-30T13:00:00Z",
+  "has_winner": false,
+  "final_price": null,
+  "winner_checkout_deadline": null,
+  "is_current_user_winner": false,
+  "is_current_user_highest_bidder": true,
+  "server_time": "2026-08-30T10:05:00Z",
+  "winner_checkout_state": "NOT_APPLICABLE",
+  "winner_order_id": null
+}
+```
+
+---
+
+### 7.3. Lấy phiên đấu giá theo sản phẩm (Get Auction By Product)
+- **Method**: `GET`
+- **Path**: `/api/v1/auctions/by-product/{product_id}`
+- **Auth**: Public / Optional Auth
+- **Quy tắc giải quyết vòng đấu giá**:
+  - Trả về vòng `SCHEDULED` hoặc `ACTIVE` hiện tại nếu có.
+  - Nếu không còn vòng active, trả về vòng mới nhất theo `created_at DESC`.
+- **Response**: `200 OK` (`AuctionDetailResponse`)
+
+---
+
+### 7.4. Đặt giá đấu (Place Bid)
+- **Method**: `POST`
+- **Path**: `/api/v1/auctions/{auction_id}/bids`
+- **Auth**: Bắt buộc (User `ACTIVE`)
+- **Request Body**:
+```json
+{
+  "amount": 90000
+}
+```
+- **Business Rules**:
+  - Khóa row auction `FOR UPDATE`.
+  - Yêu cầu `status = 'ACTIVE'`, `now() < ends_at`.
+  - Seller không được bid sản phẩm của chính mình.
+  - `amount > 0` (tuyệt đối không cho phép 0 VND).
+  - Bid đầu tiên: `amount >= auction.starting_price` (khi `starting_price = 0`, `minimum_next_bid = 1`).
+  - Các bid tiếp theo: `amount >= highest_bid + bid_step`.
+  - Phát sự kiện realtime qua WebSocket `BID_PLACED`.
+- **Response**: `201 Created` (`AuctionBidResponse`)
+```json
+{
+  "bid_id": 15,
+  "auction_id": 1,
+  "bidder_display": "N*** A",
+  "amount": 90000,
+  "created_at": "2026-08-30T10:06:00Z",
+  "is_current_user": true
+}
+```
+
+---
+
+### 7.5. Lịch sử đặt giá bảo mật danh tính (List Auction Bids)
+- **Method**: `GET`
+- **Path**: `/api/v1/auctions/{auction_id}/bids`
+- **Auth**: Public / Optional Auth
+- **Query Params**: `cursor` (string), `limit` (int, 1..50)
+- **Keyset Pagination**: `(amount DESC, created_at ASC, bid_id ASC)`
+- **Response**: `200 OK` (`AuctionBidCursorPage`)
+```json
+{
+  "items": [
+    {
+      "bid_id": 15,
+      "auction_id": 1,
+      "bidder_display": "N*** A",
+      "amount": 90000,
+      "created_at": "2026-08-30T10:06:00Z",
+      "is_current_user": true
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}
+```
+
+---
+
+### 7.6. Người bán hủy phiên đấu giá (Cancel Auction)
+- **Method**: `POST`
+- **Path**: `/api/v1/auctions/{auction_id}/cancel`
+- **Auth**: Bắt buộc (Chỉ Seller sở hữu)
+- **Business Rules**:
+  - Yêu cầu `status IN ('SCHEDULED', 'ACTIVE')`.
+  - Yêu cầu `bid_count == 0` (nếu đã có bid, chặn hủy với `400`).
+  - Giải phóng listing nếu cần.
+- **Response**: `200 OK` (`AuctionDetailResponse`)
+
+---
+
+### 7.7. Người thắng hoàn tất đặt mua (Winner Checkout)
+- **Method**: `POST`
+- **Path**: `/api/v1/auctions/{auction_id}/checkout`
+- **Auth**: Bắt buộc (Chỉ Winner của phiên)
+- **Request Body**:
+```json
+{
+  "payment_method": "BANK_TRANSFER",
+  "fulfillment_method": "MEETUP",
+  "meetup_place": "Cổng trường Học viện",
+  "meetup_time": "2026-08-31T15:00:00Z",
+  "shipping_address": null,
+  "contact_name": "Nguyen Van B",
+  "contact_phone": "0987654321",
+  "buyer_note": "Giao giờ hành chính"
+}
+```
+- **Business Rules**:
+  - Yêu cầu `status = 'ENDED'`, `has_winner = true`, `current_user == winner_id`.
+  - Yêu cầu `now() <= winner_checkout_deadline`.
+  - Tái sử dụng reservation hiện có (`reserved_stock` giữ nguyên `1`, không tăng lần 2).
+  - Tạo Order với `orders.auction_id = auction_id`, `price_at_purchase = final_price`, `quantity = 1`.
+  - Thực thi toàn vẹn qua partial unique index `ux_orders_auction_id` (mỗi vòng đấu giá chỉ được tạo tối đa 1 Order duy nhất).
+- **Response**: `201 Created` (`OrderDetailResponse`)
+
+---
+
+### 7.8. Chuyển sản phẩm sang bán giá cố định (Convert To Fixed Price)
+- **Method**: `POST`
+- **Path**: `/api/v1/auctions/products/{product_id}/convert-fixed-price`
+- **Auth**: Bắt buộc (Chỉ Seller sở hữu)
+- **Business Rules**:
+  - Không có phiên đấu giá `SCHEDULED` hoặc `ACTIVE`.
+  - `product.reserved_stock == 0` (không có đơn giữ hàng).
+  - Chuyển `product.listing_type = 'FIXED_PRICE'`.
+- **Response**: `200 OK`
+```json
+{
+  "message": "Product converted to fixed price successfully."
+}
+```
+
+---
+
+### 7.9. Realtime WebSocket Channel
+- **Path**: `/ws/auctions/{auction_id}`
+- **Protocol**: WebSocket
+- **Heartbeat**: Client gửi chuỗi `"ping"`, server phản hồi `"pong"`.
+- **Broadcast Events**:
+  - `BID_PLACED`: Kèm `current_price`, `highest_bid`, `bid_count`, `minimum_next_bid`, `server_time`.
+  - `AUCTION_STARTED`: Kèm `current_price`, `bid_count`, `server_time`.
+  - `AUCTION_ENDED`: Kèm `final_price`, `has_winner`, `server_time`.
+  - `AUCTION_CANCELLED`: Kèm `server_time`.
+
 
 

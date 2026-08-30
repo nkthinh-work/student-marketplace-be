@@ -55,6 +55,7 @@ async def get_optional_current_user(
 )
 async def list_products(
     category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    seller_id: Optional[int] = Query(None, description="Filter by seller ID"),
     listing_type: Optional[ListingType] = Query(None, description="Filter by listing type"),
     min_price: Optional[Decimal] = Query(None, ge=0, description="Minimum price filter"),
     max_price: Optional[Decimal] = Query(None, ge=0, description="Maximum price filter"),
@@ -66,6 +67,7 @@ async def list_products(
     service = ProductService(db)
     return await service.list_public_products(
         category_id=category_id,
+        seller_id=seller_id,
         listing_type=listing_type.value if listing_type else None,
         min_price=min_price,
         max_price=max_price,

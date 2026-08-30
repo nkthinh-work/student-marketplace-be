@@ -11,6 +11,11 @@ from app.core.config import settings
 from app.core.database import SessionLocal, engine
 from app.modules.orders.repository import OrderRepository
 from app.modules.orders.service import OrderService
+from app.modules.auctions.service import (
+    run_auction_scheduled_sweep,
+    run_auction_close_sweep,
+    run_winner_timeout_sweep,
+)
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -58,9 +63,9 @@ async def run_auto_cancel_sweep(session_factory: async_sessionmaker[AsyncSession
     return cancelled_count
 
 
-async def start_order_worker_loop():
+async def start_worker_loop():
     logger.info(
-        f"Starting order auto-cancel worker loop (poll interval: {settings.WORKER_POLL_INTERVAL_SECONDS}s, timeout: {settings.ORDER_CONFIRM_TIMEOUT_HOURS}h)..."
+        f"Starting unified worker loop (poll interval: {settings.WORKER_POLL_INTERVAL_SECONDS}s, order timeout: {settings.ORDER_CONFIRM_TIMEOUT_HOURS}h, auction checkout deadline: {settings.AUCTION_WINNER_CHECKOUT_HOURS}h)..."
     )
 
     try:
@@ -71,12 +76,37 @@ async def start_order_worker_loop():
         pass
 
     while not _should_stop:
+        # 1. Orders auto-cancel sweep
         try:
             cancelled_count = await run_auto_cancel_sweep(SessionLocal)
             if cancelled_count > 0:
-                logger.info(f"Worker sweep finished. Cancelled {cancelled_count} expired orders.")
+                logger.info(f"Orders sweep finished: cancelled {cancelled_count} expired orders.")
         except Exception as e:
-            logger.error(f"Unexpected error during worker auto-cancel sweep: {e}", exc_info=True)
+            logger.error(f"Unexpected error during orders auto-cancel sweep: {e}", exc_info=True)
+
+        # 2. Auctions scheduled sweep (activate or directly end if expired)
+        try:
+            sched_count = await run_auction_scheduled_sweep(SessionLocal)
+            if sched_count > 0:
+                logger.info(f"Auctions sweep finished: processed {sched_count} scheduled auctions.")
+        except Exception as e:
+            logger.error(f"Unexpected error during auctions scheduled sweep: {e}", exc_info=True)
+
+        # 3. Auctions close sweep (close ended auctions and reserve winner stock)
+        try:
+            closed_count = await run_auction_close_sweep(SessionLocal)
+            if closed_count > 0:
+                logger.info(f"Auctions sweep finished: closed {closed_count} ended auctions.")
+        except Exception as e:
+            logger.error(f"Unexpected error during auctions close sweep: {e}", exc_info=True)
+
+        # 4. Auction winner timeout sweep (release unpurchased reservation)
+        try:
+            released_count = await run_winner_timeout_sweep(SessionLocal)
+            if released_count > 0:
+                logger.info(f"Auctions sweep finished: released {released_count} expired winner reservations.")
+        except Exception as e:
+            logger.error(f"Unexpected error during auction winner timeout sweep: {e}", exc_info=True)
 
         for _ in range(settings.WORKER_POLL_INTERVAL_SECONDS):
             if _should_stop:
@@ -89,6 +119,6 @@ async def start_order_worker_loop():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(start_order_worker_loop())
+        asyncio.run(start_worker_loop())
     except KeyboardInterrupt:
         logger.info("Worker stopped by KeyboardInterrupt.")

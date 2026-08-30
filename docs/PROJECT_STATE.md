@@ -1,10 +1,10 @@
 # TRẠNG THÁI DỰ ÁN — Backend & Frontend
 
 ## Giai đoạn hiện tại
-Product UX Cleanup & Consistency Pass (Chợ PTITers) [Đã hoàn thành và VERIFIED 100%]
+Phase 5 — Đấu giá (Auctions) [Đã hoàn thành và VERIFIED 100%]
 
 ## Công việc hiện tại
-Product UX Cleanup & Consistency Pass hoàn thành và VERIFIED 100%. Sẵn sàng bước sang Phase 5 (Auctions) / Seller Storefront.
+Phase 5 (Auctions Vertical Slice) hoàn thành và VERIFIED 100%. Sẵn sàng bước sang Phase 6 (Reviews / Chat / Notifications).
 
 ## Trạng thái
 - Phase 0: Verified
@@ -17,9 +17,43 @@ Product UX Cleanup & Consistency Pass hoàn thành và VERIFIED 100%. Sẵn sàn
 - Phase 4 (Orders + Payment - Backend + Frontend + Migrations + Tests + Worker): VERIFIED 100%
 - Phase 4A (Bank Account Profile + VietQR - Backend + Frontend + Migrations + Tests): VERIFIED 100%
 - Phase 4 Follow-up (Transaction Terms Editing + Cash with Shipping - Backend + Frontend + Tests): VERIFIED 100%
-- **Product UX Cleanup & Consistency Pass (Frontend UI/UX Polish & Unified Design)**: **VERIFIED 100%**
+- Product UX Cleanup & Consistency Pass (Frontend UI/UX Polish & Unified Design): VERIFIED 100%
+- **Phase 5 (Auctions — Backend + Frontend + Migrations + 25 Tests + Realtime WebSocket + Worker Sweeps)**: **VERIFIED 100%**
 
 ## Đã hoàn thành
+
+### 0. Phase 5 — Đấu giá (Auctions) [Đã Verified 100%]
+- [x] **Database Schema & Alembic Migration (`d4e6f8a2b1c3_create_auctions_and_auction_bids.py`)**:
+  - `auctions`: `starting_price DECIMAL(12,0) NOT NULL CHECK >= 0`, `bid_step > 0`, `ends_at > starts_at`, status check, final_price check, winner consistency check, partial unique index `ux_auctions_product_active` on `(product_id) WHERE status IN ('SCHEDULED', 'ACTIVE')` cho phép lưu nhiều vòng lịch sử.
+  - `auction_bids`: `amount > 0`, keyset pagination composite index `(auction_id, amount DESC, created_at ASC, bid_id ASC)`.
+  - `orders`: `auction_id BIGINT NULL REFERENCES auctions(auction_id) ON DELETE RESTRICT`, partial unique index `ux_orders_auction_id` on `(auction_id) WHERE auction_id IS NOT NULL` (tối đa 1 Order duy nhất cho mỗi vòng đấu giá).
+  - Migration round-trip verified (upgrade head -> downgrade -1 -> upgrade head -> check: 0 errors).
+- [x] **Backend Services & Invariants**:
+  - Snapshot cố định `starting_price = products.price` khi tạo auction round.
+  - Quy tắc giá khởi điểm 0 VND: `amount > 0 AND amount >= starting_price`; khi chưa có bid: `minimum_next_bid = max(starting_price, 1)`.
+  - Privacy-safe anonymization: `bidder_display: 'N*** A'`, ẩn hoàn toàn `winner_id` và `bidder_id` khỏi client công khai.
+  - Deadlock-free product mutation lock order:Generic Product PATCH / HIDE / DELETE chỉ acquire `products(product_id) FOR UPDATE` và đọc non-locking auction state.
+  - Winner checkout deadline chuẩn hóa qua `settings.AUCTION_WINNER_CHECKOUT_HOURS`.
+  - Tái sử dụng reservation `reserved_stock = 1` khi winner tạo order (không tăng lần 2).
+  - Background sweeps tích hợp vào single worker loop (`run_auction_scheduled_sweep`, `run_auction_close_sweep`, `run_winner_timeout_sweep`).
+- [x] **Realtime WebSocket Bridge**:
+  - `/ws/auctions/{auction_id}`: Hỗ trợ Redis Pub/Sub và in-memory fallback, heartbeat ping-pong, broadcast sự kiện `BID_PLACED`, `AUCTION_STARTED`, `AUCTION_ENDED`, `AUCTION_CANCELLED`.
+- [x] **Frontend Feature Slice**:
+  - `types.ts` & `api.ts` & `hooks.ts`: React Query hooks + WebSocket automatic reconnect & snapshot sync.
+  - `AuctionCountdown.tsx`: Bộ đếm ngược realtime đồng bộ server-time offset (`serverOffsetMs`), UTC ISO parsing (`parseServerDateTime`), chuyển tiếp "Đang chốt kết quả..." khi đếm về 0.
+  - `BidForm.tsx`: Định dạng tiền tệ VND chuẩn xác (`formatVND`, `formatNumberVND`), tiền gửi backend chuẩn integer (`normalizeMoney`), nút tăng nhanh bước giá linh hoạt ($+1\times, +2\times, +5\times \text{bid\_step}$) kèm xác thực giá tối thiểu.
+  - `BidConfirmationModal.tsx`: Hộp thoại xác nhận đặt giá đấu hiển thị tiền tệ tiếng Việt rõ ràng.
+  - `RecentBidsList.tsx`: Bảng lịch sử đặt giá bảo mật danh tính, format tiền VND chuẩn không lộ scientific notation.
+  - `WinnerCheckoutModal.tsx`: Form tạo đơn hàng trúng đấu giá tích hợp giao nhận & thanh toán Phase 4.
+  - `SellerAuctionModal.tsx`: Bắt đầu đấu giá ngay lập tức với `duration_minutes` (30m, 1h, 3h, 6h, 12h, 1d, hoặc tùy chỉnh giờ/phút), bỏ hoàn toàn form lên lịch phức tạp.
+  - `AuctionPanel.tsx`: Hiển thị rõ ràng các trạng thái hậu đấu giá cho Seller (`NO_BIDS` -> Đấu giá lại / Bán giá cố định, `WAITING` -> Chờ người thắng, `ORDER_CREATED` -> Nút Xử lý đơn hàng, `EXPIRED` -> Đấu giá lại / Bán giá cố định).
+  - Public Product Feed: Tối ưu query EXISTS chỉ hiển thị sản phẩm `AUCTION` khi có phiên đấu giá đang `ACTIVE`.
+- [x] **Verification**:
+  - 29/29 Auction backend unit/integration tests passing 100%.
+  - 194/194 Backend test suite passing 100%.
+  - Frontend build `tsc -b && vite build` clean with exit code 0.
+  - `pytest`: **190/190 tests PASSED (100%)** (Bao gồm 25 auction tests).
+  - `npm run build`: **0 errors**.
 
 ### 0. Product UX Cleanup & Consistency Pass [Đã Verified 100%]
 - [x] **Centralized Display-State & Terminology Mapping (`src/lib/orderDisplay.ts`)**:
@@ -306,24 +340,26 @@ Product UX Cleanup & Consistency Pass hoàn thành và VERIFIED 100%. Sẵn sàn
 
 ## Trạng thái kiểm thử
 - Frontend Build: **Passed** (`npm run build` with 0 errors)
-- Favorites Backend Test Suite: **19/19 passed** (pytest `tests/test_favorites.py`)
-- Full Pytest Regression Suite: **89/89 passed 100%** (pytest `tests/`)
-- Price Validation & Formatter Suite: **11/11 passed 100%**
-- Cloudinary & Product Images Tests: **27/27 passed** (pytest `tests/test_cloudinary.py` & `tests/test_product_images.py`)
-- Products CRUD & Detail Tests: **18/18 passed** (pytest `tests/test_products_crud.py` & `tests/test_products_detail.py`)
+- Full Pytest Regression Suite: **221/221 passed 100%** (pytest `tests/`)
+- User Profile & Public Profile Tests: **7/7 passed** (pytest `tests/test_user_profile.py`)
+- Order Transaction Terms & Expected Time Tests: **26/26 passed** (pytest `tests/test_order_transaction_terms.py`)
+- Realtime Orders WebSocket Suite: **9/9 passed** (pytest `tests/test_orders_realtime_ws.py`)
 - Alembic Migration Round-Trip & Check: **Passed** (`upgrade head` -> `downgrade -1` -> `upgrade head` -> `alembic check` - No new upgrade operations detected)
-- Docker Compose Configuration: **Passed** (`docker compose config` valid 100%)
-- Phase 3 Overall: **VERIFIED 100%**
+- Profile Coverage Simplification: **VERIFIED 100%**
 
-## Phase 4 Handoff Note (Ghi chú chuyển giao nghiệp vụ)
-> [!IMPORTANT]
-> Khi xử lý đơn hàng ở Phase 4 làm cho số lượng tồn kho thực tế của sản phẩm giảm về 0 và sản phẩm chuyển trạng thái sang `SOLD_OUT`, chính transaction nghiệp vụ / luồng hoàn tất chốt đơn đó phải thực hiện xóa toàn bộ các bản ghi `favorites` của sản phẩm đó (`DELETE FROM favorites WHERE product_id = :product_id`).
->
-> Các giao dịch mua một phần mà lượng hàng còn lại vẫn lớn hơn 0 (`stock > 0`) tuyệt đối **KHÔNG ĐƯỢC** xóa `favorites`.
+## Hồ sơ & Phạm vi giao nhận (Profile Coverage Simplification)
+- Loại bỏ hoàn toàn khái niệm "Điểm hẹn mặc định" / "Khu vực hẹn gặp mặc định" khỏi giao diện người dùng và luồng tạo đơn hàng.
+- Thống nhất duy nhất một khái niệm khu vực trên Profile: "Phạm vi giao / nhận hàng" (`delivery_area`), mang tính chất thông tin khu vực hoạt động chung (VD: `Hà Đông, Thanh Xuân, Cầu Giấy`).
+- Cung cấp endpoint công khai `GET /api/v1/users/{user_id}` và trang `/users/:userId` hiển thị thông tin hồ sơ công khai (tên, avatar, bio, phạm vi giao / nhận, ngày tham gia) mà không làm lộ các dữ liệu riêng tư (email, SĐT, ngân hàng, địa chỉ đơn hàng).
+- Địa điểm hẹn gặp cụ thể (`meetup_place`) và địa chỉ giao hàng (`shipping_address`) được nhập trực tiếp, độc lập theo từng đơn hàng cụ thể, không phụ thuộc vào Profile.
+
+## Giao nhận & Transaction Terms (Order Fulfillment UX)
+- Single edit entry point: Nút "Chỉnh sửa" duy nhất nằm trong header card GIAO NHẬN; đã loại bỏ nút edit thừa ở top action bar.
+- Stacked mobile-friendly layout cho thông tin Người nhận (tên và số điện thoại chia dòng mạch lạc, không bị đẩy tràn sang phải).
+- Format thời gian hẹn / giao dự kiến dạng chuẩn tiếng Việt `12:35, 30/08/2026`, tuyệt đối không bao giờ hiển thị chuỗi ISO thô.
+- Hỗ trợ thời gian dự kiến tùy chọn cho cả MEETUP (`meetup_time`) và SHIPPING (`shipping_expected_at`), tự động dọn dẹp giá trị không thuộc hình thức khi chuyển đổi.
+- Ẩn hoàn toàn dòng thời gian khi giá trị là NULL.
 
 ## Vấn đề đã biết (Known Issues)
 - Không có lỗi tồn đọng. Hệ thống ổn định 100%.
-
-## Công việc tiếp theo
-- Chuẩn bị bước sang **Phase 4 — Orders + Payment** (Mua trực tiếp, chốt đơn, giữ/giải phóng tồn kho, chuyển trạng thái đơn hàng).
 

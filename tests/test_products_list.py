@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 import pytest
@@ -6,6 +6,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.categories.models import Category
 from app.modules.products.models import Product, ProductImage
 from app.modules.users.models import User, UserStatus, UserRole, UserAuthIdentity
@@ -111,6 +112,17 @@ async def seed_data(db_session: AsyncSession):
     db_session.add_all([p1, p2, p3, p4, p5])
     await db_session.flush()
 
+    auc5 = Auction(
+        product_id=p5.product_id,
+        starting_price=p5.price,
+        bid_step=Decimal("10000"),
+        starts_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ends_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+        status=AuctionStatus.ACTIVE.value,
+    )
+    db_session.add(auc5)
+    await db_session.flush()
+
     # Images
     img1 = ProductImage(
         product_id=p1.product_id,
@@ -162,6 +174,7 @@ async def test_public_list_available_only(test_client: AsyncClient, seed_data: d
 @pytest.mark.asyncio
 async def test_filter_category_listing_type(test_client: AsyncClient, seed_data: dict):
     cat_books = seed_data["cat_books"]
+    cat_tech = seed_data["cat_tech"]
 
     res_cat = await test_client.get(f"/api/v1/products?category_id={cat_books.category_id}")
     assert res_cat.status_code == 200
@@ -169,7 +182,7 @@ async def test_filter_category_listing_type(test_client: AsyncClient, seed_data:
     assert len(items_cat) == 1
     assert items_cat[0]["title"] == "Sách Lập trình C++ căn bản"
 
-    res_type = await test_client.get("/api/v1/products?listing_type=AUCTION")
+    res_type = await test_client.get(f"/api/v1/products?category_id={cat_tech.category_id}&listing_type=AUCTION")
     assert res_type.status_code == 200
     items_type = res_type.json()["items"]
     assert len(items_type) == 1

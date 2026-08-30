@@ -1,14 +1,16 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.banks import SUPPORTED_BANKS, BankInfo
 from app.core.database import get_db
 from app.modules.auth.dependencies import get_current_active_user
-from app.modules.users.models import User
+from app.modules.users.models import User, UserStatus
 from app.modules.users.schemas import (
     BankAccountResponse,
     BankAccountUpdate,
+    PublicUserProfileResponse,
+    SoldProductListResponse,
     UserResponse,
     UserUpdate,
 )
@@ -57,7 +59,7 @@ async def update_my_profile(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Update profile fields (full_name, phone, bio, default_meetup_area)
+    Update profile fields (full_name, phone, show_phone_publicly, social_links, bio, delivery_area)
     for the currently authenticated active user. Avatar is managed via Google identity sync.
     """
     user_service = UserService(db)
@@ -114,3 +116,40 @@ async def delete_my_bank_account(
     """
     user_service = UserService(db)
     await user_service.delete_bank_account(current_user)
+
+
+@router.get(
+    "/{user_id}",
+    response_model=PublicUserProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Lấy thông tin hồ sơ công khai của người dùng",
+)
+async def get_public_user_profile(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> PublicUserProfileResponse:
+    """
+    Trả về thông tin hồ sơ công khai của người dùng (tên, avatar, bio, phạm vi giao/nhận, mạng xã hội, thống kê bán hàng).
+    Không làm lộ các thông tin riêng tư / nhạy cảm (email, sđt chưa công khai, tài khoản ngân hàng).
+    """
+    user_service = UserService(db)
+    return await user_service.get_public_profile(user_id)
+
+
+@router.get(
+    "/{user_id}/sold-products",
+    response_model=SoldProductListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Lấy danh sách lịch sử sản phẩm đã bán hoàn tất",
+)
+async def get_user_sold_products(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> SoldProductListResponse:
+    """
+    Trả về lịch sử sản phẩm đã bán hoàn tất (COMPLETED orders) của người bán.
+    Sanitized: Chỉ hiển thị tên sản phẩm, ảnh đại diện, số lượng đã bán, không để lộ thông tin đơn hàng hay người mua.
+    """
+    user_service = UserService(db)
+    return await user_service.get_sold_products(user_id)
+

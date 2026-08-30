@@ -9,8 +9,10 @@ from sqlalchemy import (
     text,
     or_,
     and_,
+    exists,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.products.models import Product, ProductImage
 
 
@@ -51,16 +53,20 @@ class ProductRepository:
         self,
         product_id: int,
         include_deleted: bool = False,
+        for_update: bool = False,
     ) -> Optional[Product]:
         stmt = select(Product).where(Product.product_id == product_id)
         if not include_deleted:
             stmt = stmt.where(Product.is_deleted.is_(False))
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def list_public(
         self,
         category_id: Optional[int] = None,
+        seller_id: Optional[int] = None,
         listing_type: Optional[str] = None,
         min_price: Optional[Decimal] = None,
         max_price: Optional[Decimal] = None,
@@ -79,8 +85,30 @@ class ProductRepository:
         if category_id is not None:
             stmt = stmt.where(Product.category_id == category_id)
 
+        if seller_id is not None:
+            stmt = stmt.where(Product.seller_id == seller_id)
+
+        # Active auction EXISTS condition for public discovery
+        active_auction_exists = exists(
+            select(1).select_from(Auction).where(
+                Auction.product_id == Product.product_id,
+                Auction.status == AuctionStatus.ACTIVE.value,
+            )
+        )
+
         if listing_type is not None:
-            stmt = stmt.where(Product.listing_type == listing_type)
+            if listing_type == "AUCTION":
+                stmt = stmt.where(Product.listing_type == "AUCTION", active_auction_exists)
+            else:
+                stmt = stmt.where(Product.listing_type == listing_type)
+        else:
+            # Default public feed: FIXED_PRICE or ACTIVE AUCTION
+            stmt = stmt.where(
+                or_(
+                    Product.listing_type == "FIXED_PRICE",
+                    active_auction_exists,
+                )
+            )
 
         if min_price is not None:
             stmt = stmt.where(Product.price >= min_price)

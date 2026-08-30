@@ -18,6 +18,8 @@ from app.modules.categories.router import router as categories_router
 from app.modules.products.router import router as products_router
 from app.modules.favorites.router import router as favorites_router
 from app.modules.orders.router import router as orders_router
+from app.modules.orders.websocket import ws_router as orders_ws_router
+from app.modules.auctions.router import router as auctions_router, ws_router as auctions_ws_router
 
 logger = logging.getLogger("app")
 
@@ -51,6 +53,9 @@ app.include_router(categories_router, prefix=settings.API_V1_STR)
 app.include_router(products_router, prefix=settings.API_V1_STR)
 app.include_router(favorites_router, prefix=settings.API_V1_STR)
 app.include_router(orders_router, prefix=settings.API_V1_STR)
+app.include_router(orders_ws_router)
+app.include_router(auctions_router, prefix=settings.API_V1_STR)
+app.include_router(auctions_ws_router)
 
 @app.get("/health")
 async def health_check(

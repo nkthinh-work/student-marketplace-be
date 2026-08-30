@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 from typing import Optional
@@ -16,6 +17,7 @@ from app.modules.users.models import User
 from app.modules.categories.repository import CategoryRepository
 from app.modules.categories.schemas import CategorySummary
 from app.modules.products.models import Product, ProductImage, ProductStatus
+from app.modules.auctions.repository import AuctionRepository
 from app.modules.products.repository import (
     ProductRepository,
     ProductImageRepository,
@@ -138,6 +140,7 @@ def format_product_detail(product: Product) -> ProductDetailResponse:
             user_id=product.seller.user_id,
             full_name=product.seller.full_name,
             avatar_url=product.seller.avatar_url,
+            delivery_area=product.seller.delivery_area,
             default_meetup_area=product.seller.default_meetup_area,
             created_at=product.seller.created_at,
         ),
@@ -152,6 +155,7 @@ class ProductService:
         self.product_repo = ProductRepository(db)
         self.category_repo = CategoryRepository(db)
         self.image_repo = ProductImageRepository(db)
+        self.auction_repo = AuctionRepository(db)
 
     async def create_product(
         self, seller: User, data: ProductCreate
@@ -192,12 +196,21 @@ class ProductService:
                 detail="Product not found.",
             )
 
-        # Nếu status HIDDEN, chỉ seller sở hữu hoặc admin mới xem được
+        # Nếu status HIDDEN, cho phép seller sở hữu, admin, hoặc winner có quyền checkout xem
         if product.status == ProductStatus.HIDDEN.value:
-            if not current_user or (
-                current_user.user_id != product.seller_id
-                and current_user.role != "ADMIN"
-            ):
+            is_authorized = False
+            if current_user:
+                if current_user.user_id == product.seller_id or current_user.role == "ADMIN":
+                    is_authorized = True
+                else:
+                    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                    won_auction = await self.auction_repo.get_latest_ended_auction_with_active_winner_right(
+                        product.product_id, now_utc=now_utc
+                    )
+                    if won_auction and won_auction.winner_id == current_user.user_id:
+                        is_authorized = True
+
+            if not is_authorized:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Product not found.",
@@ -208,6 +221,7 @@ class ProductService:
     async def list_public_products(
         self,
         category_id: Optional[int] = None,
+        seller_id: Optional[int] = None,
         listing_type: Optional[str] = None,
         min_price: Optional[Decimal] = None,
         max_price: Optional[Decimal] = None,
@@ -233,6 +247,7 @@ class ProductService:
 
         items, has_more, next_cursor_tuple = await self.product_repo.list_public(
             category_id=category_id,
+            seller_id=seller_id,
             listing_type=listing_type,
             min_price=min_price,
             max_price=max_price,
@@ -292,7 +307,7 @@ class ProductService:
     async def update_product(
         self, product_id: int, seller: User, data: ProductUpdate
     ) -> ProductDetailResponse:
-        product = await self.product_repo.get_by_id(product_id)
+        product = await self.product_repo.get_by_id(product_id, for_update=True)
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -304,6 +319,42 @@ class ProductService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to update this product.",
             )
+
+        # Auction guards: check if active/scheduled auction exists
+        active_auction = await self.auction_repo.get_active_auction_by_product_id(product.product_id)
+        if active_auction:
+            bid_count = await self.auction_repo.count_bids(active_auction.auction_id)
+            if bid_count > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể chỉnh sửa thông tin sản phẩm khi phiên đấu giá đã có lượt đặt giá.",
+                )
+            if data.status == ProductStatus.HIDDEN:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể ẩn sản phẩm khi đang có phiên đấu giá. Vui lòng hủy đấu giá trước.",
+                )
+            if data.price is not None or data.stock is not None or data.listing_type is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể thay đổi giá, tồn kho hoặc hình thức bán khi đang có phiên đấu giá.",
+                )
+
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        won_auction = await self.auction_repo.get_latest_ended_auction_with_active_winner_right(
+            product.product_id, now_utc=now_utc
+        )
+        if won_auction:
+            if data.status == ProductStatus.HIDDEN:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể ẩn sản phẩm khi người thắng đấu giá vẫn còn thời hạn đặt mua.",
+                )
+            if data.price is not None or data.stock is not None or data.listing_type is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể thay đổi giá, tồn kho hoặc hình thức bán khi đang chờ người thắng đặt mua.",
+                )
 
         if data.category_id is not None:
             category = await self.category_repo.get_by_id(data.category_id)
@@ -333,7 +384,7 @@ class ProductService:
         return format_product_detail(updated_product)
 
     async def soft_delete_product(self, product_id: int, seller: User) -> None:
-        product = await self.product_repo.get_by_id(product_id)
+        product = await self.product_repo.get_by_id(product_id, for_update=True)
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -344,6 +395,26 @@ class ProductService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to delete this product.",
+            )
+
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # 1. Auction guard: check if active/scheduled auction exists
+        active_auction = await self.auction_repo.get_active_auction_by_product_id(product.product_id)
+        if active_auction:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể xóa sản phẩm khi đang có phiên đấu giá. Vui lòng hủy đấu giá trước.",
+            )
+
+        # 2. Auction guard: check if ended auction with still-active winner checkout right exists
+        won_auction = await self.auction_repo.get_latest_ended_auction_with_active_winner_right(
+            product.product_id, now_utc=now_utc
+        )
+        if won_auction:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể xóa tin khi người thắng đấu giá vẫn còn thời hạn đặt mua.",
             )
 
         product.is_deleted = True

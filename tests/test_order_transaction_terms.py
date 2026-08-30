@@ -1055,3 +1055,140 @@ async def test_free_order_seller_switch_fulfillment(
     assert data["shipping_address"] == "Tòa A3 PTIT"
     assert data["payment_method"] == "OTHER"
     assert data["payment_status"] == "PAID"
+
+
+# =====================================================================
+# 7. OPTIONAL EXPECTED TIME LIFECYCLE (MEETUP & SHIPPING)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_seller_shipping_expected_at_lifecycle(
+    test_client: AsyncClient, buyer_user: User, seller_with_bank: User, paid_product: Product, unrelated_user: User
+):
+    # 1. Buyer creates order with SHIPPING
+    with auth_patch(buyer_user):
+        create_res = await test_client.post(
+            "/api/v1/orders",
+            json={
+                "product_id": paid_product.product_id,
+                "quantity": 1,
+                "fulfillment_method": "SHIPPING",
+                "payment_method": "CASH_ON_MEETUP",
+                "shipping_address": "KTX PTIT Ha Dong",
+                "contact_name": "Buyer B",
+                "contact_phone": "0912345678",
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert create_res.status_code == 201
+    order_id = create_res.json()["order_id"]
+    assert create_res.json()["shipping_expected_at"] is None
+
+    # 2. Seller adds shipping expected time
+    with auth_patch(seller_with_bank):
+        edit_res = await test_client.patch(
+            f"/api/v1/orders/{order_id}/transaction-terms",
+            json={
+                "shipping_expected_at": "2026-08-30T18:30:00",
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert edit_res.status_code == 200
+    data = edit_res.json()
+    assert "2026-08-30" in data["shipping_expected_at"]
+    assert data["status"] == "PENDING"  # Time does NOT mutate Order status
+
+    # 3. Buyer reads order detail -> sees shipping_expected_at
+    with auth_patch(buyer_user):
+        detail_res = await test_client.get(
+            f"/api/v1/orders/{order_id}",
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert detail_res.status_code == 200
+    assert "2026-08-30" in detail_res.json()["shipping_expected_at"]
+
+    # 4. Stranger cannot read order detail
+    with auth_patch(unrelated_user):
+        stranger_res = await test_client.get(
+            f"/api/v1/orders/{order_id}",
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert stranger_res.status_code == 404
+
+    # 5. Seller clears shipping expected time
+    with auth_patch(seller_with_bank):
+        clear_res = await test_client.patch(
+            f"/api/v1/orders/{order_id}/transaction-terms",
+            json={
+                "shipping_expected_at": None,
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert clear_res.status_code == 200
+    assert clear_res.json()["shipping_expected_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_switching_fulfillment_cleans_up_stale_expected_times(
+    test_client: AsyncClient, buyer_user: User, seller_with_bank: User, paid_product: Product
+):
+    # 1. Create MEETUP order with meetup_time
+    with auth_patch(buyer_user):
+        create_res = await test_client.post(
+            "/api/v1/orders",
+            json={
+                "product_id": paid_product.product_id,
+                "quantity": 1,
+                "fulfillment_method": "MEETUP",
+                "payment_method": "CASH_ON_MEETUP",
+                "meetup_place": "Căn tin A2",
+                "meetup_time": "2026-08-30T12:35:00",
+                "contact_name": "Buyer B",
+                "contact_phone": "0912345678",
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert create_res.status_code == 201
+    order_id = create_res.json()["order_id"]
+    assert "2026-08-30" in create_res.json()["meetup_time"]
+
+    # 2. Seller switches to SHIPPING with shipping_expected_at
+    with auth_patch(seller_with_bank):
+        switch_res = await test_client.patch(
+            f"/api/v1/orders/{order_id}/transaction-terms",
+            json={
+                "fulfillment_method": "SHIPPING",
+                "shipping_address": "Phong 301 KTX",
+                "shipping_expected_at": "2026-08-30T19:00:00",
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert switch_res.status_code == 200
+    data = switch_res.json()
+    assert data["fulfillment_method"] == "SHIPPING"
+    assert data["shipping_address"] == "Phong 301 KTX"
+    assert "2026-08-30" in data["shipping_expected_at"]
+    # Meetup fields must be cleared
+    assert data["meetup_place"] is None
+    assert data["meetup_time"] is None
+
+    # 3. Seller switches back to MEETUP with meetup_time
+    with auth_patch(seller_with_bank):
+        switch_back = await test_client.patch(
+            f"/api/v1/orders/{order_id}/transaction-terms",
+            json={
+                "fulfillment_method": "MEETUP",
+                "meetup_place": "Sảnh A1 PTIT",
+                "meetup_time": "2026-08-31T09:00:00",
+            },
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert switch_back.status_code == 200
+    data2 = switch_back.json()
+    assert data2["fulfillment_method"] == "MEETUP"
+    assert data2["meetup_place"] == "Sảnh A1 PTIT"
+    assert "2026-08-31" in data2["meetup_time"]
+    # Shipping fields must be cleared
+    assert data2["shipping_address"] is None
+    assert data2["shipping_expected_at"] is None
+

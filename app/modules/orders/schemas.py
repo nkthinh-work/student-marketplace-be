@@ -21,6 +21,7 @@ class CreateOrderRequest(BaseModel):
     meetup_place: Optional[str] = Field(None, max_length=255)
     meetup_time: Optional[datetime] = None
     shipping_address: Optional[str] = Field(None, max_length=500)
+    shipping_expected_at: Optional[datetime] = None
     contact_name: str = Field(..., min_length=1, max_length=100)
     contact_phone: str = Field(..., min_length=1, max_length=20)
     buyer_note: Optional[str] = Field(None, max_length=500)
@@ -48,6 +49,7 @@ class UpdateOrderTransactionTermsRequest(BaseModel):
     meetup_place: Optional[str] = Field(None, max_length=255)
     meetup_time: Optional[datetime] = None
     shipping_address: Optional[str] = Field(None, max_length=500)
+    shipping_expected_at: Optional[datetime] = None
     payment_note: Optional[str] = Field(None, max_length=255)
 
 
@@ -143,6 +145,7 @@ class OrderDetailResponse(BaseModel):
     meetup_place: Optional[str] = None
     meetup_time: Optional[datetime] = None
     shipping_address: Optional[str] = None
+    shipping_expected_at: Optional[datetime] = None
     contact_name: str
     contact_phone: str
     buyer_note: Optional[str] = None

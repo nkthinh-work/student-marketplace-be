@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 import enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
@@ -15,11 +15,15 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.modules.auctions.models import Auction
 
 
 class OrderStatus(str, enum.Enum):
@@ -89,6 +93,12 @@ class Order(Base):
             name="chk_orders_paid_confirmed",
         ),
         UniqueConstraint("order_code", name="ux_orders_order_code"),
+        Index(
+            "ux_orders_auction_id",
+            "auction_id",
+            unique=True,
+            postgresql_where=text("auction_id IS NOT NULL"),
+        ),
         Index("ix_orders_buyer_status_created", "buyer_id", "status", "created_at"),
         Index("ix_orders_seller_status_created", "seller_id", "status", "created_at"),
         Index("ix_orders_status_paystatus_autocancel", "status", "payment_status", "auto_cancel_at"),
@@ -106,6 +116,9 @@ class Order(Base):
     )
     seller_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=False
+    )
+    auction_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("auctions.auction_id", ondelete="RESTRICT"), nullable=True
     )
     status: Mapped[str] = mapped_column(
         String(12),
@@ -161,6 +174,9 @@ class Order(Base):
     shipping_address: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True
     )
+    shipping_expected_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     contact_name: Mapped[str] = mapped_column(
         String(100), nullable=False
     )
@@ -200,6 +216,7 @@ class Order(Base):
 
     buyer = relationship("User", foreign_keys=[buyer_id])
     seller = relationship("User", foreign_keys=[seller_id])
+    auction = relationship("Auction", foreign_keys=[auction_id])
     items = relationship(
         "OrderItem", back_populates="order", cascade="all, delete-orphan"
     )

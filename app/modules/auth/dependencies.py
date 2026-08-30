@@ -96,3 +96,25 @@ def require_role(*allowed_roles: str) -> Callable[[User], User]:
 
 
 require_admin = require_role(UserRole.ADMIN.value)
+
+
+async def authenticate_user_token(token: str, db: AsyncSession) -> User:
+    """
+    Authenticates a raw token string (e.g. for WebSockets) and returns the active User model.
+    Raises HTTPException 401 on invalid token or 403 on banned/inactive status.
+    """
+    try:
+        payload = verify_firebase_token(token)
+    except (FirebaseNotInitializedError, FirebaseVerificationError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+    auth_service = AuthService(db)
+    user = await auth_service.get_or_create_user_from_token_payload(payload)
+    if user.status in (UserStatus.BANNED, UserStatus.INACTIVE):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản của bạn đã bị khóa hoặc chưa kích hoạt.",
+        )
+    return user

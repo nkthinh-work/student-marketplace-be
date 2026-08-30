@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
-from typing import Optional
+from typing import Optional, Any
 import urllib.parse
 
 from fastapi import HTTPException, status
@@ -35,10 +35,20 @@ from app.modules.orders.schemas import (
     OrderSummaryResponse,
     UpdateOrderTransactionTermsRequest,
 )
+from app.modules.orders.websocket import publish_order_created, publish_order_updated
 from app.modules.products.models import ListingType, Product, ProductStatus
 from app.modules.users.models import User, UserStatus
 
-logger = logging.getLogger("app")
+logger = logging.getLogger("app.orders")
+
+
+def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    """Convert an offset-aware or offset-naive datetime to a UTC offset-naive datetime."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class StockInvariantViolationError(HTTPException):
@@ -150,6 +160,7 @@ def format_order_detail(order: Order) -> OrderDetailResponse:
         meetup_place=order.meetup_place,
         meetup_time=order.meetup_time,
         shipping_address=order.shipping_address,
+        shipping_expected_at=order.shipping_expected_at,
         contact_name=order.contact_name,
         contact_phone=order.contact_phone,
         buyer_note=order.buyer_note,
@@ -294,8 +305,9 @@ class OrderService:
             payment_status=payment_status,
             fulfillment_method=payload.fulfillment_method.value,
             meetup_place=payload.meetup_place.strip() if payload.meetup_place else None,
-            meetup_time=payload.meetup_time,
+            meetup_time=normalize_to_utc_naive(payload.meetup_time),
             shipping_address=payload.shipping_address.strip() if payload.shipping_address else None,
+            shipping_expected_at=normalize_to_utc_naive(payload.shipping_expected_at),
             contact_name=payload.contact_name.strip(),
             contact_phone=payload.contact_phone.strip(),
             buyer_note=payload.buyer_note.strip() if payload.buyer_note else None,
@@ -323,7 +335,84 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_created(seller_id=created_order.seller_id, order_id=created_order.order_id)
+        except Exception as e:
+            logger.error(f"Failed to publish order created event: {e}")
         return await self.get_order_detail(created_order.order_id, buyer)
+
+    async def create_auction_winner_order(
+        self,
+        winner: User,
+        auction: Any,
+        product: Product,
+        payload: Any,
+        now_utc: datetime,
+    ) -> Order:
+        # Note: reserved_stock is already 1 (held by auction close) and NOT incremented again!
+        image_url = None
+        if product.images:
+            for img in product.images:
+                if img.is_thumbnail:
+                    image_url = img.image_url
+                    break
+            if image_url is None and product.images:
+                image_url = product.images[0].image_url
+
+        price_at_purchase = auction.final_price
+        total_amount = price_at_purchase
+
+        # Payment method validation
+        if payload.payment_method not in (PaymentMethod.CASH_ON_MEETUP, PaymentMethod.BANK_TRANSFER):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phương thức thanh toán không hợp lệ.",
+            )
+
+        payment_method = payload.payment_method.value
+        payment_status = PaymentStatus.UNPAID
+        paid_confirmed_at = None
+
+        auto_cancel_at = now_utc + timedelta(hours=settings.ORDER_CONFIRM_TIMEOUT_HOURS)
+
+        order = Order(
+            buyer_id=winner.user_id,
+            seller_id=product.seller_id,
+            auction_id=auction.auction_id,
+            status=OrderStatus.PENDING.value,
+            payment_method=payment_method,
+            payment_status=payment_status,
+            fulfillment_method=payload.fulfillment_method.value,
+            meetup_place=payload.meetup_place.strip() if payload.meetup_place else None,
+            meetup_time=normalize_to_utc_naive(payload.meetup_time),
+            shipping_address=payload.shipping_address.strip() if payload.shipping_address else None,
+            contact_name=payload.contact_name.strip(),
+            contact_phone=payload.contact_phone.strip(),
+            buyer_note=payload.buyer_note.strip() if payload.buyer_note else None,
+            total_amount=total_amount,
+            auto_cancel_at=auto_cancel_at,
+            paid_confirmed_at=paid_confirmed_at,
+        )
+
+        item = OrderItem(
+            product_id=product.product_id,
+            product_title=product.title,
+            product_image_url=image_url,
+            quantity=1,
+            price_at_purchase=price_at_purchase,
+        )
+
+        created_order = await self.order_repo.create_order(order, [item])
+
+        await self.order_repo.add_status_history(
+            order_id=created_order.order_id,
+            from_status=None,
+            to_status=OrderStatus.PENDING.value,
+            changed_by=winner.user_id,
+            note="Đặt mua thành công từ kết quả trúng đấu giá",
+        )
+
+        return created_order
 
     async def get_order_detail(self, order_id: int, current_user: User) -> Order:
         order = await self.order_repo.get_order_by_id(order_id)
@@ -446,6 +535,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="CONFIRMED")
+        except Exception as e:
+            logger.error(f"Failed to publish order confirmed event: {e}")
         return await self.get_order_detail(order.order_id, seller)
 
     async def upload_payment_receipt(
@@ -518,6 +611,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="RECEIPT_UPLOADED")
+        except Exception as e:
+            logger.error(f"Failed to publish receipt uploaded event: {e}")
         return await self.get_order_detail(order.order_id, buyer)
 
     async def confirm_payment(self, order_id: int, seller: User) -> Order:
@@ -580,6 +677,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="PAYMENT_CONFIRMED")
+        except Exception as e:
+            logger.error(f"Failed to publish payment confirmed event: {e}")
         return await self.get_order_detail(order.order_id, seller)
 
     async def mark_delivering(self, order_id: int, seller: User) -> Order:
@@ -623,6 +724,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="DELIVERING")
+        except Exception as e:
+            logger.error(f"Failed to publish delivering event: {e}")
         return await self.get_order_detail(order.order_id, seller)
 
     async def update_transaction_terms(
@@ -703,10 +808,11 @@ class OrderService:
                 )
             order.fulfillment_method = FulfillmentMethod.MEETUP.value
             order.meetup_place = new_meetup_place
-            if payload.meetup_time is not None:
-                order.meetup_time = payload.meetup_time
-            # Clear shipping address
+            if "meetup_time" in payload.model_fields_set or payload.meetup_time is not None:
+                order.meetup_time = normalize_to_utc_naive(payload.meetup_time) if payload.meetup_time else None
+            # Clear shipping fields
             order.shipping_address = None
+            order.shipping_expected_at = None
         elif new_fulfillment == FulfillmentMethod.SHIPPING.value:
             new_shipping_address = (
                 payload.shipping_address.strip()
@@ -720,6 +826,8 @@ class OrderService:
                 )
             order.fulfillment_method = FulfillmentMethod.SHIPPING.value
             order.shipping_address = new_shipping_address
+            if "shipping_expected_at" in payload.model_fields_set or payload.shipping_expected_at is not None:
+                order.shipping_expected_at = normalize_to_utc_naive(payload.shipping_expected_at) if payload.shipping_expected_at else None
             # Clear meetup fields
             order.meetup_place = None
             order.meetup_time = None
@@ -729,6 +837,10 @@ class OrderService:
             order.payment_note = payload.payment_note.strip() if payload.payment_note.strip() else None
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="TERMS_UPDATED")
+        except Exception as e:
+            logger.error(f"Failed to publish terms updated event: {e}")
         return await self.get_order_detail(order.order_id, seller)
 
     async def complete_order(self, order_id: int, current_user: User) -> Order:
@@ -812,6 +924,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="COMPLETED")
+        except Exception as e:
+            logger.error(f"Failed to publish completed event: {e}")
         return await self.get_order_detail(order.order_id, current_user)
 
     async def cancel_order(
@@ -889,6 +1005,10 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="CANCELLED")
+        except Exception as e:
+            logger.error(f"Failed to publish cancelled event: {e}")
         return await self.get_order_detail(order.order_id, current_user)
 
     async def auto_cancel_single_order(self, order_id: int) -> bool:
@@ -936,4 +1056,8 @@ class OrderService:
         )
 
         await self.db.commit()
+        try:
+            await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="AUTO_CANCELLED")
+        except Exception as e:
+            logger.error(f"Failed to publish auto cancelled event: {e}")
         return True

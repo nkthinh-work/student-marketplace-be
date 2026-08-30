@@ -63,7 +63,8 @@ Dữ liệu hồ sơ/nghiệp vụ của người dùng và quản trị viên m
 | `phone` | VARCHAR(20) | YES | - | Bắt buộc trước khi đăng bán hoặc tham gia giao dịch cần liên hệ |
 | `avatar_url` | VARCHAR(500) | YES | - | Google / Firebase Auth sync |
 | `bio` | VARCHAR(500) | YES | - | |
-| `default_meetup_area` | VARCHAR(255) | YES | - | |
+| `delivery_area` | VARCHAR(255) | YES | - | Phạm vi giao / nhận hàng công khai của người dùng |
+| `default_meetup_area` | VARCHAR(255) | YES | - | Legacy/deprecated |
 | `bank_bin` | VARCHAR(10) | YES | - | Mã BIN ngân hàng VietQR/NAPAS |
 | `bank_account_number` | VARCHAR(30) | YES | - | Số tài khoản ngân hàng thụ hưởng |
 | `bank_account_name` | VARCHAR(100) | YES | - | Tên chủ tài khoản thụ hưởng |
@@ -174,6 +175,7 @@ Quy tắc ý nghĩa:
 | `cancelled_at` | TIMESTAMP | YES | - | |
 | `cancelled_by` | VARCHAR(10) + CHECK | YES | - | `BUYER` / `SELLER` / `SYSTEM` |
 | `cancel_reason` | VARCHAR(255) | YES | - | |
+| `auction_id` | BIGINT | YES | - | FK -> auctions RESTRICT; partial UNIQUE `ux_orders_auction_id` WHERE auction_id IS NOT NULL (tối đa 1 Order duy nhất cho mỗi vòng đấu giá) |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 | `updated_at` | TIMESTAMP | NO | NOW() | trigger tự cập nhật |
 
@@ -271,29 +273,31 @@ Luồng mua:
 
 ### 2.14. auctions
 
-Cấu hình và trạng thái đấu giá của một sản phẩm. Mỗi product chỉ có tối đa một phiên đấu giá đang được biểu diễn trong bản ghi hiện tại của MVP.
+Cấu hình và trạng thái đấu giá của một sản phẩm. Mỗi product có tối đa một phiên đấu giá ở trạng thái `SCHEDULED` hoặc `ACTIVE` tại một thời điểm (qua partial unique index `ux_auctions_product_active`), đồng thời cho phép lưu nhiều vòng đấu giá lịch sử (`ENDED`, `CANCELLED`).
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
 | `auction_id` | BIGINT IDENTITY | NO | auto | PK |
-| `product_id` | BIGINT | NO | - | FK -> products CASCADE; UNIQUE |
+| `product_id` | BIGINT | NO | - | FK -> products CASCADE; Index `ix_auctions_product_id` |
+| `starting_price` | DECIMAL(12,0) | NO | - | Snapshot giá khởi điểm tại thời điểm tạo auction; CHECK >= 0 |
 | `bid_step` | DECIMAL(12,0) | NO | - | Bước giá; CHECK > 0 |
 | `starts_at` | TIMESTAMP | NO | NOW() | Thời điểm bắt đầu |
-| `ends_at` | TIMESTAMP | NO | - | Thời điểm kết thúc |
+| `ends_at` | TIMESTAMP | NO | - | Thời điểm kết thúc; CHECK `ends_at > starts_at` |
 | `status` | VARCHAR(10) + CHECK | NO | `SCHEDULED` | `SCHEDULED` / `ACTIVE` / `ENDED` / `CANCELLED` |
 | `winner_id` | BIGINT | YES | - | FK -> users RESTRICT; NULL nếu chưa có/không có người thắng |
-| `final_price` | DECIMAL(12,0) | YES | - | Giá thắng được chốt khi kết thúc |
+| `final_price` | DECIMAL(12,0) | YES | - | Giá thắng được chốt khi kết thúc; CHECK `final_price IS NULL OR final_price >= starting_price` |
 | `winner_checkout_deadline` | TIMESTAMP | YES | - | Hạn để người thắng hoàn tất tạo order |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 | `updated_at` | TIMESTAMP | NO | NOW() | trigger tự cập nhật |
 
 Quy ước:
 
-- Giá khởi điểm lấy từ `products.price` tại thời điểm phiên đấu giá được kích hoạt.
-- MVP không lưu `current_price` trong `auctions`; giá cao nhất hiện tại được lấy từ bid hợp lệ cao nhất trong `auction_bids`.
+- Giá khởi điểm được snapshot cố định vào `auctions.starting_price = products.price` khi tạo auction round. Thay đổi `products.price` sau đó không làm thay đổi snapshot này.
+- Giá cao nhất hiện tại được lấy từ bid hợp lệ cao nhất trong `auction_bids`.
 - PostgreSQL là nguồn dữ liệu chuẩn. Redis/WebSocket chỉ hỗ trợ phân phối sự kiện realtime, không quyết định người thắng.
-- Sau khi đã có bid đầu tiên, seller không được thay đổi `products.price`, `products.stock`, `listing_type`, `bid_step`, `starts_at`, `ends_at` bằng luồng chỉnh sửa thông thường.
-- Seller chỉ được huỷ đấu giá khi chưa có bid, trừ khi admin xử lý trường hợp đặc biệt.
+- Sau khi đã có bid đầu tiên, seller không được thay đổi `products.price`, `products.stock`, `listing_type`, `bid_step`, `starts_at`, `ends_at`.
+- Seller chỉ được huỷ đấu giá khi chưa có bid.
+- Khi phiên đấu giá kết thúc mà không có giao dịch giữ hàng (hoặc sau khi winner timeout / order bị hủy), seller có thể bắt đầu vòng đấu giá mới (`POST /api/v1/auctions`) hoặc chuyển sang bán giá cố định (`POST /api/v1/auctions/products/{id}/convert-fixed-price`).
 
 ### 2.15. auction_bids
 
@@ -312,9 +316,9 @@ Quy tắc đặt giá:
 - Người bán không được đặt giá sản phẩm của chính mình.
 - Chỉ user `ACTIVE` mới được bid.
 - Chỉ nhận bid khi auction ở `ACTIVE` và thời gian server hiện tại nhỏ hơn `ends_at`.
-- Bid đầu tiên phải `>= products.price`.
+- Bid đầu tiên phải `> 0` và `>= auction.starting_price`. Nếu `starting_price = 0`, giá đặt tối thiểu là 1 VND.
 - Các bid tiếp theo phải `>= giá cao nhất hiện tại + bid_step`.
-- Mỗi thao tác bid phải chạy trong transaction và khoá bản ghi `auctions` tương ứng bằng row lock trước khi đọc giá cao nhất và insert bid mới. Đây là cơ chế chống hai người cùng thắng do race condition.
+- Mỗi thao tác bid chạy trong transaction và khoá bản ghi `auctions` tương ứng bằng `FOR UPDATE`.
 - Client không được gửi hoặc quyết định `winner_id`, `final_price` hay trạng thái auction.
 
 ### 2.16. notifications
@@ -395,6 +399,7 @@ Quy tắc đặt giá:
 - `orders(seller_id, status, created_at)`
 - `orders(status, payment_status, auto_cancel_at)`
 - `orders(payment_status, receipt_uploaded_at)`
+- Partial UNIQUE `ux_orders_auction_id` trên `orders(auction_id) WHERE auction_id IS NOT NULL`
 - `order_items(product_id)`
 - `conversations(user_one_id, last_message_at)` và `(user_two_id, last_message_at)`
 - `messages(conversation_id, sent_at)`
@@ -402,8 +407,12 @@ Quy tắc đặt giá:
 - `message_attachments(message_id)`
 - `reviews(reviewee_id, is_deleted, created_at)`
 - `favorites(product_id)`
+- `auctions(product_id)`
+- Partial UNIQUE `ux_auctions_product_active` trên `auctions(product_id) WHERE status IN ('SCHEDULED', 'ACTIVE')`
 - `auctions(status, ends_at)` để worker tìm phiên cần đóng
-- `auction_bids(auction_id, amount DESC, created_at ASC)` để lấy bid cao nhất ổn định
+- `auctions(status, starts_at)` để worker tìm phiên SCHEDULED cần kích hoạt
+- `auctions(status, winner_checkout_deadline)` để worker tìm winner timeout
+- `auction_bids(auction_id, amount DESC, created_at ASC, bid_id ASC)` để lấy bid cao nhất và phân trang keyset
 - `auction_bids(bidder_id, created_at)` để xem lịch sử bid của user
 - `notifications(user_id, is_read, created_at)`
 
@@ -424,9 +433,12 @@ Quy tắc đặt giá:
 - `reviews.reviewer_id <> reviews.reviewee_id`
 - `message_attachments.file_size > 0`
 - `auctions.bid_step > 0`
+- `auctions.starting_price >= 0`
 - `auctions.ends_at > auctions.starts_at`
-- `auctions.final_price IS NULL OR auctions.final_price >= 0`
-- `(auctions.winner_id IS NULL AND auctions.final_price IS NULL) OR (auctions.winner_id IS NOT NULL AND auctions.final_price IS NOT NULL)`
+- `auctions.status IN ('SCHEDULED', 'ACTIVE', 'ENDED', 'CANCELLED')`
+- `auctions.final_price IS NULL OR auctions.final_price >= auctions.starting_price`
+- `auctions.status = 'ENDED' OR (auctions.winner_id IS NULL AND auctions.final_price IS NULL AND auctions.winner_checkout_deadline IS NULL)`
+- `(auctions.winner_id IS NULL AND auctions.final_price IS NULL AND auctions.winner_checkout_deadline IS NULL) OR (auctions.winner_id IS NOT NULL AND auctions.final_price IS NOT NULL AND auctions.final_price > 0 AND auctions.winner_checkout_deadline IS NOT NULL)`
 - `auction_bids.amount > 0`
 - mọi enum/check value phải khớp chính xác tài liệu này.
 

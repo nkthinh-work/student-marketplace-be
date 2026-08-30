@@ -27,6 +27,7 @@ class SellerDetailSummary(BaseModel):
     user_id: int
     full_name: str
     avatar_url: Optional[str] = None
+    delivery_area: Optional[str] = None
     default_meetup_area: Optional[str] = None
     created_at: datetime
 

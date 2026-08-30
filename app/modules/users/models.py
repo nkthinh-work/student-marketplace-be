@@ -1,8 +1,10 @@
 from datetime import datetime
 import enum
-from typing import Optional
+from typing import Optional, Any
 from sqlalchemy import (
     BigInteger,
+    Boolean,
+    JSON,
     String,
     DateTime,
     CheckConstraint,
@@ -50,12 +52,26 @@ class User(Base):
         String(20),
         nullable=True,
     )
+    show_phone_publicly: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    social_links: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(
+        JSON,
+        nullable=True,
+    )
     avatar_url: Mapped[Optional[str]] = mapped_column(
         String(500),
         nullable=True,
     )
     bio: Mapped[Optional[str]] = mapped_column(
         String(500),
+        nullable=True,
+    )
+    delivery_area: Mapped[Optional[str]] = mapped_column(
+        String(255),
         nullable=True,
     )
     default_meetup_area: Mapped[Optional[str]] = mapped_column(

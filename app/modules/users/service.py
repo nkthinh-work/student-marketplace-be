@@ -1,12 +1,24 @@
 import logging
 from typing import Optional
+from sqlalchemy import func, select, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
 
 from app.core.banks import get_bank_by_bin, resolve_bank_bin
-from app.modules.users.models import User
+from app.modules.auctions.models import Auction, AuctionStatus
+from app.modules.orders.models import Order, OrderItem, OrderStatus
+from app.modules.products.models import Product, ProductStatus, ListingType
+from app.modules.users.models import User, UserStatus
 from app.modules.users.repository import UserRepository
-from app.modules.users.schemas import BankAccountResponse, BankAccountUpdate, UserUpdate
+from app.modules.users.schemas import (
+    BankAccountResponse,
+    BankAccountUpdate,
+    PublicUserProfileResponse,
+    SocialLinkItem,
+    SoldProductListResponse,
+    SoldProductSummary,
+    UserUpdate,
+)
 
 logger = logging.getLogger("app")
 
@@ -40,10 +52,120 @@ class UserService:
         }
         filtered_data = {k: v for k, v in update_data.items() if k not in disallowed_fields}
 
+        # Format social_links as list of dicts for JSON storage if present
+        if "social_links" in filtered_data and filtered_data["social_links"] is not None:
+            filtered_data["social_links"] = [
+                item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                for item in filtered_data["social_links"]
+            ]
+
         updated_user = await self.user_repo.update_user(user, filtered_data)
         await self.db.commit()
         await self.db.refresh(updated_user)
         return updated_user
+
+    async def get_public_profile(self, user_id: int) -> PublicUserProfileResponse:
+        user = await self.user_repo.get_by_id(user_id)
+        if not user or user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Không tìm thấy người dùng.",
+            )
+
+        active_auction_exists = exists(
+            select(1).select_from(Auction).where(
+                Auction.product_id == Product.product_id,
+                Auction.status == AuctionStatus.ACTIVE.value,
+            )
+        )
+        active_listing_count = await self.db.scalar(
+            select(func.count(Product.product_id)).where(
+                Product.seller_id == user.user_id,
+                Product.is_deleted.is_(False),
+                Product.status == ProductStatus.AVAILABLE.value,
+                or_(
+                    Product.listing_type == ListingType.FIXED_PRICE.value,
+                    active_auction_exists,
+                ),
+            )
+        ) or 0
+
+        completed_sold_count = await self.db.scalar(
+            select(func.coalesce(func.sum(OrderItem.quantity), 0))
+            .select_from(OrderItem)
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .where(
+                Order.seller_id == user.user_id,
+                Order.status == OrderStatus.COMPLETED.value,
+            )
+        ) or 0
+
+        # Public phone is revealed ONLY if user explicitly checked show_phone_publicly
+        phone = user.phone if (user.show_phone_publicly and user.phone) else None
+
+        social_links = None
+        if user.social_links:
+            social_links = [
+                SocialLinkItem(**s) if isinstance(s, dict) else s
+                for s in user.social_links
+            ]
+
+        return PublicUserProfileResponse(
+            user_id=user.user_id,
+            full_name=user.full_name,
+            avatar_url=user.avatar_url,
+            bio=user.bio,
+            delivery_area=user.delivery_area,
+            phone=phone,
+            social_links=social_links,
+            role=user.role,
+            created_at=user.created_at,
+            active_listing_count=int(active_listing_count),
+            completed_sold_count=int(completed_sold_count),
+        )
+
+    async def get_sold_products(self, user_id: int) -> SoldProductListResponse:
+        user = await self.user_repo.get_by_id(user_id)
+        if not user or user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Không tìm thấy người dùng.",
+            )
+
+        stmt = (
+            select(
+                OrderItem.product_id,
+                OrderItem.product_title,
+                OrderItem.product_image_url,
+                func.sum(OrderItem.quantity).label("total_sold_quantity"),
+                func.max(Order.completed_at).label("last_sold_at"),
+            )
+            .select_from(OrderItem)
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .where(
+                Order.seller_id == user_id,
+                Order.status == OrderStatus.COMPLETED.value,
+            )
+            .group_by(
+                OrderItem.product_id,
+                OrderItem.product_title,
+                OrderItem.product_image_url,
+            )
+            .order_by(func.max(Order.completed_at).desc().nulls_last())
+        )
+        results = await self.db.execute(stmt)
+        rows = results.all()
+        items = [
+            SoldProductSummary(
+                product_id=r.product_id,
+                product_title=r.product_title,
+                product_image_url=r.product_image_url,
+                total_sold_quantity=int(r.total_sold_quantity),
+                last_sold_at=r.last_sold_at,
+            )
+            for r in rows
+        ]
+        return SoldProductListResponse(items=items, total_count=len(items))
 
     async def get_bank_account(self, user: User) -> Optional[BankAccountResponse]:
         if not user.bank_bin or not user.bank_account_number or not user.bank_account_name:
