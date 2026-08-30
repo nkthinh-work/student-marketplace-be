@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: Optional[str] = None
     CLOUDINARY_ROOT_FOLDER: str = "student-marketplace"
 
+    # Orders & Worker
+    ORDER_CONFIRM_TIMEOUT_HOURS: int = 24
+    WORKER_POLL_INTERVAL_SECONDS: int = 30
+
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
 

@@ -96,3 +96,23 @@ class UserRepository:
         )
         await self.db.execute(stmt)
         await self.db.flush()
+
+    async def update_bank_account(
+        self,
+        user: User,
+        bank_bin: str,
+        bank_account_number: str,
+        bank_account_name: str,
+    ) -> User:
+        user.bank_bin = bank_bin
+        user.bank_account_number = bank_account_number
+        user.bank_account_name = bank_account_name
+        await self.db.flush()
+        return user
+
+    async def clear_bank_account(self, user: User) -> User:
+        user.bank_bin = None
+        user.bank_account_number = None
+        user.bank_account_name = None
+        await self.db.flush()
+        return user

@@ -62,6 +62,18 @@ class User(Base):
         String(255),
         nullable=True,
     )
+    bank_bin: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+    )
+    bank_account_number: Mapped[Optional[str]] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+    bank_account_name: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+    )
     role: Mapped[str] = mapped_column(
         String(10),
         nullable=False,

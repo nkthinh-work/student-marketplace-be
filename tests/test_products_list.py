@@ -201,8 +201,25 @@ async def test_invalid_cursor_and_limit_rejected(test_client: AsyncClient, seed_
 
 
 @pytest.mark.asyncio
-async def test_keyset_cursor_pagination(test_client: AsyncClient, seed_data: dict):
-    res_p1 = await test_client.get("/api/v1/products?limit=2")
+async def test_keyset_cursor_pagination(test_client: AsyncClient, seed_data: dict, db_session: AsyncSession):
+    cat = Category(name="Cat Pagination", slug=f"cat-page-{seed_data['seller1'].user_id}", is_deleted=False)
+    db_session.add(cat)
+    await db_session.flush()
+
+    for i in range(3):
+        p = Product(
+            seller_id=seed_data["seller1"].user_id,
+            category_id=cat.category_id,
+            title=f"Paginated Item {i+1}",
+            price=10000 * (i + 1),
+            stock=1,
+            status="AVAILABLE",
+            is_deleted=False,
+        )
+        db_session.add(p)
+    await db_session.flush()
+
+    res_p1 = await test_client.get(f"/api/v1/products?category_id={cat.category_id}&limit=2")
     assert res_p1.status_code == 200
     data_p1 = res_p1.json()
     assert len(data_p1["items"]) == 2
@@ -210,7 +227,7 @@ async def test_keyset_cursor_pagination(test_client: AsyncClient, seed_data: dic
     assert data_p1["next_cursor"] is not None
 
     cursor = data_p1["next_cursor"]
-    res_p2 = await test_client.get(f"/api/v1/products?limit=2&cursor={cursor}")
+    res_p2 = await test_client.get(f"/api/v1/products?category_id={cat.category_id}&limit=2&cursor={cursor}")
     assert res_p2.status_code == 200
     data_p2 = res_p2.json()
     assert len(data_p2["items"]) == 1

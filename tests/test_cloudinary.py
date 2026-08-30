@@ -22,12 +22,6 @@ def test_get_cloudinary_folder_products():
     assert folder == "student-marketplace/products"
 
 
-def test_get_cloudinary_folder_avatars():
-    """Verify folder resolution for avatars."""
-    folder = get_cloudinary_folder("avatars")
-    assert folder == "student-marketplace/avatars"
-
-
 def test_get_product_cloudinary_folder_458():
     """Verify product-scoped folder resolution for product_id=458."""
     folder = get_product_cloudinary_folder(458)
@@ -59,7 +53,6 @@ def test_get_cloudinary_folder_normalizes_slashes():
     """Verify root folder with slashes is properly normalized."""
     with patch.object(settings, "CLOUDINARY_ROOT_FOLDER", "/custom-root/"):
         assert get_cloudinary_folder("products") == "custom-root/products"
-        assert get_cloudinary_folder("avatars") == "custom-root/avatars"
         assert get_product_cloudinary_folder(458) == "custom-root/products/product-458"
 
 
@@ -122,24 +115,6 @@ def test_upload_image_without_product_id_falls_back_to_base():
             assert result["public_id"] == "student-marketplace/products/prod_123"
 
 
-def test_upload_image_passes_correct_avatars_folder():
-    """Verify upload_image forwards folder='student-marketplace/avatars' to SDK."""
-    with patch.object(settings, "CLOUDINARY_CLOUD_NAME", "test_cloud"), \
-         patch.object(settings, "CLOUDINARY_API_KEY", "test_key"), \
-         patch.object(settings, "CLOUDINARY_API_SECRET", "test_secret"):
-        with patch("cloudinary.uploader.upload") as mock_upload:
-            mock_upload.return_value = {
-                "secure_url": "https://res.cloudinary.com/test_cloud/image/upload/v1/avatar.jpg",
-                "public_id": "student-marketplace/avatars/user_456",
-            }
-            result = upload_image(b"avatar_bytes", folder_key="avatars")
-
-            mock_upload.assert_called_once_with(
-                b"avatar_bytes",
-                folder="student-marketplace/avatars",
-                resource_type="image",
-            )
-            assert result["public_id"] == "student-marketplace/avatars/user_456"
 
 
 def test_upload_image_handles_sdk_error():

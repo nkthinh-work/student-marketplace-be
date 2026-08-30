@@ -38,10 +38,16 @@ class AuthService:
         if user:
             try:
                 user.last_active_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+                # Đồng bộ avatar_url từ Google/Firebase nếu có thay đổi
+                provider_avatar = token_payload.get("picture")
+                if provider_avatar and provider_avatar != user.avatar_url:
+                    user.avatar_url = provider_avatar
+
                 await self.db.commit()
                 await self.db.refresh(user)
             except Exception as e:
-                logger.warning(f"Failed to update last_active_at for user {user.user_id}: {e}")
+                logger.warning(f"Failed to update last_active_at / avatar for user {user.user_id}: {e}")
                 await self.db.rollback()
             return user
 
@@ -65,6 +71,11 @@ class AuthService:
                     provider_uid=provider_uid,
                 )
                 self.db.add(identity)
+
+                # Đồng bộ avatar nếu user cũ chưa có hoặc avatar mới khác
+                if avatar_url and avatar_url != existing_user_by_email.avatar_url:
+                    existing_user_by_email.avatar_url = avatar_url
+
                 await self.db.commit()
                 await self.db.refresh(existing_user_by_email)
                 logger.info(f"Linked Firebase UID {provider_uid} to existing user {existing_user_by_email.user_id}")

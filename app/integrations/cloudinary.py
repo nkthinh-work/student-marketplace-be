@@ -9,8 +9,8 @@ from app.core.config import settings
 
 logger = logging.getLogger("app")
 
-CloudinaryFolderKey = Literal["products", "avatars"]
-SUPPORTED_CLOUDINARY_FOLDERS: set[str] = {"products", "avatars"}
+CloudinaryFolderKey = Literal["products"]
+SUPPORTED_CLOUDINARY_FOLDERS: set[str] = {"products"}
 
 
 class CloudinaryNotConfiguredError(Exception):
@@ -47,11 +47,10 @@ def init_cloudinary() -> None:
         )
 
 
-def get_cloudinary_folder(folder_key: CloudinaryFolderKey) -> str:
+def get_cloudinary_folder(folder_key: CloudinaryFolderKey = "products") -> str:
     """
     Phân giải namespace folder trên Cloudinary từ cấu hình root.
     products -> student-marketplace/products
-    avatars  -> student-marketplace/avatars
     """
     if folder_key not in SUPPORTED_CLOUDINARY_FOLDERS:
         raise ValueError(
@@ -68,6 +67,45 @@ def get_product_cloudinary_folder(product_id: int) -> str:
     """
     base = get_cloudinary_folder("products")
     return f"{base}/product-{product_id}"
+
+
+def get_order_receipt_cloudinary_folder(order_id: int) -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho biên nhận đơn hàng:
+    student-marketplace/orders/order-{order_id}
+    """
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/orders/order-{order_id}"
+
+
+def upload_order_receipt(
+    file: Any,
+    order_id: int,
+) -> dict[str, Any]:
+    """
+    Uploads a payment receipt image to Cloudinary under the dedicated order folder.
+    Uses public_id="payment-receipt" with overwrite=True and invalidate=True.
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_order_receipt_cloudinary_folder(order_id)
+
+    try:
+        result = cloudinary.uploader.upload(
+            file,
+            folder=target_folder,
+            public_id="payment-receipt",
+            overwrite=True,
+            invalidate=True,
+            resource_type="image",
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to upload order receipt to Cloudinary for order {order_id}: {e}")
+        raise CloudinaryUploadError(f"Cloudinary receipt upload failed: {e}") from e
 
 
 def upload_image(

@@ -20,6 +20,8 @@ from app.db.base import Base
 from app.modules.users.models import User, UserAuthIdentity  # noqa: F401
 from app.modules.categories.models import Category  # noqa: F401
 from app.modules.products.models import Product, ProductImage  # noqa: F401
+from app.modules.favorites.models import Favorite  # noqa: F401
+from app.modules.orders.models import Order, OrderItem, OrderStatusHistory  # noqa: F401
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py, can be acquired:

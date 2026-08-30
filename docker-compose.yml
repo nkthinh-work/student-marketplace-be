@@ -75,8 +75,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      python -c "import time; import logging; logging.basicConfig(level=logging.INFO); log = logging.getLogger('worker'); log.info('Worker started'); [time.sleep(3600) for _ in iter(int, 1)]"
+    command: python -m app.workers.order_auto_cancel
 
 volumes:
   postgres_data:

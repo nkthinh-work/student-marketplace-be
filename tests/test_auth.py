@@ -214,6 +214,7 @@ async def test_patch_profile_valid_fields(test_client, db_session):
         "uid": "fb_test_eva_005",
         "email": "eva@student.edu.vn",
         "name": "Eva Vu",
+        "picture": "https://avatar.example.com/eva_initial.jpg",
     }
 
     with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=mock_claims):
@@ -225,7 +226,6 @@ async def test_patch_profile_valid_fields(test_client, db_session):
         update_payload = {
             "full_name": "Eva Vu Updated",
             "phone": "0912345678",
-            "avatar_url": "https://avatar.example.com/eva_new.jpg",
             "bio": "Sophomore at Computer Science",
             "default_meetup_area": "Hall B, Campus 1",
         }
@@ -239,9 +239,97 @@ async def test_patch_profile_valid_fields(test_client, db_session):
         data = patch_res.json()
         assert data["full_name"] == "Eva Vu Updated"
         assert data["phone"] == "0912345678"
-        assert data["avatar_url"] == "https://avatar.example.com/eva_new.jpg"
+        assert data["avatar_url"] == "https://avatar.example.com/eva_initial.jpg"  # Preserved from Google auth
         assert data["bio"] == "Sophomore at Computer Science"
         assert data["default_meetup_area"] == "Hall B, Campus 1"
+
+
+@pytest.mark.asyncio
+async def test_patch_profile_avatar_url_rejected_422(test_client, db_session):
+    """Ensure client cannot submit custom avatar_url in PATCH /api/v1/users/me."""
+    mock_claims = {
+        "uid": "fb_test_eva_005_avatar",
+        "email": "eva_avatar@student.edu.vn",
+        "name": "Eva Avatar",
+    }
+
+    with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=mock_claims):
+        await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer token_eva_avatar"},
+        )
+
+        # Attempting to send avatar_url must be rejected with 422
+        patch_res = await test_client.patch(
+            "/api/v1/users/me",
+            json={"avatar_url": "https://attacker.com/custom.jpg"},
+            headers={"Authorization": "Bearer token_eva_avatar"},
+        )
+        assert patch_res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_google_avatar_sync_lifecycle(test_client, db_session):
+    """
+    Test complete lifecycle of Google/Firebase avatar sync:
+    1. First login with Avatar A -> user avatar_url is A
+    2. Subsequent login with Avatar B -> user avatar_url updates to B
+    3. Subsequent login with Avatar B again -> user avatar_url remains B
+    4. Subsequent login without picture -> user avatar_url safely preserved as B
+    """
+    claims_a = {
+        "uid": "fb_sync_user_010",
+        "email": "syncuser@student.edu.vn",
+        "name": "Sync User",
+        "picture": "https://google.com/photos/avatar_A.jpg",
+    }
+
+    # 1. First login
+    with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=claims_a):
+        res1 = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer token_sync"},
+        )
+        assert res1.status_code == 200
+        assert res1.json()["avatar_url"] == "https://google.com/photos/avatar_A.jpg"
+
+    # 2. Subsequent login with changed Google photo B
+    claims_b = {
+        "uid": "fb_sync_user_010",
+        "email": "syncuser@student.edu.vn",
+        "name": "Sync User",
+        "picture": "https://google.com/photos/avatar_B.jpg",
+    }
+    with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=claims_b):
+        res2 = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer token_sync"},
+        )
+        assert res2.status_code == 200
+        assert res2.json()["avatar_url"] == "https://google.com/photos/avatar_B.jpg"
+
+    # 3. Same avatar B login
+    with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=claims_b):
+        res3 = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer token_sync"},
+        )
+        assert res3.status_code == 200
+        assert res3.json()["avatar_url"] == "https://google.com/photos/avatar_B.jpg"
+
+    # 4. Login with claims without picture (null/missing) -> safe fallback, preserves B
+    claims_no_pic = {
+        "uid": "fb_sync_user_010",
+        "email": "syncuser@student.edu.vn",
+        "name": "Sync User",
+    }
+    with patch("app.modules.auth.dependencies.verify_firebase_token", return_value=claims_no_pic):
+        res4 = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer token_sync"},
+        )
+        assert res4.status_code == 200
+        assert res4.json()["avatar_url"] == "https://google.com/photos/avatar_B.jpg"
 
 
 @pytest.mark.asyncio

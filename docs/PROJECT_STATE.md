@@ -1,18 +1,164 @@
 # TRẠNG THÁI DỰ ÁN — Backend & Frontend
 
 ## Giai đoạn hiện tại
-Phase 2 — Categories + Products + Images + Search + Filters (Đã hoàn thành refactor loại bỏ hoàn toàn `item_condition`)
+Product UX Cleanup & Consistency Pass (Chợ PTITers) [Đã hoàn thành và VERIFIED 100%]
 
 ## Công việc hiện tại
-Phase 2 (Backend 2A + Frontend 2B) hoàn thành và VERIFIED 100%. Sẵn sàng bước sang Phase 3 (Favorites).
+Product UX Cleanup & Consistency Pass hoàn thành và VERIFIED 100%. Sẵn sàng bước sang Phase 5 (Auctions) / Seller Storefront.
 
 ## Trạng thái
 - Phase 0: Verified
 - Phase 1 (Backend + Frontend): Verified
 - Phase 2A (Backend Categories + Products + Images): Verified
 - Phase 2B (Frontend Categories + Products + Images + Search + Filters): Verified
-- **Cross-Layer Refactor (Remove Product Item Condition)**: **VERIFIED 100%**
-- **Phase 2 Overall**: **VERIFIED**
+- Cross-Layer Refactor (Remove Product Item Condition): Verified 100%
+- Phase 2 Overall: Verified 100%
+- Phase 3 (Favorites): Verified 100%
+- Phase 4 (Orders + Payment - Backend + Frontend + Migrations + Tests + Worker): VERIFIED 100%
+- Phase 4A (Bank Account Profile + VietQR - Backend + Frontend + Migrations + Tests): VERIFIED 100%
+- Phase 4 Follow-up (Transaction Terms Editing + Cash with Shipping - Backend + Frontend + Tests): VERIFIED 100%
+- **Product UX Cleanup & Consistency Pass (Frontend UI/UX Polish & Unified Design)**: **VERIFIED 100%**
+
+## Đã hoàn thành
+
+### 0. Product UX Cleanup & Consistency Pass [Đã Verified 100%]
+- [x] **Centralized Display-State & Terminology Mapping (`src/lib/orderDisplay.ts`)**:
+  - Tạo helper tập trung `getOrderDisplayState(order, actor)` giải quyết xung đột nhiều badge, phân định rõ ràng góc nhìn người mua ("Chờ người bán xác nhận", "Cần thanh toán", "Đang giao đến bạn") và người bán ("Chờ bạn xác nhận đơn", "Cần kiểm tra thanh toán", "Sẵn sàng giao hàng").
+  - Chuẩn hóa formatters tiếng Việt: "Gặp trực tiếp", "Giao hàng", "Tiền mặt khi gặp/nhận", "Chuyển khoản VietQR".
+- [x] **Zero Payment UI Leakage cho đơn miễn phí (`total_amount == 0`)**:
+  - Triệt tiêu toàn bộ rò rỉ thanh toán (ẩn thẻ VietQR, ẩn ghi chú thanh toán, ẩn tải biên nhận, ẩn các nút xác nhận tiền, ẩn badge thanh toán; hiển thị "Miễn phí" / "0 đ").
+- [x] **Order List (Buying vs Selling)**:
+  - Phân định rõ mục đích: Đơn mua ("Đơn hàng bạn đã đặt") và Đơn bán ("Đơn hàng người mua đã đặt từ các tin của bạn").
+  - Empty states dạng card sáng đồng bộ (`ShoppingBag` / `Store`) với CTA rõ ràng ("Khám phá sản phẩm" / "Đăng tin bán ngay").
+- [x] **OrderDetailPage Hierarchy**:
+  - Cấu trúc lại theo thứ tự chuẩn: (1) Mã đơn & Action Bar, (2) Snapshot sản phẩm, (3) Thông tin đối tác, (4) Giao nhận (Người nhận + Địa chỉ/Địa điểm), (5) Thanh toán (Chỉ hiển thị khi có phí), (6) Lịch sử đơn hàng.
+  - Tách bạch thông tin người nhận hàng trong giao nhận và danh tính đối tác (Avatar + Tên).
+- [x] **Navigation Drawer**:
+  - Phân nhóm menu trực quan: MUA HÀNG (Trang chủ, Tin đã lưu, Đơn mua), BÁN HÀNG (Đăng tin bán, Quản lý tin đăng, Đơn bán), TÀI KHOẢN (Hồ sơ cá nhân, Đăng xuất).
+- [x] **Bank Account Profile & Card**:
+  - Chuẩn hóa: 1 CTA duy nhất khi chưa có tài khoản; hiển thị gọn gàng với "Chỉnh sửa" / "Xóa" khi đã có tài khoản.
+- [x] **Seller Identity Readiness**:
+  - Chuẩn hóa cấu trúc hàng người bán trên `ProductCard` và `ProductDetailPage` sẵn sàng tích hợp Seller Storefront mà không tạo route gãy.
+- [x] **Verification**:
+  - `npm run build` (`tsc -b && vite build`): **0 errors**.
+  - `pytest`: **165/165 tests PASSED (100%)**.
+
+### 0. Phase 4 Follow-up — Order Transaction Terms Editing & Cash with Shipping [Đã Verified 100%]
+- [x] **Business Rule Decision**:
+  - `MEETUP` hỗ trợ cả `CASH_ON_MEETUP` và `BANK_TRANSFER`.
+  - `SHIPPING` hỗ trợ cả `CASH_ON_MEETUP` (Tiền mặt khi nhận) và `BANK_TRANSFER`.
+  - Xóa bỏ quy tắc cũ chỉ cho phép `SHIPPING -> BANK_TRANSFER`.
+  - Đơn `SHIPPING + CASH_ON_MEETUP` được phép chuyển sang trạng thái `DELIVERING` khi `payment_status = 'UNPAID'`.
+- [x] **Backend Service & Schemas & Endpoints**:
+  - `CreateOrderRequest` & `UpdateOrderTransactionTermsRequest`: Hỗ trợ đầy đủ các cặp giao nhận - thanh toán.
+  - `PATCH /api/v1/orders/{order_id}/transaction-terms`: Khóa dòng `SELECT ... FOR UPDATE`, cho phép người bán cập nhật hình thức nhận hàng, địa điểm/địa chỉ nhận, phương thức thanh toán, ghi chú thanh toán.
+  - Chặn sửa phương thức thanh toán khi `payment_status` là `VERIFYING` hoặc `PAID`.
+  - Snapshot / Clear ngân hàng tự động khi chuyển đổi `CASH_ON_MEETUP <-> BANK_TRANSFER`.
+- [x] **Frontend Components & Modals**:
+  - `DirectPurchaseModal.tsx`: Hỗ trợ chọn cả Tiền mặt và Chuyển khoản VietQR khi chọn Giao hàng.
+  - `EditTransactionTermsModal.tsx`: Modal điều chỉnh giao nhận và thanh toán dành cho người bán, có xem trước thay đổi (diff summary) và cảnh báo tài khoản ngân hàng.
+  - `OrderDetailPage.tsx`: Tích hợp nút điều chỉnh, cập nhật điều kiện giao hàng và xác nhận tiền mặt khi giao hàng.
+- [x] **Automated Testing & Build**:
+  - `tests/test_order_transaction_terms.py`: 24 test cases kiểm tra độc lập các luồng mua hàng, phân quyền, chuyển đổi điều khoản, xóa dữ liệu thừa, snapshot ngân hàng, giao hàng thu tiền mặt, và đơn 0đ.
+  - Toàn bộ backend test suite: **165/165 tests PASSED 100%**.
+  - Frontend build: `npm run build` thành công với **0 lỗi**.
+
+### 0. Phase 4A — Bank Account Profile + VietQR (Backend + Frontend) [Đã Verified 100%]
+- [x] **Static Bank Registry**:
+  - `app/core/banks.py`: Danh mục chính thức 45 ngân hàng Việt Nam với mã BIN chuẩn NAPAS, bank code, short name, full name, và các hàm helper lookup (`get_bank_by_bin`, `get_bank_by_code`, `resolve_bank_bin`).
+- [x] **Database & Migrations**:
+  - Migration `c3e5f8a1b2d4_add_bank_profile_and_order_bank_snapshot.py`: Thêm `bank_bin`, `bank_account_number`, `bank_account_name` vào bảng `users`; thêm `payment_bank_bin`, `payment_bank_account_number`, `payment_bank_account_name` vào bảng `orders`.
+  - Migration round-trip hoàn chỉnh: `upgrade head` -> `downgrade -1` -> `upgrade head` -> `alembic check` (`No new upgrade operations detected.`).
+- [x] **Backend User Bank Account Endpoints**:
+  - `GET /api/v1/users/banks`: Danh sách các ngân hàng hỗ trợ.
+  - `GET /api/v1/users/me/bank-account`: Lấy thông tin tài khoản nhận tiền (200 OK với `null` khi chưa cấu hình).
+  - `PUT /api/v1/users/me/bank-account`: Thiết lập / Cập nhật tài khoản nhận tiền với validation BIN và STK (200 OK).
+  - `DELETE /api/v1/users/me/bank-account`: Xóa tài khoản nhận tiền (204 No Content).
+  - Bảo vệ privacy: `UserResponse` và `UserUpdate` không để lộ / không cho phép sửa trường ngân hàng ngoài endpoint chuyên biệt.
+- [x] **Backend Order Bank Snapshot & VietQR URL Generator**:
+  - `generate_vietqr_url`: Tạo Quick Link chuẩn VietQR qua `https://img.vietqr.io/image/{bank_bin}-{account_number}-compact2.png?...` sử dụng `urllib.parse.urlencode` và mã hóa an toàn các tham số `amount`, `addInfo` (order_code), `accountName`.
+  - Snapshot bất biến: Khi người bán xác nhận đơn `BANK_TRANSFER` có phí, backend kiểm tra và copy `bank_bin`, `account_number`, `account_name` của seller vào `orders`. Thay đổi/xóa tài khoản cá nhân sau đó không làm thay đổi các đơn hàng đã xác nhận.
+  - Xử lý đơn miễn phí (`total_amount == 0`): Sử dụng sentinel nội bộ `payment_method = 'OTHER'`, tự động `payment_status = 'PAID'`, không yêu cầu phương thức thanh toán hoặc tài khoản ngân hàng.
+- [x] **Backend Tests**:
+  - `tests/test_bank_profile_and_vietqr.py`: 29 test cases kiểm tra toàn diện CRUD ngân hàng, validation, authorization, immutability snapshot, VietQR URL generation, privacy DTOs, và quy tắc đơn miễn phí/có phí.
+  - Toàn bộ backend test suite: **141/141 tests PASSED 100%**.
+- [x] **Frontend Implementation (`src/features/users/` & `src/features/orders/` & `src/features/profile/`)**:
+  - `ProfilePage.tsx`: Thêm thẻ "Tài khoản nhận tiền (VietQR)" hiển thị thông tin ngân hàng, nút copy STK, modal thêm/chỉnh sửa với dropdown ngân hàng, modal xác nhận xóa an toàn.
+  - `DirectPurchaseModal.tsx`: Tự động ẩn chọn phương thức thanh toán cho đơn 0đ; hiển thị options phù hợp theo `MEETUP` / `SHIPPING`.
+  - `ConfirmOrderModal.tsx`: Kiểm tra tài khoản nhận tiền của người bán trước khi xác nhận đơn chuyển khoản; hiển thị cảnh báo và link đến Profile nếu chưa thiết lập.
+  - `OrderDetailPage.tsx`: Thẻ VietQR chuẩn NAPAS với mã QR phóng to, chi tiết tài khoản thụ hưởng, các nút sao chép tiện lợi, hướng dẫn chuyển khoản và disclaimer rõ ràng; ẩn các khối thanh toán cho đơn miễn phí.
+  - `PaymentStatusBadge.tsx`: Ẩn hoàn toàn sentinel `OTHER` ở UI client.
+- [x] **Frontend Build**: `npm run build` (`tsc -b && vite build`) hoàn thành thành công với **0 lỗi**.
+- [x] **Documentation**: Cập nhật đầy đủ `DB_v7.md`, `API_CONTRACT.md`, `PROJECT_STATE.md`.
+
+### 0. Phase 4 — Orders + Payment (Backend + Frontend + Worker) [Đã Verified 100%]
+- [x] **Database & Migrations**:
+  - Tạo migration `b1c4e7f9a2d3_create_orders_order_items_and_status_history.py` tuân thủ nghiêm ngặt `DB_v7.md` §2.8, §2.9, §2.10: `payment_status_t` enum (`UNPAID`, `VERIFYING`, `PAID`), các bảng `orders`, `order_items`, `order_status_history`, database trigger `set_orders_updated_at` duy trì cột `updated_at`, toàn bộ check constraints (`chk_orders_amount_non_negative`, `chk_orders_payment_meetup_compat`, `chk_orders_fulfillment_fields`, `chk_order_items_price_non_negative`, `chk_order_items_quantity_positive`), physical unique constraint `ux_orders_order_code`.
+  - Đã kiểm thử migration round-trip (`upgrade head` -> `downgrade -1` -> `upgrade head` -> `alembic check`).
+  - `alembic check` báo `No new upgrade operations detected.`
+- [x] **Backend Models & Schemas**:
+  - Khởi tạo SQLAlchemy 2.x declarative models: `Order`, `OrderItem`, `OrderStatusHistory`, các Enums (`OrderStatus`, `PaymentStatus`, `PaymentMethod`, `FulfillmentMethod`, `CancelledBy`) với đầy đủ CheckConstraint & Index mappings.
+  - DTOs `CreateOrderRequest`, `ConfirmOrderRequest`, `CancelOrderRequest`, `OrderItemResponse`, `OrderStatusHistoryResponse`, `OrderSummaryResponse`, `OrderDetailResponse`, `OrderCursorPage` với Pydantic v2 `extra="forbid"`.
+- [x] **Backend Service & Repository**:
+  - `OrderRepository` với keyset cursor pagination `(created_at, order_id) DESC`, savepoint-safe order code generation retry khi gặp `ux_orders_order_code` conflict, `get_order_by_id` dùng `selectinload` hỗ trợ `with_for_update()`.
+  - `OrderService` với cơ chế lock dòng bi-directional `FOR UPDATE`, direct buy, seller confirm với bắt buộc `payment_note` cho BANK_TRANSFER, upload receipt cho buyer ở CONFIRMED, confirm payment theo từng phương thức, shipping delivery guard, complete order trừ tồn kho thực tế (`stock -= qty`, `reserved_stock -= qty`) và tự động dọn dẹp favorites khi `stock == 0`, hủy đơn miễn phí & có phí, isolated per-order background worker sweep.
+- [x] **Backend Router & Endpoints (10 endpoints)**:
+  - `POST /api/v1/orders`: Đặt mua trực tiếp (201).
+  - `GET /api/v1/orders/me/buying`: Danh sách đơn mua (200).
+  - `GET /api/v1/orders/me/selling`: Danh sách đơn bán (200).
+  - `GET /api/v1/orders/{id}`: Xem chi tiết đơn hàng (200).
+  - `POST /api/v1/orders/{id}/confirm`: Người bán xác nhận đơn (200).
+  - `POST /api/v1/orders/{id}/receipt`: Người mua upload biên nhận (200).
+  - `POST /api/v1/orders/{id}/confirm-payment`: Người bán xác nhận nhận tiền (200).
+  - `POST /api/v1/orders/{id}/deliver`: Người bán bắt đầu giao hàng (200).
+  - `POST /api/v1/orders/{id}/complete`: Hoàn tất đơn hàng (200).
+  - `POST /api/v1/orders/{id}/cancel`: Hủy đơn hàng (200).
+- [x] **Auto-Cancel Background Worker**:
+  - `app/workers/order_auto_cancel.py`: Vòng lặp quét đơn quá hạn (`auto_cancel_at <= now()`) với session độc lập từng đơn, xử lý signal `SIGINT`/`SIGTERM` an toàn.
+  - Cập nhật lệnh chạy worker trong `docker-compose.yml`: `python -m app.workers.order_auto_cancel`.
+- [x] **Backend Test Suite**:
+  - 4 test modules: `test_orders_crud.py` (12 tests), `test_orders_payment.py` (7 tests), `test_orders_concurrency.py` (2 tests concurrency không oversell và invariant guard), `test_orders_worker.py` (2 tests quét hủy tự động).
+  - Toàn bộ backend test suite: **112/112 tests PASSED 100%**.
+- [x] **Frontend Feature (`src/features/orders/`)**:
+  - `types.ts`, `schemas.ts`, `api.ts`, `hooks.ts`.
+  - Components: `OrderStatusBadge.tsx`, `PaymentStatusBadge.tsx`, `OrderCard.tsx`, `DirectPurchaseModal.tsx`, `ConfirmOrderModal.tsx`, `UploadReceiptModal.tsx`, `CancelOrderModal.tsx`.
+  - Pages: `BuyingOrdersPage.tsx` (`/orders/buying`), `SellingOrdersPage.tsx` (`/orders/selling`), `OrderDetailPage.tsx` (`/orders/:orderId`).
+  - Nâng cấp `ProductDetailPage.tsx`: Thêm CTA "Mua ngay", xử lý disable khi hết hàng đang giao dịch (`available_stock <= 0`), mở DirectPurchaseModal.
+  - Nâng cấp `Header.tsx`: Thêm liên kết "Đơn mua của tôi" và "Đơn bán của tôi" trong menu drawer.
+  - Đăng ký toàn bộ routes bảo vệ trong `App.tsx`.
+- [x] **Frontend Build**: `npm run build` (`tsc -b && vite build`) hoàn thành thành công với **0 lỗi**.
+- [x] **API Contract**: Cập nhật mục 6 trong `API_CONTRACT.md` ghi nhận đầy đủ 10 endpoints Orders & Payment.
+
+### 1. Phase 3 — Favorites (Backend + Frontend) [Đã Verified]
+- [x] **Database & Migrations**:
+  - Tạo migration `a915fd3dfb98_create_favorites.py` tuân thủ nghiêm ngặt `DB_v7.md` §2.13: composite PK `(user_id, product_id)`, foreign keys trỏ tới `users(user_id)` và `products(product_id)` với `ON DELETE CASCADE`, index `ix_favorites_product_id`.
+  - Đã kiểm thử migration round-trip (`upgrade head` -> `downgrade -1` -> `upgrade head` -> `alembic check`).
+  - `alembic current` & `alembic heads` ở trạng thái `a915fd3dfb98 (head)`.
+  - `alembic check` báo `No new upgrade operations detected.`
+- [x] **Backend Models & Schemas**:
+  - Khởi tạo SQLAlchemy 2.x declarative model `Favorite` (`app/modules/favorites/models.py`).
+  - Khởi tạo DTOs `FavoriteProductResponse`, `FavoriteListResponse`, `FavoriteIdsResponse` với `extra="forbid"` (`app/modules/favorites/schemas.py`).
+- [x] **Backend Service & Repository**:
+  - `FavoriteRepository` với `INSERT ... ON CONFLICT DO NOTHING` lũy đẳng chống race condition, delete lũy đẳng, cursor-based pagination `(favorites.created_at, favorites.product_id)` DESC, và query `get_visible_favorite_ids` siêu nhẹ.
+  - `FavoriteService` enforce domain visibility rules: chỉ cho phép lưu sản phẩm `status = 'AVAILABLE'` và `is_deleted = False`, 404 cho `HIDDEN`/`SOLD_OUT`/soft-deleted, cho phép người bán lưu sản phẩm của chính mình, delete không phụ thuộc availability.
+- [x] **Backend Router & Endpoints (4 endpoints)**:
+  - `POST /api/v1/favorites/{product_id}`: Lưu tin (204, idempotent).
+  - `DELETE /api/v1/favorites/{product_id}`: Bỏ lưu tin (204, idempotent).
+  - `GET /api/v1/favorites/ids`: Lấy danh sách ID đã lưu cho Set lookup O(1) (200, static route đặt trước dynamic route tránh collision).
+  - `GET /api/v1/favorites`: Lấy danh sách tin đã lưu phân trang cursor (200).
+- [x] **Backend Tests**:
+  - Tạo test suite `tests/test_favorites.py` (19 test cases) bao phủ 100% các kịch bản: available product, duplicate idempotent, missing auth (401), banned/inactive (403), nonexistent/hidden/sold_out/deleted (404), seller favorite own product (204), unfavorite idempotent (204), unfavorite when product unavailable (204), user isolation, visibility exclusions, route collision safety, cursor pagination stability, và stock reduction partial purchase (7 -> 3) keeps favorite.
+  - Toàn bộ test suite backend: **89/89 tests PASSED 100%**.
+- [x] **Frontend Feature (`src/features/favorites/`)**:
+  - `types.ts`, `api.ts`, `hooks.ts` với `useFavorites` (infinite query cursor), `useFavoriteIds` (Set<number> O(1) lookup), `useToggleFavorite` (optimistic update với rollback khi lỗi).
+  - Nâng cấp `ProductCard.tsx`: chuyển tim trang trí thành nút bấm lưu tin thật có `stopPropagation`/`preventDefault`, visual state rõ ràng, accessible labeling.
+  - Nâng cấp `ProductDetailPage.tsx`: bổ sung nút lưu tin ở thanh điều hướng trên cùng, dùng chung mutation state.
+  - Triển khai `FavoritesPage.tsx` (`/favorites`): trang danh sách tin đã lưu với responsive grid, infinite scroll sentinel, loading skeletons, error retry, và empty state thân thiện.
+  - Nâng cấp `Header.tsx`: menu drawer bổ sung mục "Tin đã lưu" (`/favorites`) cho tài khoản đã đăng nhập, bảo tồn 100% fixed/sticky geometry.
+  - Đăng ký route `/favorites` bảo vệ bởi `<ProtectedRoute>` trong `App.tsx`.
+  - Cập nhật `.heart-btn` micro-animations trong `index.css`.
+- [x] **Frontend Build**: `npm run build` (`tsc -b && vite build`) hoàn thành thành công với **0 lỗi**.
+- [x] **API Contract**: Cập nhật mục 5 trong `API_CONTRACT.md` ghi nhận đầy đủ 4 endpoints Favorites.
 
 ## Đã hoàn thành
 
@@ -66,9 +212,8 @@ Phase 2 (Backend 2A + Frontend 2B) hoàn thành và VERIFIED 100%. Sẵn sàng b
 ### 5. Backend — Cloudinary Folder Namespace Standardization [Đã Verified]
 - [x] Cấu hình `CLOUDINARY_ROOT_FOLDER=student-marketplace` trong `app/core/config.py` và `.env.example`.
 - [x] Chuẩn hóa integration layer `app/integrations/cloudinary.py`:
-  - Thêm helper phân giải folder `get_cloudinary_folder(folder_key)` với kiểu dữ liệu `Literal["products", "avatars"]`.
+  - Thêm helper phân giải folder `get_cloudinary_folder(folder_key)` cho `Literal["products"]`.
   - Phân giải `products` -> `student-marketplace/products`.
-  - Phân giải `avatars` -> `student-marketplace/avatars` (dành riêng cho avatar/profile media trong tương lai).
   - Tự động chuẩn hóa root folder, tránh duplicate slashes.
 - [x] Cập nhật `ProductService.upload_product_image` gọi `upload_image(file_bytes, folder_key="products")`.
 - [x] Sửa lỗi thụt lề environment service `worker` trong `docker-compose.yml`, kiểm tra `docker compose config` hợp lệ 100%.
@@ -91,9 +236,8 @@ Phase 2 (Backend 2A + Frontend 2B) hoàn thành và VERIFIED 100%. Sẵn sàng b
   $$\text{student-marketplace/products/product-}\{\text{product\_id}\}$$
 - [x] Cập nhật `upload_image` nhận `product_id: Optional[int] = None` và tự động phân giải thư mục scoped khi `folder_key="products"`.
 - [x] Cập nhật `ProductService.upload_product_image` truyền `product_id=product_id` vào `upload_image`.
-- [x] Giữ nguyên namespace `student-marketplace/avatars` cho avatar media.
 - [x] Giữ nguyên toàn bộ existing assets cũ (không migration/delete ảnh cũ).
-- [x] Pytest suite: Mở rộng `tests/test_cloudinary.py` lên 16 tests, toàn bộ **27/27 tests PASSED**.
+- [x] Pytest suite: Mở rộng `tests/test_cloudinary.py`, toàn bộ tests PASSED.
 - [x] Live end-to-end verification: Thử nghiệm upload đồng thời cho 2 product khác nhau (`product-692` và `product-693`), xác nhận các asset được lưu cô lập vào đúng thư mục con tương ứng và dọn dẹp compensation thành công.
 
 ### 8. Frontend — Sticky Seller Management Controls [Đã Verified]
@@ -145,21 +289,41 @@ Phase 2 (Backend 2A + Frontend 2B) hoàn thành và VERIFIED 100%. Sẵn sàng b
 - **Seller Management Sticky Bar**: Đảm bảo trải nghiệm quản lý tin đăng liền mạch khi danh sách tin dài, cho phép seller đổi filter trạng thái và tạo tin mới bất kỳ lúc nào mà không cần cuộn ngược về đầu trang.
 - **Product-Scoped Cloudinary Folder**: Phân tách rõ ràng asset theo từng sản phẩm:
   - `student-marketplace/products/product-{product_id}` cho ảnh sản phẩm.
-  - `student-marketplace/avatars` cho avatar profile.
   - Giúp quản trị asset dễ dàng, không gây lẫn lộn giữa các sản phẩm khi số lượng listing tăng cao.
+- **User Avatars Architecture**:
+  - User avatars are derived from verified Google/Firebase identity data and cached in `users.avatar_url`.
+  - The application does not provide custom avatar uploads.
+  - Cloudinary is used for product images only.
 - **Declarative Upload Queue Architecture**: Sử dụng `activeUploadsRef` kết hợp `useEffect` điều phối concurrency = 2 thay vì synchronous setState mutation loops, triệt tiêu hoàn toàn nguy cơ stale closure, duplicate upload và infinite pending.
 - **Loại bỏ item_condition**: Đã loại bỏ hoàn toàn khái niệm `item_condition` (và các giá trị NEW_99, USED_GOOD, USED_FAIR) khỏi toàn bộ hệ thống để tối ưu trải nghiệm mobile-first; tình trạng thực tế của sản phẩm được mô tả linh hoạt trong `description`.
 - **Header Search & Sticky Stability**: Header giữ nguyên chiều cao `h-14` (56px) cả khi mở hoặc đóng Search mode; CategoryBar sticky tại `top-14 pt-0` bám sát mép dưới Header đảm bảo 0px gap và 0px layout shift trên mọi viewport.
 - **Listing Type Policy**: Phase 2B chỉ cho phép tạo tin với `FIXED_PRICE`. Form Edit không gửi `listing_type`. Nếu có record `AUCTION` trong DB, frontend render dưới dạng badge "Đấu giá" và nhãn "Giá khởi điểm" (read-only), không tạo các chức năng đấu giá giả trước Phase 5.
 - **Image Upload Controlled Concurrency**: Hàng đợi upload song song tối đa 2 ảnh cùng lúc, có feedback trạng thái từng ảnh và dọn dẹp bộ nhớ `URL.revokeObjectURL`.
 - **Hierarchical Query Invalidation**: Sử dụng query key factory phân cấp giúp các mutations tự động làm mới chính xác các danh sách public và danh sách seller mà không làm bẩn cache toàn cục.
+- **Favorites Idempotency & Set Lookup Architecture**:
+  - Endpoint `GET /api/v1/favorites/ids` trả về danh sách ID đang AVAILABLE phục vụ việc dựng `Set<number>` phía client, kiểm tra tim $O(1)$ mà không phát sinh N+1 API calls và không làm bẩn public `ProductSummaryResponse` DTO.
+  - Sử dụng `INSERT ... ON CONFLICT DO NOTHING` trên composite PK `(user_id, product_id)` để đảm bảo thao tác favorite có tính lũy đẳng tuyệt đối, an toàn trước race condition / duplicate requests đồng thời.
 
 ## Trạng thái kiểm thử
 - Frontend Build: **Passed** (`npm run build` with 0 errors)
-- Price Validation & Formatter Suite: **11/11 tests passed 100%**
+- Favorites Backend Test Suite: **19/19 passed** (pytest `tests/test_favorites.py`)
+- Full Pytest Regression Suite: **89/89 passed 100%** (pytest `tests/`)
+- Price Validation & Formatter Suite: **11/11 passed 100%**
 - Cloudinary & Product Images Tests: **27/27 passed** (pytest `tests/test_cloudinary.py` & `tests/test_product_images.py`)
 - Products CRUD & Detail Tests: **18/18 passed** (pytest `tests/test_products_crud.py` & `tests/test_products_detail.py`)
-- Live Cloudinary & API Verification: **Passed 100%** (Real upload to `student-marketplace/products/product-{id}`, URL transform & compensation)
-- Alembic Migration Round-Trip & Check: **Passed** (`alembic check` - No new upgrade operations detected)
+- Alembic Migration Round-Trip & Check: **Passed** (`upgrade head` -> `downgrade -1` -> `upgrade head` -> `alembic check` - No new upgrade operations detected)
 - Docker Compose Configuration: **Passed** (`docker compose config` valid 100%)
-- Phase 2 Overall: **VERIFIED 100%**
+- Phase 3 Overall: **VERIFIED 100%**
+
+## Phase 4 Handoff Note (Ghi chú chuyển giao nghiệp vụ)
+> [!IMPORTANT]
+> Khi xử lý đơn hàng ở Phase 4 làm cho số lượng tồn kho thực tế của sản phẩm giảm về 0 và sản phẩm chuyển trạng thái sang `SOLD_OUT`, chính transaction nghiệp vụ / luồng hoàn tất chốt đơn đó phải thực hiện xóa toàn bộ các bản ghi `favorites` của sản phẩm đó (`DELETE FROM favorites WHERE product_id = :product_id`).
+>
+> Các giao dịch mua một phần mà lượng hàng còn lại vẫn lớn hơn 0 (`stock > 0`) tuyệt đối **KHÔNG ĐƯỢC** xóa `favorites`.
+
+## Vấn đề đã biết (Known Issues)
+- Không có lỗi tồn đọng. Hệ thống ổn định 100%.
+
+## Công việc tiếp theo
+- Chuẩn bị bước sang **Phase 4 — Orders + Payment** (Mua trực tiếp, chốt đơn, giữ/giải phóng tồn kho, chuyển trạng thái đơn hàng).
+

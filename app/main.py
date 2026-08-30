@@ -16,6 +16,8 @@ from app.integrations.cloudinary import init_cloudinary
 from app.modules.users.router import router as users_router
 from app.modules.categories.router import router as categories_router
 from app.modules.products.router import router as products_router
+from app.modules.favorites.router import router as favorites_router
+from app.modules.orders.router import router as orders_router
 
 logger = logging.getLogger("app")
 
@@ -47,6 +49,8 @@ app.add_middleware(
 app.include_router(users_router, prefix=settings.API_V1_STR)
 app.include_router(categories_router, prefix=settings.API_V1_STR)
 app.include_router(products_router, prefix=settings.API_V1_STR)
+app.include_router(favorites_router, prefix=settings.API_V1_STR)
+app.include_router(orders_router, prefix=settings.API_V1_STR)
 
 @app.get("/health")
 async def health_check(

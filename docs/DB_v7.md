@@ -61,9 +61,12 @@ Dữ liệu hồ sơ/nghiệp vụ của người dùng và quản trị viên m
 | `email` | VARCHAR(150) | NO | - | UNIQUE; email liên hệ/ứng dụng |
 | `full_name` | VARCHAR(100) | NO | - | |
 | `phone` | VARCHAR(20) | YES | - | Bắt buộc trước khi đăng bán hoặc tham gia giao dịch cần liên hệ |
-| `avatar_url` | VARCHAR(500) | YES | - | Cloudinary |
+| `avatar_url` | VARCHAR(500) | YES | - | Google / Firebase Auth sync |
 | `bio` | VARCHAR(500) | YES | - | |
 | `default_meetup_area` | VARCHAR(255) | YES | - | |
+| `bank_bin` | VARCHAR(10) | YES | - | Mã BIN ngân hàng VietQR/NAPAS |
+| `bank_account_number` | VARCHAR(30) | YES | - | Số tài khoản ngân hàng thụ hưởng |
+| `bank_account_name` | VARCHAR(100) | YES | - | Tên chủ tài khoản thụ hưởng |
 | `role` | VARCHAR(10) + CHECK | NO | `STUDENT` | `STUDENT` / `ADMIN` |
 | `status` | `user_status` ENUM | NO | `ACTIVE` | `ACTIVE` / `BANNED` / `INACTIVE` |
 | `last_active_at` | TIMESTAMP | YES | - | |
@@ -153,7 +156,10 @@ Quy tắc ý nghĩa:
 | `payment_receipt_url` | VARCHAR(500) | YES | - | Cloudinary; biên nhận người mua |
 | `receipt_uploaded_at` | TIMESTAMP | YES | - | |
 | `paid_confirmed_at` | TIMESTAMP | YES | - | thời điểm người bán xác nhận đã nhận tiền |
-| `payment_note` | VARCHAR(255) | YES | - | |
+| `payment_note` | VARCHAR(255) | YES | - | ghi chú thanh toán / chuyển khoản |
+| `payment_bank_bin` | VARCHAR(10) | YES | - | snapshot BIN ngân hàng nhận tiền tại thời điểm CONFIRMED |
+| `payment_bank_account_number` | VARCHAR(30) | YES | - | snapshot STK ngân hàng nhận tiền tại thời điểm CONFIRMED |
+| `payment_bank_account_name` | VARCHAR(100) | YES | - | snapshot Tên chủ TK nhận tiền tại thời điểm CONFIRMED |
 | `fulfillment_method` | VARCHAR(10) + CHECK | NO | `MEETUP` | `MEETUP` / `SHIPPING` |
 | `meetup_place` | VARCHAR(255) | YES | - | |
 | `meetup_time` | TIMESTAMP | YES | - | |
