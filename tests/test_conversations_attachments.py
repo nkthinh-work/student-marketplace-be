@@ -155,7 +155,10 @@ async def test_send_image_only_message(
     with auth_patch(buyer_user), patch(
         "app.modules.conversations.service.upload_message_attachment",
         return_value=mock_upload,
-    ):
+    ), patch(
+        "app.modules.conversations.service.generate_delivery_url",
+        return_value="https://res.cloudinary.com/demo/image/upload/sample.jpg",
+    ) as mock_gen_url:
         files = [
             ("files", ("anh_san_pham.jpg", JPEG_BYTES, "image/jpeg")),
         ]
@@ -172,7 +175,12 @@ async def test_send_image_only_message(
     assert att["kind"] == "IMAGE"
     assert att["mime_type"] == "image/jpeg"
     assert att["original_name"] == "anh_san_pham.jpg"
-    assert "sample.jpg" in att["url"]
+    assert att["url"] == "https://res.cloudinary.com/demo/image/upload/sample.jpg"
+    mock_gen_url.assert_called_once_with(
+        public_id="student-marketplace/conversations/conv-1/sample_jpg",
+        resource_type="image",
+        default_url="https://res.cloudinary.com/demo/image/upload/sample.jpg",
+    )
 
 
 @pytest.mark.asyncio
