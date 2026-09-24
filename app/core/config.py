@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
 
     # Redis
+    REDIS_URL: Optional[str] = None
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
@@ -44,9 +45,20 @@ class Settings(BaseSettings):
     ORDER_CONFIRM_TIMEOUT_HOURS: int = 24
     AUCTION_WINNER_CHECKOUT_HOURS: int = 24
     WORKER_POLL_INTERVAL_SECONDS: int = 30
+    WORKER_BATCH_SIZE: int = 50
+    WORKER_MAX_RETRIES: int = 3
+    WORKER_RETRY_BACKOFF_SECONDS: float = 0.5
+
+    # Product View Counter (Phase 9B)
+    PRODUCT_VIEW_DEDUPE_SECONDS: int = 86400
+    PRODUCT_VIEW_FLUSH_INTERVAL_SECONDS: int = 60
+    PRODUCT_VIEW_FLUSH_BATCH_SIZE: int = 200
 
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
+
+    # Community & Feedback Creator
+    COMMUNITY_CREATOR_USER_ID: Optional[int] = 10
 
     @property
     def database_url_async(self) -> str:

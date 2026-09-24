@@ -1,7 +1,8 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Sequence
+import unicodedata
 from sqlalchemy import (
     select,
     update,
@@ -10,10 +11,43 @@ from sqlalchemy import (
     or_,
     and_,
     exists,
+    case,
+    String,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auctions.models import Auction, AuctionStatus
-from app.modules.products.models import Product, ProductImage
+from app.modules.products.models import Product, ProductImage, ProductModerationStatus
+from app.modules.users.models import User, UserStatus
+from app.modules.users.capability_models import UserCapabilityRestriction, CapabilityType
+
+
+
+def _build_prefix_tsquery(cleaned_query: str):
+    """
+    Xây dựng biểu thức prefix tsquery an toàn cho PostgreSQL Full-Text Search.
+    
+    Quy trình an toàn:
+    1. Chuỗi người dùng đã được chuẩn hoá NFC và strip.
+    2. Nếu query chỉ có 1 ký tự: sử dụng plainto_tsquery('simple', cleaned_query) đối sánh từ nguyên bản
+       (bảo toàn hành vi nhẹ nhàng, không prefix bừa bãi).
+    3. Nếu query >= 2 ký tự:
+       - plainto_tsquery('simple', cleaned_query) phân tích và bóc tách các lexeme hợp lệ,
+         triệt tiêu toàn bộ ký tự đặc biệt (:, &, |, !, (, ), ', ", \\, +, -, c++, v.v.),
+         tránh triệt để lỗi cú pháp tsquery syntax error.
+       - Chuyển kết quả sang String và nối tiền tố ':*' vào token cuối cùng ('gi' -> 'gi':*, 'giáo' & 'tr' -> 'giáo' & 'tr':*).
+       - Dùng CASE WHEN raw_tsquery_text = '' THEN NULL ELSE to_tsquery('simple', raw_tsquery_text || ':*') END
+         để đảm bảo nếu chuỗi không chứa lexeme nào hợp lệ (ví dụ ': & | !'), biểu thức trả về NULL
+         và điều kiện ts_vector @@ NULL trả về NULL/False an toàn tuyệt đối (0 bản ghi, không lỗi 500).
+    """
+    if len(cleaned_query) == 1:
+        return func.plainto_tsquery("simple", cleaned_query)
+
+    raw_tsquery_text = func.plainto_tsquery("simple", cleaned_query).cast(String)
+    return case(
+        (raw_tsquery_text == "", None),
+        else_=func.to_tsquery("simple", raw_tsquery_text + ":*"),
+    )
+
 
 
 def encode_cursor(created_at: datetime, product_id: int) -> str:
@@ -74,11 +108,31 @@ class ProductRepository:
         limit: int = 20,
         cursor: Optional[tuple[datetime, int]] = None,
     ) -> tuple[list[Product], bool, Optional[tuple[datetime, int]]]:
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        sell_restricted_exists = exists(
+            select(1)
+            .select_from(UserCapabilityRestriction)
+            .where(
+                UserCapabilityRestriction.user_id == Product.seller_id,
+                UserCapabilityRestriction.capability == CapabilityType.SELL.value,
+                UserCapabilityRestriction.revoked_at.is_(None),
+                UserCapabilityRestriction.starts_at <= now_utc,
+                or_(
+                    UserCapabilityRestriction.expires_at.is_(None),
+                    UserCapabilityRestriction.expires_at > now_utc,
+                ),
+            )
+        )
+
         stmt = (
             select(Product)
+            .join(User, Product.seller_id == User.user_id)
             .where(
                 Product.is_deleted.is_(False),
                 Product.status == "AVAILABLE",
+                Product.moderation_status == ProductModerationStatus.CLEAR.value,
+                User.status == UserStatus.ACTIVE,
+                ~sell_restricted_exists,
             )
         )
 
@@ -117,15 +171,16 @@ class ProductRepository:
             stmt = stmt.where(Product.price <= max_price)
 
         if search_query and search_query.strip():
-            cleaned_query = search_query.strip()
-            # Khớp biểu thức GIN full-text index trong PostgreSQL
-            ts_vector = func.to_tsvector(
-                "simple",
-                func.coalesce(Product.title, "") + " " + func.coalesce(Product.description, ""),
-            )
-            stmt = stmt.where(
-                ts_vector.op("@@")(func.plainto_tsquery("simple", cleaned_query))
-            )
+            cleaned_query = unicodedata.normalize("NFC", search_query.strip())
+            if cleaned_query:
+                # Khớp biểu thức GIN full-text index trong PostgreSQL
+                ts_vector = func.to_tsvector(
+                    "simple",
+                    func.coalesce(Product.title, "") + " " + func.coalesce(Product.description, ""),
+                )
+                stmt = stmt.where(
+                    ts_vector.op("@@")(_build_prefix_tsquery(cleaned_query))
+                )
 
         if cursor is not None:
             cursor_time, cursor_id = cursor
@@ -204,6 +259,21 @@ class ProductRepository:
         await self.db.flush()
         await self.db.refresh(product)
         return product
+
+    async def update_view_count_floor(self, product_id: int, absolute_count: int) -> int:
+        """
+        Monotonically projects Redis absolute count to PostgreSQL products.view_count.
+        Ensures view_count = GREATEST(view_count, :count).
+        Uses raw SQL to preserve products.updated_at without false content modifications.
+        Returns the number of affected rows.
+        """
+        stmt = text("""
+            UPDATE products
+            SET view_count = GREATEST(view_count, :count)
+            WHERE product_id = :product_id AND is_deleted = FALSE
+        """)
+        result = await self.db.execute(stmt, {"count": absolute_count, "product_id": product_id})
+        return result.rowcount
 
 
 class ProductImageRepository:
@@ -295,3 +365,4 @@ class ProductImageRepository:
                 .values(sort_order=order)
             )
         await self.db.flush()
+

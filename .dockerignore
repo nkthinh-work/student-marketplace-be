@@ -21,3 +21,18 @@ __pycache__/
 secrets/
 firebase-service-account.json
 *-firebase-adminsdk-*.json
+
+# Scratch & coverage artifacts
+scratch/
+.coverage
+.coverage.*
+htmlcov/
+
+# Database dumps must never be baked into Docker images
+backups/
+
+# Tests & Documentation (không cần thiết trong runtime production image)
+tests/
+docs/
+.roo/
+*.md

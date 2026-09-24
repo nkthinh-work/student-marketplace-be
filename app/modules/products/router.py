@@ -23,6 +23,8 @@ from app.modules.products.schemas import (
     ProductUpdate,
     ProductListResponse,
     ProductDetailResponse,
+    ProductViewRequest,
+    ProductViewResponse,
     ProductImageResponse,
     SellerProductListResponse,
     ImageReorderRequest,
@@ -114,6 +116,27 @@ async def get_product_detail(
 ) -> ProductDetailResponse:
     service = ProductService(db)
     return await service.get_product_detail(product_id, current_user=current_user)
+
+
+@router.post(
+    "/{product_id}/view",
+    response_model=ProductViewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Register a product view (best-effort 24h deduplicated analytics)",
+)
+async def register_product_view(
+    product_id: int,
+    data: Optional[ProductViewRequest] = None,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProductViewResponse:
+    service = ProductService(db)
+    anonymous_id = data.anonymous_viewer_id if data else None
+    return await service.register_product_view(
+        product_id=product_id,
+        current_user=current_user,
+        anonymous_viewer_id=anonymous_id,
+    )
 
 
 @router.post(

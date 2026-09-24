@@ -35,11 +35,33 @@ from app.modules.orders.schemas import (
     OrderSummaryResponse,
     UpdateOrderTransactionTermsRequest,
 )
-from app.modules.orders.websocket import publish_order_created, publish_order_updated
-from app.modules.products.models import ListingType, Product, ProductStatus
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.repository import NotificationRepository
+from app.modules.notifications.schemas import NotificationResponse
+from app.modules.orders.websocket import (
+    publish_order_created,
+    publish_order_updated,
+    publish_user_event,
+)
+from app.modules.products.models import ListingType, Product, ProductStatus, ProductModerationStatus
+from app.modules.users.capability_service import CapabilityService
 from app.modules.users.models import User, UserStatus
 
 logger = logging.getLogger("app.orders")
+
+
+async def safe_publish_user_notification(user_id: int, notif_dto: NotificationResponse) -> None:
+    """Best-effort post-commit realtime notification dispatch isolated per recipient."""
+    try:
+        await publish_user_event(
+            user_id,
+            {
+                "type": "NOTIFICATION_CREATED",
+                "notification": notif_dto.model_dump(mode="json"),
+            },
+        )
+    except Exception as err:
+        logger.warning(f"Failed to publish NOTIFICATION_CREATED to user {user_id}: {err}")
 
 
 def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
@@ -214,6 +236,15 @@ class OrderService:
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        if not await CapabilityService(self.db).can_user_buy(buyer.user_id, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "BUY_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền mua hàng.",
+                },
+            )
+
         # 1. Lock product row exclusively
         stmt = (
             select(Product)
@@ -226,7 +257,25 @@ class OrderService:
         result = await self.db.execute(stmt)
         product = result.scalar_one_or_none()
 
-        if not product or product.status != ProductStatus.AVAILABLE.value:
+        if (
+            not product
+            or product.status != ProductStatus.AVAILABLE.value
+            or product.moderation_status == ProductModerationStatus.BLOCKED.value
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sản phẩm không tồn tại hoặc không khả dụng để đặt mua.",
+            )
+
+        seller = await self.db.get(User, product.seller_id)
+        if not seller or seller.status != UserStatus.ACTIVE.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Người bán hiện đang bị khóa tài khoản hoặc không hoạt động.",
+            )
+
+        # Privacy-safe check: SELL-restricted seller returns 404
+        if not await CapabilityService(self.db).can_user_sell(seller, now_utc=now_utc):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Sản phẩm không tồn tại hoặc không khả dụng để đặt mua.",
@@ -334,11 +383,31 @@ class OrderService:
             note="Đặt hàng thành công",
         )
 
+        # Durable NEW_ORDER notification for seller within same transaction
+        notification_repo = NotificationRepository(self.db)
+        notification = await notification_repo.create(
+            user_id=created_order.seller_id,
+            type=NotificationType.NEW_ORDER.value,
+            title="Bạn có đơn hàng mới",
+            body=f"Đơn {created_order.order_code} vừa được tạo.",
+            ref_type="ORDER",
+            ref_id=created_order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notification)
+
         await self.db.commit()
         try:
             await publish_order_created(seller_id=created_order.seller_id, order_id=created_order.order_id)
+            await publish_user_event(
+                created_order.seller_id,
+                {
+                    "type": "NOTIFICATION_CREATED",
+                    "notification": notification_snapshot.model_dump(mode="json"),
+                },
+            )
         except Exception as e:
-            logger.error(f"Failed to publish order created event: {e}")
+            logger.error(f"Failed to publish order created / notification event: {e}")
         return await self.get_order_detail(created_order.order_id, buyer)
 
     async def create_auction_winner_order(
@@ -411,6 +480,19 @@ class OrderService:
             changed_by=winner.user_id,
             note="Đặt mua thành công từ kết quả trúng đấu giá",
         )
+
+        # Durable NEW_ORDER notification for seller within caller transaction
+        notification_repo = NotificationRepository(self.db)
+        notification = await notification_repo.create(
+            user_id=created_order.seller_id,
+            type=NotificationType.NEW_ORDER.value,
+            title="Bạn có đơn hàng mới",
+            body=f"Đơn {created_order.order_code} vừa được tạo.",
+            ref_type="ORDER",
+            ref_id=created_order.order_id,
+        )
+        await self.db.flush()
+        created_order._notification_snapshot = NotificationResponse.model_validate(notification)
 
         return created_order
 
@@ -534,11 +616,25 @@ class OrderService:
             note="Người bán đã xác nhận đơn hàng",
         )
 
+        # Durable ORDER_STATUS notification for buyer within same transaction
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=order.buyer_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đã được xác nhận",
+            body=f"Đơn {order.order_code} đã được người bán xác nhận.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="CONFIRMED")
         except Exception as e:
             logger.error(f"Failed to publish order confirmed event: {e}")
+        await safe_publish_user_notification(order.buyer_id, notification_snapshot)
         return await self.get_order_detail(order.order_id, seller)
 
     async def upload_payment_receipt(
@@ -610,11 +706,25 @@ class OrderService:
             note="Người mua đã tải lên biên nhận thanh toán chuyển khoản",
         )
 
+        # Durable ORDER_STATUS notification for seller within same transaction
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=order.seller_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Người mua đã gửi biên nhận",
+            body=f"Đơn {order.order_code} đang chờ bạn kiểm tra thanh toán.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="RECEIPT_UPLOADED")
         except Exception as e:
             logger.error(f"Failed to publish receipt uploaded event: {e}")
+        await safe_publish_user_notification(order.seller_id, notification_snapshot)
         return await self.get_order_detail(order.order_id, buyer)
 
     async def confirm_payment(self, order_id: int, seller: User) -> Order:
@@ -676,11 +786,25 @@ class OrderService:
             note="Người bán xác nhận đã nhận đủ thanh toán",
         )
 
+        # Durable ORDER_STATUS notification for buyer within same transaction
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=order.buyer_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Thanh toán đã được xác nhận",
+            body=f"Thanh toán cho đơn {order.order_code} đã được người bán xác nhận.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="PAYMENT_CONFIRMED")
         except Exception as e:
             logger.error(f"Failed to publish payment confirmed event: {e}")
+        await safe_publish_user_notification(order.buyer_id, notification_snapshot)
         return await self.get_order_detail(order.order_id, seller)
 
     async def mark_delivering(self, order_id: int, seller: User) -> Order:
@@ -723,11 +847,25 @@ class OrderService:
             note="Người bán đã bắt đầu giao hàng",
         )
 
+        # Durable ORDER_STATUS notification for buyer within same transaction
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=order.buyer_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đang được giao",
+            body=f"Đơn {order.order_code} đã bắt đầu được giao đến bạn.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="DELIVERING")
         except Exception as e:
             logger.error(f"Failed to publish delivering event: {e}")
+        await safe_publish_user_notification(order.buyer_id, notification_snapshot)
         return await self.get_order_detail(order.order_id, seller)
 
     async def update_transaction_terms(
@@ -748,6 +886,17 @@ class OrderService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Chỉ có thể chỉnh sửa điều khoản giao dịch khi đơn hàng ở trạng thái chờ xác nhận hoặc đã xác nhận.",
             )
+
+        # Snapshot canonical persisted terms before mutation
+        before_terms = (
+            order.payment_method,
+            order.fulfillment_method,
+            order.meetup_place,
+            order.meetup_time,
+            order.shipping_address,
+            order.shipping_expected_at,
+            order.payment_note,
+        )
 
         # 1. Payment method updates
         if order.total_amount == Decimal(0):
@@ -836,11 +985,39 @@ class OrderService:
         if payload.payment_note is not None:
             order.payment_note = payload.payment_note.strip() if payload.payment_note.strip() else None
 
+        # Snapshot canonical persisted terms after mutation
+        after_terms = (
+            order.payment_method,
+            order.fulfillment_method,
+            order.meetup_place,
+            order.meetup_time,
+            order.shipping_address,
+            order.shipping_expected_at,
+            order.payment_note,
+        )
+        terms_changed = (before_terms != after_terms)
+
+        notification_snapshot = None
+        if terms_changed:
+            notification_repo = NotificationRepository(self.db)
+            notif = await notification_repo.create(
+                user_id=order.buyer_id,
+                type=NotificationType.ORDER_STATUS.value,
+                title="Điều khoản đơn hàng đã được cập nhật",
+                body=f"Người bán đã cập nhật thông tin giao dịch của đơn {order.order_code}.",
+                ref_type="ORDER",
+                ref_id=order.order_id,
+            )
+            await self.db.flush()
+            notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="TERMS_UPDATED")
         except Exception as e:
             logger.error(f"Failed to publish terms updated event: {e}")
+        if notification_snapshot:
+            await safe_publish_user_notification(order.buyer_id, notification_snapshot)
         return await self.get_order_detail(order.order_id, seller)
 
     async def complete_order(self, order_id: int, current_user: User) -> Order:
@@ -923,11 +1100,26 @@ class OrderService:
             note="Đơn hàng đã hoàn tất giao dịch",
         )
 
+        # Durable ORDER_STATUS notification for non-actor within same transaction
+        target_uid = order.seller_id if current_user.user_id == order.buyer_id else order.buyer_id
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=target_uid,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đã hoàn tất",
+            body=f"Đơn {order.order_code} đã được hoàn tất.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="COMPLETED")
         except Exception as e:
             logger.error(f"Failed to publish completed event: {e}")
+        await safe_publish_user_notification(target_uid, notification_snapshot)
         return await self.get_order_detail(order.order_id, current_user)
 
     async def cancel_order(
@@ -1004,11 +1196,32 @@ class OrderService:
             note=payload.cancel_reason.strip(),
         )
 
+        # Durable ORDER_STATUS notification for non-actor within same transaction
+        if current_user.user_id == order.buyer_id:
+            target_uid = order.seller_id
+            cancel_body = f"Người mua đã hủy đơn {order.order_code}."
+        else:
+            target_uid = order.buyer_id
+            cancel_body = f"Người bán đã hủy đơn {order.order_code}."
+
+        notification_repo = NotificationRepository(self.db)
+        notif = await notification_repo.create(
+            user_id=target_uid,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đã bị hủy",
+            body=cancel_body,
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        notification_snapshot = NotificationResponse.model_validate(notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="CANCELLED")
         except Exception as e:
             logger.error(f"Failed to publish cancelled event: {e}")
+        await safe_publish_user_notification(target_uid, notification_snapshot)
         return await self.get_order_detail(order.order_id, current_user)
 
     async def auto_cancel_single_order(self, order_id: int) -> bool:
@@ -1055,9 +1268,35 @@ class OrderService:
             note="System auto-cancel",
         )
 
+        # Durable ORDER_STATUS notifications for BOTH buyer and seller within same transaction
+        notification_repo = NotificationRepository(self.db)
+        buyer_notif = await notification_repo.create(
+            user_id=order.buyer_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đã tự động hủy",
+            body=f"Đơn {order.order_code} đã tự động hủy do quá thời gian xác nhận.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        seller_notif = await notification_repo.create(
+            user_id=order.seller_id,
+            type=NotificationType.ORDER_STATUS.value,
+            title="Đơn hàng đã tự động hủy",
+            body=f"Đơn {order.order_code} đã tự động hủy do quá thời gian xác nhận.",
+            ref_type="ORDER",
+            ref_id=order.order_id,
+        )
+        await self.db.flush()
+        buyer_snapshot = NotificationResponse.model_validate(buyer_notif)
+        seller_snapshot = NotificationResponse.model_validate(seller_notif)
+
         await self.db.commit()
         try:
             await publish_order_updated(buyer_id=order.buyer_id, seller_id=order.seller_id, order_id=order.order_id, reason="AUTO_CANCELLED")
         except Exception as e:
             logger.error(f"Failed to publish auto cancelled event: {e}")
+
+        # Independent best-effort post-commit realtime dispatch
+        await safe_publish_user_notification(order.buyer_id, buyer_snapshot)
+        await safe_publish_user_notification(order.seller_id, seller_snapshot)
         return True

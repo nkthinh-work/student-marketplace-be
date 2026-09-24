@@ -90,8 +90,19 @@ class PublicUserProfileResponse(BaseModel):
     created_at: datetime
     active_listing_count: int = 0
     completed_sold_count: int = 0
+    rating_average: Optional[float] = None
+    review_count: int = 0
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class SoldProductTransactionReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rating: int
+    comment: Optional[str] = None
+    created_at: datetime
+    verified_transaction: bool = True
 
 
 class SoldProductSummary(BaseModel):
@@ -100,6 +111,9 @@ class SoldProductSummary(BaseModel):
     product_image_url: Optional[str] = None
     total_sold_quantity: int
     last_sold_at: Optional[datetime] = None
+    rating_average: Optional[float] = None
+    review_count: int = 0
+    recent_reviews: list[SoldProductTransactionReview] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -167,3 +181,22 @@ class BankAccountUpdate(BaseModel):
         if len(v) < 2 or len(v) > 100:
             raise ValueError("Tên chủ tài khoản phải từ 2 đến 100 ký tự.")
         return v
+
+
+class UserCapabilityRestrictionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    capability: str
+    expires_at: Optional[datetime] = None
+
+
+class UserAccessStatusResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int
+    status: str
+    role: str
+    can_buy: bool = True
+    can_sell: bool = True
+    active_restrictions: list[UserCapabilityRestrictionResponse] = Field(default_factory=list)
+

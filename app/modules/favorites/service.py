@@ -2,6 +2,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.redis import get_redis_client
 from app.modules.favorites.repository import FavoriteRepository
 from app.modules.favorites.schemas import (
     FavoriteProductResponse,
@@ -9,6 +10,7 @@ from app.modules.favorites.schemas import (
     FavoriteIdsResponse,
 )
 from app.modules.products.repository import ProductRepository
+from app.modules.products.view_counter import get_effective_view_counts_batch
 from app.modules.users.models import User
 from app.integrations.cloudinary import get_thumbnail_url
 
@@ -55,6 +57,12 @@ class FavoriteService:
             cursor=cursor,
         )
 
+        effective_counts: dict[int, int] = {}
+        if items:
+            db_counts = {product.product_id: product.view_count for product, _ in items}
+            redis = get_redis_client()
+            effective_counts = await get_effective_view_counts_batch(redis, db_counts)
+
         response_items = []
         for product, favorited_at in items:
             thumbnail_url = None
@@ -66,6 +74,9 @@ class FavoriteService:
                 if thumbnail_url is None and product.images:
                     thumbnail_url = get_thumbnail_url(product.images[0].image_url)
 
+            count = effective_counts.get(product.product_id, product.view_count)
+            count = max(count or 0, 0)
+
             response_items.append(
                 FavoriteProductResponse(
                     product_id=product.product_id,
@@ -74,6 +85,7 @@ class FavoriteService:
                     listing_type=product.listing_type,
                     status=product.status,
                     available_stock=product.available_stock,
+                    view_count=count,
                     thumbnail_url=thumbnail_url,
                     category=product.category,
                     seller=product.seller,

@@ -169,6 +169,8 @@ async def test_public_list_available_only(test_client: AsyncClient, seed_data: d
     assert "reserved_stock" not in p1_data
     assert "item_condition" not in p1_data
     assert "f_auto,q_auto,w_200" in p1_data["thumbnail_url"]
+    assert "view_count" in p1_data
+    assert isinstance(p1_data["view_count"], int)
 
 
 @pytest.mark.asyncio
@@ -191,7 +193,8 @@ async def test_filter_category_listing_type(test_client: AsyncClient, seed_data:
 
 @pytest.mark.asyncio
 async def test_filter_price_range(test_client: AsyncClient, seed_data: dict):
-    res = await test_client.get("/api/v1/products?min_price=50000&max_price=250000")
+    cat_tech = seed_data["cat_tech"]
+    res = await test_client.get(f"/api/v1/products?category_id={cat_tech.category_id}&min_price=50000&max_price=250000")
     assert res.status_code == 200
     items = res.json()["items"]
     assert len(items) == 1

@@ -37,6 +37,11 @@ class ProductStatus(str, enum.Enum):
     SOLD_OUT = "SOLD_OUT"
 
 
+class ProductModerationStatus(str, enum.Enum):
+    CLEAR = "CLEAR"
+    BLOCKED = "BLOCKED"
+
+
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
@@ -53,6 +58,10 @@ class Product(Base):
         CheckConstraint(
             "status IN ('AVAILABLE', 'HIDDEN', 'SOLD_OUT')",
             name="chk_products_status",
+        ),
+        CheckConstraint(
+            "moderation_status IN ('CLEAR', 'BLOCKED')",
+            name="chk_products_moderation_status",
         ),
         Index(
             "ix_products_category_status",
@@ -131,6 +140,12 @@ class Product(Base):
         nullable=False,
         default=ProductStatus.AVAILABLE.value,
         server_default="AVAILABLE",
+    )
+    moderation_status: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default=ProductModerationStatus.CLEAR.value,
+        server_default="CLEAR",
     )
     view_count: Mapped[int] = mapped_column(
         Integer,

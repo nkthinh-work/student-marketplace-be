@@ -20,6 +20,16 @@ class UserRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(self, user_id: int) -> Optional[User]:
+        stmt = (
+            select(User)
+            .where(User.user_id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_by_email(self, email: str) -> Optional[User]:
         stmt = (
             select(User)

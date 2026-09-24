@@ -78,6 +78,55 @@ def get_order_receipt_cloudinary_folder(order_id: int) -> str:
     return f"{root}/orders/order-{order_id}"
 
 
+def get_conversation_attachment_cloudinary_folder(conversation_id: int) -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho tệp đính kèm tin nhắn:
+    student-marketplace/conversations/conv-{conversation_id}
+    """
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/conversations/conv-{conversation_id}"
+
+
+def get_report_evidence_cloudinary_folder(report_id: int) -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho tệp ảnh minh chứng báo cáo:
+    student-marketplace/reports/report-{report_id}
+    """
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/reports/report-{report_id}"
+
+
+def upload_report_evidence(
+    file: Any,
+    report_id: int,
+    original_filename: str = "",
+    resource_type: str = "image",
+) -> dict[str, Any]:
+    """
+    Uploads an image or video evidence file to Cloudinary under the dedicated report folder.
+    Uses unique_filename=True and specified resource_type ("image" or "video").
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_report_evidence_cloudinary_folder(report_id)
+
+    try:
+        result = cloudinary.uploader.upload(
+            file,
+            folder=target_folder,
+            resource_type=resource_type,
+            use_filename=True,
+            unique_filename=True,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to upload report evidence to Cloudinary for report {report_id}: {e}")
+        raise CloudinaryUploadError(f"Cloudinary report evidence upload failed: {e}") from e
+
+
 def upload_order_receipt(
     file: Any,
     order_id: int,
@@ -142,23 +191,97 @@ def upload_image(
         raise CloudinaryUploadError(f"Cloudinary upload failed: {e}") from e
 
 
-def destroy_image(public_id: str) -> bool:
+def upload_message_attachment(
+    file: Any,
+    conversation_id: int,
+    kind: str,
+    original_filename: str,
+) -> dict[str, Any]:
     """
-    Best-effort cleanup of an uploaded Cloudinary asset.
+    Uploads a message attachment (IMAGE, VIDEO, PDF) to Cloudinary.
+    Maps kind to appropriate resource_type:
+      - IMAGE -> 'image'
+      - VIDEO -> 'video'
+      - PDF -> 'raw'
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_conversation_attachment_cloudinary_folder(conversation_id)
+
+    kind_resource_map = {
+        "IMAGE": "image",
+        "VIDEO": "video",
+        "AUDIO": "video",
+        "PDF": "raw",
+        "DOCUMENT": "raw",
+    }
+    resource_type = kind_resource_map.get(kind.upper(), "raw")
+
+    try:
+        result = cloudinary.uploader.upload(
+            file,
+            folder=target_folder,
+            resource_type=resource_type,
+            use_filename=True,
+            unique_filename=True,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to upload message attachment ({kind}) to Cloudinary for conv {conversation_id}: {e}")
+        raise CloudinaryUploadError(f"Cloudinary attachment upload failed: {e}") from e
+
+
+def destroy_asset(public_id: str, resource_type: str = "image") -> bool:
+    """
+    Best-effort cleanup of an uploaded Cloudinary asset using its exact resource_type.
     Returns True if deletion succeeded, False otherwise.
     """
     if not is_cloudinary_configured() or not public_id:
         return False
 
     try:
-        result = cloudinary.uploader.destroy(public_id, resource_type="image")
+        result = cloudinary.uploader.destroy(public_id, resource_type=resource_type)
         if result.get("result") in ("ok", "not found"):
             return True
         logger.warning(f"Cloudinary destroy returned non-ok result: {result}")
         return False
     except Exception as e:
-        logger.error(f"Error executing Cloudinary destroy for {public_id}: {e}")
+        logger.error(f"Error executing Cloudinary destroy for {public_id} ({resource_type}): {e}")
         return False
+
+
+def destroy_image(public_id: str) -> bool:
+    """Convenience alias for image assets."""
+    return destroy_asset(public_id, resource_type="image")
+
+
+def generate_delivery_url(
+    public_id: str,
+    resource_type: str = "image",
+    default_url: Optional[str] = None,
+) -> str:
+    """
+    Generates a secure signed delivery URL for an asset.
+    Falls back to default_url or standard secure URL.
+    """
+    if not public_id:
+        return default_url or ""
+    if not is_cloudinary_configured():
+        return default_url or ""
+    try:
+        url, _ = cloudinary.utils.cloudinary_url(
+            public_id,
+            resource_type=resource_type,
+            secure=True,
+            sign_url=True,
+        )
+        return url
+    except Exception as e:
+        logger.warning(f"Failed to generate signed Cloudinary URL for {public_id}: {e}")
+        return default_url or ""
 
 
 def build_transformed_url(
@@ -199,3 +322,85 @@ def get_detail_image_url(image_url: Optional[str]) -> Optional[str]:
     if not image_url:
         return None
     return build_transformed_url(image_url, width=800)
+
+
+def get_hero_image_url(image_url: Optional[str]) -> Optional[str]:
+    """Generates 1600px wide responsive hero image URL with f_auto,q_auto."""
+    if not image_url:
+        return None
+    return build_transformed_url(image_url, width=1600)
+
+
+def get_community_moment_cloudinary_folder() -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho ảnh khoảnh khắc cộng đồng:
+    student-marketplace/community-moments
+    """
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/community-moments"
+
+
+def upload_community_moment_image(
+    file: Any,
+    user_id: int,
+) -> dict[str, Any]:
+    """
+    Uploads a community moment photo to Cloudinary under the dedicated community folder.
+    Uses unique_filename=True and resource_type="image".
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_community_moment_cloudinary_folder()
+
+    try:
+        result = cloudinary.uploader.upload(
+            file,
+            folder=target_folder,
+            resource_type="image",
+            unique_filename=True,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to upload community moment image to Cloudinary for user {user_id}: {e}")
+        raise CloudinaryUploadError(f"Cloudinary community moment upload failed: {e}") from e
+
+
+def get_feedback_cloudinary_folder() -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho tệp minh chứng feedback:
+    student-marketplace/feedback
+    """
+    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    return f"{root}/feedback"
+
+
+def upload_feedback_attachment(
+    file: Any,
+    resource_type: str = "image",
+) -> dict[str, Any]:
+    """
+    Uploads an image or video feedback attachment to Cloudinary under dedicated feedback folder.
+    Uses unique_filename=True and specified resource_type ("image" or "video").
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_feedback_cloudinary_folder()
+
+    try:
+        result = cloudinary.uploader.upload(
+            file,
+            folder=target_folder,
+            resource_type=resource_type,
+            unique_filename=True,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to upload feedback attachment to Cloudinary: {e}")
+        raise CloudinaryUploadError(f"Cloudinary feedback attachment upload failed: {e}") from e
+

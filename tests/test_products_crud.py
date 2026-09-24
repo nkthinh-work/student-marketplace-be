@@ -558,3 +558,109 @@ async def test_soft_delete_product_non_owner_forbidden(
             headers={"Authorization": "Bearer other_token"},
         )
         assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_product_price_boundary_validation(
+    test_client: AsyncClient,
+    seller_user: User,
+    sample_category: Category,
+):
+    with patch(
+        "app.modules.auth.dependencies.verify_firebase_token",
+        return_value={
+            "uid": "firebase_seller_1",
+            "email": seller_user.email,
+            "name": seller_user.full_name,
+        },
+    ):
+        # 1. Price = 0 is valid
+        res_zero = await test_client.post(
+            "/api/v1/products",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "category_id": sample_category.category_id,
+                "title": "Sách tặng 0 đồng",
+                "price": 0,
+                "stock": 1,
+            },
+        )
+        assert res_zero.status_code == 201
+        prod_id = res_zero.json()["product_id"]
+
+        # 2. Price = 50,000,000 is valid
+        res_max = await test_client.post(
+            "/api/v1/products",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "category_id": sample_category.category_id,
+                "title": "Laptop cao cấp",
+                "price": 50000000,
+                "stock": 1,
+            },
+        )
+        assert res_max.status_code == 201
+
+        # 3. Price = 50,000,001 is invalid (upper bound violation)
+        res_over = await test_client.post(
+            "/api/v1/products",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "category_id": sample_category.category_id,
+                "title": "Vượt trần giá",
+                "price": 50000001,
+                "stock": 1,
+            },
+        )
+        assert res_over.status_code == 422
+
+        # 4. Price negative is invalid
+        res_neg = await test_client.post(
+            "/api/v1/products",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "category_id": sample_category.category_id,
+                "title": "Giá âm",
+                "price": -1000,
+                "stock": 1,
+            },
+        )
+        assert res_neg.status_code == 422
+
+        # 5. Price decimal is invalid
+        res_dec = await test_client.post(
+            "/api/v1/products",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "category_id": sample_category.category_id,
+                "title": "Giá thập phân",
+                "price": 100.5,
+                "stock": 1,
+            },
+        )
+        assert res_dec.status_code == 422
+
+        # 6. Update to 50_000_001 is invalid
+        res_up_over = await test_client.patch(
+            f"/api/v1/products/{prod_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"price": 50000001},
+        )
+        assert res_up_over.status_code == 422
+
+        # 7. Update to decimal is invalid
+        res_up_dec = await test_client.patch(
+            f"/api/v1/products/{prod_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"price": 15000.75},
+        )
+        assert res_up_dec.status_code == 422
+
+        # 8. Update to valid 50,000,000 succeeds
+        res_up_valid = await test_client.patch(
+            f"/api/v1/products/{prod_id}",
+            headers={"Authorization": "Bearer token"},
+            json={"price": 50000000},
+        )
+        assert res_up_valid.status_code == 200
+        assert Decimal(str(res_up_valid.json()["price"])) == Decimal("50000000")

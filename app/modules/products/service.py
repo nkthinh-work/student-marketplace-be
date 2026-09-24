@@ -2,7 +2,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 from typing import Optional
+from uuid import UUID
+import unicodedata
 from fastapi import HTTPException, status, UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.cloudinary import (
@@ -16,27 +19,40 @@ from app.integrations.cloudinary import (
 from app.modules.users.models import User
 from app.modules.categories.repository import CategoryRepository
 from app.modules.categories.schemas import CategorySummary
-from app.modules.products.models import Product, ProductImage, ProductStatus
+from app.modules.products.models import Product, ProductImage, ProductStatus, ProductModerationStatus
+from app.modules.reviews.models import Review
 from app.modules.auctions.repository import AuctionRepository
+from app.modules.users.capability_service import CapabilityService
 from app.modules.products.repository import (
     ProductRepository,
     ProductImageRepository,
     encode_cursor,
     decode_cursor,
 )
+from app.core.config import settings
+from app.core.redis import get_redis_client
+from app.modules.products.view_counter import (
+    register_view_in_redis,
+    get_effective_view_count_from_redis,
+    get_effective_view_counts_batch,
+    build_viewer_token,
+)
 from app.modules.products.schemas import (
     ProductCreate,
     ProductUpdate,
     ProductSummaryResponse,
     ProductDetailResponse,
+    ProductViewResponse,
     ProductListResponse,
     ProductImageResponse,
     SellerProductResponse,
     SellerProductListResponse,
+    SellerAuctionSummary,
     SellerSummary,
     SellerDetailSummary,
     ImageReorderRequest,
 )
+from app.modules.auctions.models import Auction
 
 logger = logging.getLogger("app")
 
@@ -44,7 +60,10 @@ ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
-def format_product_summary(product: Product) -> ProductSummaryResponse:
+def format_product_summary(
+    product: Product,
+    effective_view_count: Optional[int] = None,
+) -> ProductSummaryResponse:
     thumb_url = None
     if product.images:
         for img in product.images:
@@ -54,6 +73,9 @@ def format_product_summary(product: Product) -> ProductSummaryResponse:
         if thumb_url is None and product.images:
             thumb_url = get_thumbnail_url(product.images[0].image_url)
 
+    count = effective_view_count if effective_view_count is not None else product.view_count
+    count = max(count or 0, 0)
+
     return ProductSummaryResponse(
         product_id=product.product_id,
         title=product.title,
@@ -61,6 +83,7 @@ def format_product_summary(product: Product) -> ProductSummaryResponse:
         listing_type=product.listing_type,
         status=product.status,
         available_stock=product.available_stock,
+        view_count=count,
         thumbnail_url=thumb_url,
         category=CategorySummary(
             category_id=product.category.category_id,
@@ -76,7 +99,11 @@ def format_product_summary(product: Product) -> ProductSummaryResponse:
     )
 
 
-def format_seller_product(product: Product) -> SellerProductResponse:
+def format_seller_product(
+    product: Product,
+    auction: Optional[Auction] = None,
+    effective_view_count: Optional[int] = None,
+) -> SellerProductResponse:
     thumb_url = None
     if product.images:
         for img in product.images:
@@ -85,6 +112,29 @@ def format_seller_product(product: Product) -> SellerProductResponse:
                 break
         if thumb_url is None and product.images:
             thumb_url = get_thumbnail_url(product.images[0].image_url)
+
+    auction_summary = None
+    if auction:
+        curr_price = auction.starting_price
+        if auction.bids:
+            curr_price = max(b.amount for b in auction.bids)
+        elif auction.final_price is not None:
+            curr_price = auction.final_price
+
+        auction_summary = SellerAuctionSummary(
+            auction_id=auction.auction_id,
+            status=auction.status,
+            starting_price=auction.starting_price,
+            bid_step=auction.bid_step,
+            current_price=curr_price,
+            starts_at=auction.starts_at,
+            ends_at=auction.ends_at,
+            winner_checkout_deadline=auction.winner_checkout_deadline,
+            bid_count=len(auction.bids) if auction.bids else 0,
+        )
+
+    count = effective_view_count if effective_view_count is not None else product.view_count
+    count = max(count or 0, 0)
 
     return SellerProductResponse(
         product_id=product.product_id,
@@ -96,19 +146,26 @@ def format_seller_product(product: Product) -> SellerProductResponse:
         reserved_stock=product.reserved_stock,
         available_stock=product.available_stock,
         status=product.status,
-        view_count=product.view_count,
+        moderation_status=ProductModerationStatus(product.moderation_status),
+        view_count=count,
         thumbnail_url=thumb_url,
         category=CategorySummary(
             category_id=product.category.category_id,
             name=product.category.name,
             slug=product.category.slug,
         ),
+        auction=auction_summary,
         created_at=product.created_at,
         updated_at=product.updated_at,
     )
 
 
-def format_product_detail(product: Product) -> ProductDetailResponse:
+def format_product_detail(
+    product: Product,
+    rating_average: Optional[float] = None,
+    review_count: int = 0,
+    effective_view_count: Optional[int] = None,
+) -> ProductDetailResponse:
     formatted_images = [
         ProductImageResponse(
             image_id=img.image_id,
@@ -129,7 +186,8 @@ def format_product_detail(product: Product) -> ProductDetailResponse:
         price=product.price,
         available_stock=product.available_stock,
         status=product.status,
-        view_count=product.view_count,
+        moderation_status=ProductModerationStatus(product.moderation_status),
+        view_count=effective_view_count if effective_view_count is not None else product.view_count,
         images=formatted_images,
         category=CategorySummary(
             category_id=product.category.category_id,
@@ -143,6 +201,8 @@ def format_product_detail(product: Product) -> ProductDetailResponse:
             delivery_area=product.seller.delivery_area,
             default_meetup_area=product.seller.default_meetup_area,
             created_at=product.seller.created_at,
+            rating_average=rating_average,
+            review_count=review_count,
         ),
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -160,6 +220,16 @@ class ProductService:
     async def create_product(
         self, seller: User, data: ProductCreate
     ) -> ProductDetailResponse:
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        if not await CapabilityService(self.db).can_user_sell(seller, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "SELL_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền bán hàng.",
+                },
+            )
+
         category = await self.category_repo.get_by_id(data.category_id)
         if not category:
             raise HTTPException(
@@ -186,17 +256,32 @@ class ProductService:
         await self.db.refresh(created_product)
         return format_product_detail(created_product)
 
-    async def get_product_detail(
-        self, product_id: int, current_user: Optional[User] = None
-    ) -> ProductDetailResponse:
-        product = await self.product_repo.get_by_id(product_id)
-        if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Product not found.",
-            )
+    async def verify_product_visibility(
+        self, product: Product, current_user: Optional[User] = None
+    ) -> None:
+        """
+        Enforces canonical privacy and visibility checks for a product.
+        Raises 404 HTTPException if the product is not visible to the current caller,
+        preventing information leakage about hidden/blocked/deleted items.
+        """
+        # Privacy-safe check: Products from SELL-restricted sellers are hidden from third parties
+        if not current_user or (current_user.user_id != product.seller_id and current_user.role != "ADMIN"):
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            if not await CapabilityService(self.db).can_user_sell(product.seller_id, now_utc=now_utc):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Product not found.",
+                )
 
-        # Nếu status HIDDEN, cho phép seller sở hữu, admin, hoặc winner có quyền checkout xem
+        # Moderation blocked product: only the owner seller may inspect it; safe 404 for all others
+        if product.moderation_status == ProductModerationStatus.BLOCKED.value:
+            if not current_user or current_user.user_id != product.seller_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Product not found.",
+                )
+
+        # If status is HIDDEN, only owner seller, admin, or winning bidder with checkout right may view
         if product.status == ProductStatus.HIDDEN.value:
             is_authorized = False
             if current_user:
@@ -216,7 +301,116 @@ class ProductService:
                     detail="Product not found.",
                 )
 
-        return format_product_detail(product)
+    async def get_product_detail(
+        self, product_id: int, current_user: Optional[User] = None
+    ) -> ProductDetailResponse:
+        product = await self.product_repo.get_by_id(product_id)
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found.",
+            )
+
+        await self.verify_product_visibility(product, current_user=current_user)
+
+        review_agg = await self.db.execute(
+            select(
+                func.avg(Review.rating),
+                func.count(Review.review_id),
+            ).where(Review.reviewee_id == product.seller_id)
+        )
+        avg_val, cnt_val = review_agg.one()
+        rating_average = round(float(avg_val), 1) if avg_val is not None else None
+        review_count = int(cnt_val) if cnt_val is not None else 0
+
+        # Read effective view count from Redis (read-only, never increments on GET)
+        effective_count = product.view_count
+        try:
+            redis = get_redis_client()
+            if redis is not None:
+                effective_count = await get_effective_view_count_from_redis(
+                    redis, product.product_id, product.view_count
+                )
+        except Exception as e:
+            logger.warning(
+                "[get_product_detail] Redis read failed for product %s (%s): %s",
+                product_id,
+                type(e).__name__,
+                e,
+            )
+
+        return format_product_detail(
+            product,
+            rating_average=rating_average,
+            review_count=review_count,
+            effective_view_count=effective_count,
+        )
+
+    async def register_product_view(
+        self,
+        product_id: int,
+        current_user: Optional[User] = None,
+        anonymous_viewer_id: Optional[UUID] = None,
+    ) -> ProductViewResponse:
+        """
+        Registers a product view with 24h deduplication in Redis.
+        Excludes seller views on own products and admin moderation views.
+        Reuses canonical visibility rules to prevent existence leaks.
+        Fails open gracefully if Redis is unavailable.
+        """
+        product = await self.product_repo.get_by_id(product_id)
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found.",
+            )
+
+        await self.verify_product_visibility(product, current_user=current_user)
+
+        # Exclusions:
+        # A. Seller viewing their own product
+        # B. Admin viewing any product
+        is_seller = current_user is not None and current_user.user_id == product.seller_id
+        is_admin = current_user is not None and current_user.role == "ADMIN"
+
+        viewer_token = build_viewer_token(
+            current_user.user_id if current_user else None,
+            anonymous_viewer_id,
+        )
+
+        should_count = (not is_seller) and (not is_admin) and (viewer_token is not None)
+
+        try:
+            redis = get_redis_client()
+            if redis is None:
+                # Redis unavailable -> fail-open: return DB count, counted=False
+                return ProductViewResponse(view_count=product.view_count, counted=False)
+
+            if not should_count:
+                # Excluded from incrementing -> read effective count and return counted=False
+                count = await get_effective_view_count_from_redis(
+                    redis, product.product_id, product.view_count
+                )
+                return ProductViewResponse(view_count=count, counted=False)
+
+            # Eligible unique viewer -> atomically register in Redis
+            count, counted = await register_view_in_redis(
+                redis=redis,
+                product_id=product.product_id,
+                viewer_token=viewer_token,
+                db_view_count=product.view_count,
+                dedupe_ttl=settings.PRODUCT_VIEW_DEDUPE_SECONDS,
+            )
+            return ProductViewResponse(view_count=count, counted=counted)
+        except Exception as e:
+            logger.warning(
+                "[register_product_view] Redis error for product %s (%s): %s",
+                product_id,
+                type(e).__name__,
+                e,
+            )
+            # Fail-open: do not disrupt product browsing
+            return ProductViewResponse(view_count=product.view_count, counted=False)
 
     async def list_public_products(
         self,
@@ -245,13 +439,17 @@ class ProductService:
                     detail="Invalid pagination cursor.",
                 ) from e
 
+        normalized_query = None
+        if search_query and search_query.strip():
+            normalized_query = unicodedata.normalize("NFC", search_query.strip())
+
         items, has_more, next_cursor_tuple = await self.product_repo.list_public(
             category_id=category_id,
             seller_id=seller_id,
             listing_type=listing_type,
             min_price=min_price,
             max_price=max_price,
-            search_query=search_query,
+            search_query=normalized_query,
             limit=limit,
             cursor=cursor_tuple,
         )
@@ -262,8 +460,20 @@ class ProductService:
             else None
         )
 
+        effective_counts: dict[int, int] = {}
+        if items:
+            db_counts = {p.product_id: p.view_count for p in items}
+            redis = get_redis_client()
+            effective_counts = await get_effective_view_counts_batch(redis, db_counts)
+
         return ProductListResponse(
-            items=[format_product_summary(p) for p in items],
+            items=[
+                format_product_summary(
+                    p,
+                    effective_view_count=effective_counts.get(p.product_id, p.view_count),
+                )
+                for p in items
+            ],
             next_cursor=next_cursor_str,
             has_more=has_more,
         )
@@ -298,8 +508,26 @@ class ProductService:
             else None
         )
 
+        auction_pids = [p.product_id for p in items if p.listing_type == "AUCTION"]
+        auction_map = {}
+        if auction_pids:
+            auction_map = await self.auction_repo.get_active_or_latest_by_product_ids(auction_pids)
+
+        effective_counts: dict[int, int] = {}
+        if items:
+            db_counts = {p.product_id: p.view_count for p in items}
+            redis = get_redis_client()
+            effective_counts = await get_effective_view_counts_batch(redis, db_counts)
+
         return SellerProductListResponse(
-            items=[format_seller_product(p) for p in items],
+            items=[
+                format_seller_product(
+                    p,
+                    auction=auction_map.get(p.product_id),
+                    effective_view_count=effective_counts.get(p.product_id, p.view_count),
+                )
+                for p in items
+            ],
             next_cursor=next_cursor_str,
             has_more=has_more,
         )

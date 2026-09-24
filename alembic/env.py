@@ -18,12 +18,21 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 from app.db.base import Base
 from app.modules.users.models import User, UserAuthIdentity  # noqa: F401
+from app.modules.users.capability_models import UserCapabilityRestriction  # noqa: F401
 from app.modules.categories.models import Category  # noqa: F401
 from app.modules.products.models import Product, ProductImage  # noqa: F401
 from app.modules.favorites.models import Favorite  # noqa: F401
 from app.modules.orders.models import Order, OrderItem, OrderStatusHistory  # noqa: F401
 from app.modules.auctions.models import Auction, AuctionBid  # noqa: F401
+from app.modules.reviews.models import Review  # noqa: F401
+from app.modules.conversations.models import Conversation, Message  # noqa: F401
+from app.modules.daily_needs.models import DailyNeed, DailyJournalCheckin  # noqa: F401
+from app.modules.notifications.models import Notification  # noqa: F401
+from app.modules.reports.models import Report  # noqa: F401
+from app.modules.community_moments.models import CommunityMoment  # noqa: F401
+from app.modules.feedback.models import SiteFeedback  # noqa: F401
 target_metadata = Base.metadata
+
 
 # other values from the config, defined by the needs of env.py, can be acquired:
 # my_important_option = config.get_main_option("my_important_option")

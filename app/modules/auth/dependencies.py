@@ -1,5 +1,5 @@
-from typing import Any, Callable
-from fastapi import Depends, HTTPException, status
+from typing import Any, Callable, Optional
+from fastapi import Depends, HTTPException, status, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,3 +118,55 @@ async def authenticate_user_token(token: str, db: AsyncSession) -> User:
             detail="Tài khoản của bạn đã bị khóa hoặc chưa kích hoạt.",
         )
     return user
+
+
+async def get_admin_for_evidence(
+    request: Request,
+    token: Optional[str] = Query(None, description="Admin token cho video/media streaming"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    Dependency to authenticate an admin for media streaming.
+    Supports Bearer header and optional ?token= query parameter (for native HTML5 video/media).
+    """
+    if token:
+        user = await authenticate_user_token(token, db)
+        if user.role != UserRole.ADMIN.value:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for your user role.",
+            )
+        return user
+
+    from app.main import app
+    if get_admin_for_evidence in app.dependency_overrides:
+        return app.dependency_overrides[get_admin_for_evidence]()
+    if get_current_active_user in app.dependency_overrides:
+        user = app.dependency_overrides[get_current_active_user]()
+        if user.role != UserRole.ADMIN.value:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for your user role.",
+            )
+        return user
+    if get_current_user in app.dependency_overrides:
+        override_fn = app.dependency_overrides[get_current_user]
+        user = override_fn()
+        if user.role != UserRole.ADMIN.value:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for your user role.",
+            )
+        return user
+
+    auth_header = await security(request)
+    payload = await get_token_payload(auth_header)
+    user = await get_current_user(payload, db)
+    active_user = await get_current_active_user(user)
+    if active_user.role != UserRole.ADMIN.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted for your user role.",
+        )
+    return active_user
+

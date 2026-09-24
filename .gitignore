@@ -126,3 +126,9 @@ service-account*.json
 # IDE / Editor settings
 .vscode/
 .idea/
+
+# Local scratch
+scratch/
+
+# Local database backups
+backups/

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,6 +21,22 @@ from app.modules.favorites.router import router as favorites_router
 from app.modules.orders.router import router as orders_router
 from app.modules.orders.websocket import ws_router as orders_ws_router
 from app.modules.auctions.router import router as auctions_router, ws_router as auctions_ws_router
+from app.modules.reviews.router import router as reviews_router
+from app.modules.conversations.router import router as conversations_router
+from app.modules.daily_needs.router import router as daily_needs_router
+from app.modules.notifications.router import router as notifications_router
+from app.modules.reports.admin_router import (
+    router as admin_reports_router,
+    admin_users_router,
+)
+from app.modules.reports.router import router as reports_router
+from app.modules.community_moments.router import router as community_moments_router
+from app.modules.community_moments.admin_router import (
+    router as admin_community_moments_router,
+)
+from app.modules.feedback.router import router as feedback_router
+from app.modules.feedback.admin_router import router as admin_feedback_router
+
 
 logger = logging.getLogger("app")
 
@@ -56,6 +73,17 @@ app.include_router(orders_router, prefix=settings.API_V1_STR)
 app.include_router(orders_ws_router)
 app.include_router(auctions_router, prefix=settings.API_V1_STR)
 app.include_router(auctions_ws_router)
+app.include_router(reviews_router, prefix=settings.API_V1_STR)
+app.include_router(conversations_router, prefix=settings.API_V1_STR)
+app.include_router(daily_needs_router, prefix=settings.API_V1_STR)
+app.include_router(notifications_router, prefix=settings.API_V1_STR)
+app.include_router(reports_router, prefix=settings.API_V1_STR)
+app.include_router(admin_reports_router, prefix=settings.API_V1_STR)
+app.include_router(admin_users_router, prefix=settings.API_V1_STR)
+app.include_router(community_moments_router, prefix=settings.API_V1_STR)
+app.include_router(admin_community_moments_router, prefix=settings.API_V1_STR)
+app.include_router(feedback_router, prefix=settings.API_V1_STR)
+app.include_router(admin_feedback_router, prefix=settings.API_V1_STR)
 
 @app.get("/health")
 async def health_check(
@@ -71,8 +99,9 @@ async def health_check(
 
     redis_status = "down"
     try:
-        if await redis_conn.ping():
-            redis_status = "up"
+        if redis_conn is not None:
+            if await asyncio.wait_for(redis_conn.ping(), timeout=1.0):
+                redis_status = "up"
     except Exception as e:
         logger.error(f"Redis health check failed: {e}")
 

@@ -17,6 +17,7 @@ class FavoriteProductResponse(BaseModel):
     listing_type: str
     status: str
     available_stock: int
+    view_count: int
     thumbnail_url: Optional[str] = None
     category: CategorySummary
     seller: SellerSummary

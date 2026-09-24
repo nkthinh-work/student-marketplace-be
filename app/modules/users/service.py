@@ -8,6 +8,7 @@ from app.core.banks import get_bank_by_bin, resolve_bank_bin
 from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.orders.models import Order, OrderItem, OrderStatus
 from app.modules.products.models import Product, ProductStatus, ListingType
+from app.modules.reviews.models import Review
 from app.modules.users.models import User, UserStatus
 from app.modules.users.repository import UserRepository
 from app.modules.users.schemas import (
@@ -17,6 +18,7 @@ from app.modules.users.schemas import (
     SocialLinkItem,
     SoldProductListResponse,
     SoldProductSummary,
+    SoldProductTransactionReview,
     UserUpdate,
 )
 
@@ -100,6 +102,17 @@ class UserService:
             )
         ) or 0
 
+        # Query rating average and review count
+        review_agg = await self.db.execute(
+            select(
+                func.avg(Review.rating),
+                func.count(Review.review_id),
+            ).where(Review.reviewee_id == user.user_id)
+        )
+        avg_val, cnt_val = review_agg.one()
+        rating_average = round(float(avg_val), 1) if avg_val is not None else None
+        review_count = int(cnt_val) if cnt_val is not None else 0
+
         # Public phone is revealed ONLY if user explicitly checked show_phone_publicly
         phone = user.phone if (user.show_phone_publicly and user.phone) else None
 
@@ -122,6 +135,8 @@ class UserService:
             created_at=user.created_at,
             active_listing_count=int(active_listing_count),
             completed_sold_count=int(completed_sold_count),
+            rating_average=rating_average,
+            review_count=review_count,
         )
 
     async def get_sold_products(self, user_id: int) -> SoldProductListResponse:
@@ -155,16 +170,67 @@ class UserService:
         )
         results = await self.db.execute(stmt)
         rows = results.all()
-        items = [
-            SoldProductSummary(
-                product_id=r.product_id,
-                product_title=r.product_title,
-                product_image_url=r.product_image_url,
-                total_sold_quantity=int(r.total_sold_quantity),
-                last_sold_at=r.last_sold_at,
+        if not rows:
+            return SoldProductListResponse(items=[], total_count=0)
+
+        product_ids = [r.product_id for r in rows]
+
+        # Single batch query to fetch all reviews for these sold products (No N+1)
+        review_stmt = (
+            select(
+                OrderItem.product_id,
+                Review.rating,
+                Review.comment,
+                Review.created_at,
             )
-            for r in rows
-        ]
+            .select_from(Review)
+            .join(Order, Order.order_id == Review.order_id)
+            .join(OrderItem, OrderItem.order_id == Order.order_id)
+            .where(
+                Order.seller_id == user_id,
+                Order.status == OrderStatus.COMPLETED.value,
+                OrderItem.product_id.in_(product_ids),
+            )
+            .order_by(Review.created_at.desc(), Review.review_id.desc())
+        )
+        review_rows = (await self.db.execute(review_stmt)).all()
+
+        reviews_by_product: dict[int, list[SoldProductTransactionReview]] = {}
+        for r_row in review_rows:
+            p_id = r_row.product_id
+            if p_id not in reviews_by_product:
+                reviews_by_product[p_id] = []
+            reviews_by_product[p_id].append(
+                SoldProductTransactionReview(
+                    rating=r_row.rating,
+                    comment=r_row.comment,
+                    created_at=r_row.created_at,
+                    verified_transaction=True,
+                )
+            )
+
+        items = []
+        for r in rows:
+            prod_reviews = reviews_by_product.get(r.product_id, [])
+            rev_count = len(prod_reviews)
+            if rev_count > 0:
+                avg_rating = round(sum(pr.rating for pr in prod_reviews) / rev_count, 1)
+            else:
+                avg_rating = None
+
+            items.append(
+                SoldProductSummary(
+                    product_id=r.product_id,
+                    product_title=r.product_title,
+                    product_image_url=r.product_image_url,
+                    total_sold_quantity=int(r.total_sold_quantity),
+                    last_sold_at=r.last_sold_at,
+                    rating_average=avg_rating,
+                    review_count=rev_count,
+                    recent_reviews=prod_reviews[:2],
+                )
+            )
+
         return SoldProductListResponse(items=items, total_count=len(items))
 
     async def get_bank_account(self, user: User) -> Optional[BankAccountResponse]:

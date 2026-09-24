@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
+import time
 from typing import Optional
 
 from fastapi import HTTPException, status
@@ -25,12 +26,35 @@ from app.modules.auctions.schemas import (
     anonymize_name,
 )
 from app.modules.auctions.websocket import publish_auction_event
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.repository import NotificationRepository
+from app.modules.notifications.schemas import NotificationResponse
 from app.modules.orders.models import Order
 from app.modules.orders.service import OrderService
-from app.modules.products.models import ListingType, Product, ProductStatus
+from app.modules.orders.websocket import publish_user_event
+from app.modules.products.models import ListingType, Product, ProductStatus, ProductModerationStatus
+from app.modules.users.capability_service import CapabilityService
 from app.modules.users.models import User, UserStatus
+from app.workers.retry import SweepResult, execute_with_retry
 
 logger = logging.getLogger("app.auctions")
+
+
+async def safe_publish_user_notification(
+    user_id: int, notification: NotificationResponse, context_msg: str
+) -> None:
+    try:
+        await publish_user_event(
+            user_id,
+            {
+                "type": "NOTIFICATION_CREATED",
+                "notification": notification.model_dump(mode="json"),
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to publish notification realtime to user {user_id} ({context_msg}): {e}"
+        )
 
 
 def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
@@ -137,6 +161,15 @@ class AuctionService:
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        if not await CapabilityService(self.db).can_user_sell(seller.user_id, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "SELL_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền bán hàng.",
+                },
+            )
+
         # 1. Lock Product FOR UPDATE
         stmt = (
             select(Product)
@@ -159,6 +192,12 @@ class AuctionService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Chỉ có thể bật đấu giá cho sản phẩm đang ở trạng thái AVAILABLE.",
+            )
+
+        if product.moderation_status == ProductModerationStatus.BLOCKED.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể tạo đấu giá cho sản phẩm đang bị quản trị viên ẩn.",
             )
 
         if product.stock != 1 or product.reserved_stock != 0:
@@ -319,6 +358,15 @@ class AuctionService:
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        if not await CapabilityService(self.db).can_user_buy(bidder.user_id, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "BUY_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền mua hàng.",
+                },
+            )
+
         # 1. Lock Auction FOR UPDATE
         auction = await self.auction_repo.get_auction_by_id(auction_id, for_update=True)
         if not auction:
@@ -340,6 +388,16 @@ class AuctionService:
                 detail="Phiên đấu giá chưa bắt đầu hoặc đã kết thúc.",
             )
 
+        # Fresh product moderation check to close race with concurrent PRODUCT_HIDE
+        stmt_p = select(Product.moderation_status, Product.is_deleted).where(Product.product_id == auction.product_id)
+        res_p = await self.db.execute(stmt_p)
+        prod_row = res_p.one_or_none()
+        if not prod_row or prod_row.is_deleted or prod_row.moderation_status == ProductModerationStatus.BLOCKED.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sản phẩm đấu giá đã bị ẩn hoặc không còn khả dụng.",
+            )
+
         if now_utc >= auction.ends_at:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -352,10 +410,21 @@ class AuctionService:
                 detail="Người bán không được tự đặt giá sản phẩm của chính mình.",
             )
 
-        highest_bid = await self.auction_repo.get_highest_bid(auction.auction_id)
+        seller = await self.db.get(User, auction.product.seller_id)
+        if not seller or seller.status != UserStatus.ACTIVE.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Người bán hiện đang bị khóa tài khoản hoặc không hoạt động.",
+            )
 
-        if highest_bid:
-            min_required = highest_bid.amount + auction.bid_step
+        # 1. Capture previous highest bid and bidder BEFORE inserting the new bid
+        previous_highest_bid = await self.auction_repo.get_highest_bid(auction.auction_id)
+        previous_highest_bidder_id = (
+            previous_highest_bid.bidder_id if previous_highest_bid else None
+        )
+
+        if previous_highest_bid:
+            min_required = previous_highest_bid.amount + auction.bid_step
         else:
             # First bid rule: amount > 0 and amount >= starting_price
             min_required = max(auction.starting_price, Decimal(1))
@@ -366,6 +435,7 @@ class AuctionService:
                 detail=f"Giá đặt phải tối thiểu là {int(min_required):,} đ.",
             )
 
+        # 2. Insert new bid
         bid = AuctionBid(
             auction_id=auction.auction_id,
             bidder_id=bidder.user_id,
@@ -373,23 +443,69 @@ class AuctionService:
             created_at=now_utc,
         )
         created_bid = await self.auction_repo.create_bid(bid)
-        bid_count = (await self.auction_repo.count_bids(auction.auction_id))
+        bid_count = await self.auction_repo.count_bids(auction.auction_id)
 
+        # 3. Pre-resolve plain data for notifications before commit (avoid lazy-load post-commit)
+        seller_id = auction.product.seller_id
+        product_title = auction.product.title
+        auction_id_val = auction.auction_id
+        bid_amount_formatted = f"{int(created_bid.amount):,} đ"
+        bidder_display_name = bidder.full_name
+
+        notification_repo = NotificationRepository(self.db)
+
+        # Seller notification: AUCTION_BID
+        n_seller = await notification_repo.create(
+            user_id=seller_id,
+            type=NotificationType.AUCTION_BID.value,
+            title="Có lượt đấu giá mới",
+            body=f"{bidder_display_name} vừa đặt giá {bid_amount_formatted} cho {product_title}.",
+            ref_type="AUCTION",
+            ref_id=auction_id_val,
+        )
+
+        # Displaced bidder notification: AUCTION_OUTBID (only if previous bidder existed and != current bidder)
+        n_outbid = None
+        if previous_highest_bidder_id is not None and previous_highest_bidder_id != bidder.user_id:
+            n_outbid = await notification_repo.create(
+                user_id=previous_highest_bidder_id,
+                type=NotificationType.AUCTION_OUTBID.value,
+                title="Bạn đã bị vượt giá",
+                body=f"Mức giá cao nhất mới của {product_title} là {bid_amount_formatted}.",
+                ref_type="AUCTION",
+                ref_id=auction_id_val,
+            )
+
+        # 4. Flush and construct immutable DTO snapshots BEFORE commit
+        await self.db.flush()
+        seller_snapshot = NotificationResponse.model_validate(n_seller)
+        outbid_snapshot = NotificationResponse.model_validate(n_outbid) if n_outbid else None
+
+        # 5. Commit transaction
         await self.db.commit()
 
-        # Publish event
-        await publish_auction_event(
-            auction.auction_id,
-            {
-                "event": "BID_PLACED",
-                "auction_id": auction.auction_id,
-                "current_price": str(created_bid.amount),
-                "highest_bid": str(created_bid.amount),
-                "bid_count": bid_count,
-                "minimum_next_bid": str(created_bid.amount + auction.bid_step),
-                "server_time": now_utc.isoformat(),
-            },
-        )
+        # 6. Independent best-effort post-commit realtime delivery
+        try:
+            await publish_auction_event(
+                auction_id_val,
+                {
+                    "event": "BID_PLACED",
+                    "auction_id": auction_id_val,
+                    "current_price": str(created_bid.amount),
+                    "highest_bid": str(created_bid.amount),
+                    "bid_count": bid_count,
+                    "minimum_next_bid": str(created_bid.amount + auction.bid_step),
+                    "server_time": now_utc.isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to publish BID_PLACED event for auction {auction_id_val}: {e}")
+
+        await safe_publish_user_notification(seller_id, seller_snapshot, f"bid on auction {auction_id_val}")
+        if outbid_snapshot and previous_highest_bidder_id:
+            await safe_publish_user_notification(
+                previous_highest_bidder_id, outbid_snapshot, f"outbid on auction {auction_id_val}"
+            )
 
         return AuctionBidResponse(
             bid_id=created_bid.bid_id,
@@ -427,20 +543,50 @@ class AuctionService:
         if not auction:
             return None
 
+        has_transitioned = False
+        notification_repo = NotificationRepository(self.db)
+
         # If scheduled and starts_at <= now, activate or directly end if expired
         if auction.status == AuctionStatus.SCHEDULED.value:
             if auction.ends_at <= now_utc:
+                seller_id = auction.product.seller_id
+                product_title = auction.product.title
+                auction_id_val = auction.auction_id
+
                 auction.status = AuctionStatus.ENDED.value
                 auction.winner_id = None
                 auction.final_price = None
                 auction.winner_checkout_deadline = None
+                has_transitioned = True
+
+                n_seller = await notification_repo.create(
+                    user_id=seller_id,
+                    type=NotificationType.AUCTION_ENDED.value,
+                    title="Đấu giá đã kết thúc",
+                    body=f"Phiên đấu giá {product_title} đã kết thúc mà chưa có người thắng.",
+                    ref_type="AUCTION",
+                    ref_id=auction_id_val,
+                )
+                await self.db.flush()
+                seller_snapshot = NotificationResponse.model_validate(n_seller)
+
                 await self.db.commit()
+
+                await safe_publish_user_notification(
+                    seller_id, seller_snapshot, f"expired scheduled auction {auction_id_val}"
+                )
+                setattr(auction, "_transitioned", has_transitioned)
                 return auction
             elif auction.starts_at <= now_utc:
                 auction.status = AuctionStatus.ACTIVE.value
+                has_transitioned = True
                 await self.db.commit()
 
         if auction.status == AuctionStatus.ACTIVE.value and auction.ends_at <= now_utc:
+            seller_id = auction.product.seller_id
+            product_title = auction.product.title
+            auction_id_val = auction.auction_id
+
             highest_bid = await self.auction_repo.get_highest_bid(auction.auction_id)
 
             if not highest_bid:
@@ -448,15 +594,28 @@ class AuctionService:
                 auction.winner_id = None
                 auction.final_price = None
                 auction.winner_checkout_deadline = None
+                has_transitioned = True
+
+                n_seller = await notification_repo.create(
+                    user_id=seller_id,
+                    type=NotificationType.AUCTION_ENDED.value,
+                    title="Đấu giá đã kết thúc",
+                    body=f"Phiên đấu giá {product_title} đã kết thúc mà chưa có người thắng.",
+                    ref_type="AUCTION",
+                    ref_id=auction_id_val,
+                )
+                await self.db.flush()
+                seller_snapshot = NotificationResponse.model_validate(n_seller)
+
                 await self.db.commit()
 
                 # Best-effort publish
                 try:
                     await publish_auction_event(
-                        auction.auction_id,
+                        auction_id_val,
                         {
                             "event": "AUCTION_ENDED",
-                            "auction_id": auction.auction_id,
+                            "auction_id": auction_id_val,
                             "status": "ENDED",
                             "final_price": None,
                             "has_winner": False,
@@ -464,9 +623,13 @@ class AuctionService:
                         },
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to publish AUCTION_ENDED event for auction {auction_id}: {e}")
+                    logger.warning(f"Failed to publish AUCTION_ENDED event for auction {auction_id_val}: {e}")
 
-                logger.info(f"Closed auction ID {auction_id} with no bids.")
+                await safe_publish_user_notification(
+                    seller_id, seller_snapshot, f"ended no-bid auction {auction_id_val}"
+                )
+
+                logger.info(f"Closed auction ID {auction_id_val} with no bids.")
             else:
                 # Lock Product FOR UPDATE
                 stmt_prod = select(Product).where(Product.product_id == auction.product_id).with_for_update()
@@ -482,15 +645,44 @@ class AuctionService:
 
                     # Reserve stock for winner
                     product.reserved_stock = 1
+                    has_transitioned = True
+
+                    final_price_formatted = f"{int(highest_bid.amount):,} đ"
+                    winner_id = highest_bid.bidder_id
+
+                    # Create seller notification: AUCTION_ENDED
+                    n_seller = await notification_repo.create(
+                        user_id=seller_id,
+                        type=NotificationType.AUCTION_ENDED.value,
+                        title="Đấu giá đã kết thúc",
+                        body=f"{product_title} đã kết thúc với giá {final_price_formatted}.",
+                        ref_type="AUCTION",
+                        ref_id=auction_id_val,
+                    )
+
+                    # Create winner notification: AUCTION_WON
+                    n_winner = await notification_repo.create(
+                        user_id=winner_id,
+                        type=NotificationType.AUCTION_WON.value,
+                        title="Bạn đã thắng đấu giá",
+                        body=f"Bạn đã thắng {product_title} với giá {final_price_formatted}.",
+                        ref_type="AUCTION",
+                        ref_id=auction_id_val,
+                    )
+
+                    await self.db.flush()
+                    seller_snapshot = NotificationResponse.model_validate(n_seller)
+                    winner_snapshot = NotificationResponse.model_validate(n_winner)
+
                     await self.db.commit()
 
-                    # Best-effort publish
+                    # Independent post-commit realtime delivery
                     try:
                         await publish_auction_event(
-                            auction.auction_id,
+                            auction_id_val,
                             {
                                 "event": "AUCTION_ENDED",
-                                "auction_id": auction.auction_id,
+                                "auction_id": auction_id_val,
                                 "status": "ENDED",
                                 "final_price": str(highest_bid.amount),
                                 "has_winner": True,
@@ -498,17 +690,143 @@ class AuctionService:
                             },
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to publish AUCTION_ENDED event for auction {auction_id}: {e}")
+                        logger.warning(f"Failed to publish AUCTION_ENDED event for auction {auction_id_val}: {e}")
 
-                    logger.info(f"Closed auction ID {auction_id} with winner {highest_bid.bidder_id}, price {highest_bid.amount}.")
+                    await safe_publish_user_notification(
+                        seller_id, seller_snapshot, f"ended auction seller {auction_id_val}"
+                    )
+                    await safe_publish_user_notification(
+                        winner_id, winner_snapshot, f"ended auction winner {auction_id_val}"
+                    )
+
+                    logger.info(f"Closed auction ID {auction_id_val} with winner {highest_bid.bidder_id}, price {highest_bid.amount}.")
                 elif product and product.stock == 1 and product.reserved_stock == 1 and auction.winner_id == highest_bid.bidder_id:
                     # Already reserved
                     auction.status = AuctionStatus.ENDED.value
                     await self.db.commit()
                 else:
-                    logger.error(f"Cannot reserve stock for auction winner on auction {auction_id} (stock invariant violation).")
+                    logger.error(f"Cannot reserve stock for auction winner on auction {auction_id_val} (stock invariant violation).")
 
+        setattr(auction, "_transitioned", has_transitioned)
         return auction
+
+    async def activate_or_end_single_scheduled_auction(
+        self, auction_id: int, now_utc: Optional[datetime] = None
+    ) -> bool:
+        """
+        Activates a SCHEDULED auction whose starts_at <= NOW(),
+        or directly ends it if ends_at <= NOW() without bids.
+        Returns True if a state transition occurred (CHANGED), False if NO_OP.
+        """
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        auction = await self.auction_repo.get_auction_by_id(auction_id, for_update=True)
+        if not auction or auction.status != AuctionStatus.SCHEDULED.value:
+            return False
+
+        if auction.ends_at <= now_utc:
+            seller_id = auction.product.seller_id
+            product_title = auction.product.title
+            auction_id_val = auction.auction_id
+
+            auction.status = AuctionStatus.ENDED.value
+            auction.winner_id = None
+            auction.final_price = None
+            auction.winner_checkout_deadline = None
+
+            notification_repo = NotificationRepository(self.db)
+            n_seller = await notification_repo.create(
+                user_id=seller_id,
+                type=NotificationType.AUCTION_ENDED.value,
+                title="Đấu giá đã kết thúc",
+                body=f"Phiên đấu giá {product_title} đã kết thúc mà chưa có người thắng.",
+                ref_type="AUCTION",
+                ref_id=auction_id_val,
+            )
+            await self.db.flush()
+            seller_snapshot = NotificationResponse.model_validate(n_seller)
+            await self.db.commit()
+
+            await safe_publish_user_notification(
+                seller_id, seller_snapshot, f"sweep expired scheduled auction {auction_id_val}"
+            )
+            logger.info(f"Directly ended expired scheduled auction ID {auction_id_val}")
+            return True
+
+        elif auction.starts_at <= now_utc:
+            auction.status = AuctionStatus.ACTIVE.value
+            await self.db.commit()
+            try:
+                await publish_auction_event(
+                    auction.auction_id,
+                    {
+                        "event": "AUCTION_STARTED",
+                        "auction_id": auction.auction_id,
+                        "current_price": str(auction.starting_price),
+                        "bid_count": 0,
+                        "server_time": now_utc.isoformat(),
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish AUCTION_STARTED event for auction {auction.auction_id}: {e}")
+
+            logger.info(f"Activated scheduled auction ID {auction_id}")
+            return True
+
+        return False
+
+    async def close_single_auction_sweep(
+        self, auction_id: int, now_utc: Optional[datetime] = None
+    ) -> bool:
+        """
+        Processes an expired active auction for the worker sweep.
+        Returns True if a state transition occurred (CHANGED), False if NO_OP.
+        """
+        auction = await self.close_single_auction_if_expired(auction_id, now_utc=now_utc)
+        return bool(auction and getattr(auction, "_transitioned", False))
+
+    async def timeout_single_winner_checkout(
+        self, auction_id: int, now_utc: Optional[datetime] = None
+    ) -> bool:
+        """
+        Releases expired winner reservation idempotently inside an isolated transaction:
+        1. Lock Auction FOR UPDATE.
+        2. Revalidate auction is ENDED and winner_checkout_deadline <= now_utc.
+        3. Revalidate no order exists for this auction.
+        4. Lock Product FOR UPDATE.
+        5. If product.reserved_stock > 0: set reserved_stock = 0, commit, return True (CHANGED).
+        6. If conditions not met or already released: return False (NO_OP).
+        """
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        auction = await self.auction_repo.get_auction_by_id(auction_id, for_update=True)
+        if (
+            not auction
+            or auction.status != AuctionStatus.ENDED.value
+            or not auction.winner_checkout_deadline
+            or auction.winner_checkout_deadline > now_utc
+        ):
+            return False
+
+        has_order = await self.auction_repo.has_order_for_auction(auction.auction_id)
+        if has_order:
+            return False
+
+        stmt_prod = select(Product).where(Product.product_id == auction.product_id).with_for_update()
+        res_prod = await self.db.execute(stmt_prod)
+        product = res_prod.scalar_one_or_none()
+
+        if not product or product.reserved_stock < 1:
+            return False
+
+        product.reserved_stock = 0
+        await self.db.commit()
+        logger.info(
+            f"Released expired winner reservation on product {product.product_id} from auction {auction_id}."
+        )
+        return True
 
     async def get_auction_detail(
         self, auction_id: int, current_user: Optional[User] = None
@@ -640,6 +958,15 @@ class AuctionService:
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        if not await CapabilityService(self.db).can_user_buy(winner.user_id, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "BUY_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền mua hàng.",
+                },
+            )
+
         # 1. Close single auction if expired, obtaining authoritative row lock and status
         auction = await self.close_single_auction_if_expired(auction_id, now_utc)
         if not auction:
@@ -691,6 +1018,12 @@ class AuctionService:
                 detail="Sản phẩm không tồn tại.",
             )
 
+        if product.moderation_status == ProductModerationStatus.BLOCKED.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sản phẩm đã bị quản trị viên ẩn hoặc không còn khả dụng.",
+            )
+
         # Check single-order-per-auction guarantee
         existing_order_stmt = select(Order).where(Order.auction_id == auction.auction_id).limit(1)
         res_order = await self.db.execute(existing_order_stmt)
@@ -723,6 +1056,7 @@ class AuctionService:
             from app.modules.orders.websocket import (
                 publish_auction_winner_checked_out,
                 publish_order_created,
+                publish_user_event,
             )
             await publish_auction_winner_checked_out(
                 seller_id=product.seller_id,
@@ -733,6 +1067,14 @@ class AuctionService:
                 seller_id=product.seller_id,
                 order_id=created_order.order_id,
             )
+            if hasattr(created_order, "_notification_snapshot"):
+                await publish_user_event(
+                    product.seller_id,
+                    {
+                        "type": "NOTIFICATION_CREATED",
+                        "notification": created_order._notification_snapshot.model_dump(mode="json"),
+                    },
+                )
         except Exception as e:
             logger.error(f"Failed to publish winner checkout event: {e}")
 
@@ -779,126 +1121,175 @@ class AuctionService:
 # WORKER PERIODIC SWEEPS
 # ==============================================================================
 
-async def run_auction_scheduled_sweep(session_factory: async_sessionmaker[AsyncSession]) -> int:
+async def run_auction_scheduled_sweep(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> SweepResult:
     """Activates SCHEDULED auctions whose starts_at <= NOW(), or finalizes them if already expired."""
+    start_time = time.monotonic()
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     async with session_factory() as read_session:
         repo = AuctionRepository(read_session)
-        candidate_ids = await repo.get_scheduled_auctions_to_sweep(now_utc=now_utc, limit=50)
+        candidate_ids = await repo.get_scheduled_auctions_to_sweep(
+            now_utc=now_utc, limit=settings.WORKER_BATCH_SIZE
+        )
 
     if not candidate_ids:
-        return 0
+        return SweepResult(changed=0, candidates=0, no_op=0, failed=0)
 
-    processed_count = 0
+    changed_count = 0
+    noop_count = 0
+    failed_count = 0
+
     for auction_id in candidate_ids:
         try:
-            async with session_factory() as tx_session:
-                tx_repo = AuctionRepository(tx_session)
-                auction = await tx_repo.get_auction_by_id(auction_id, for_update=True)
-                if not auction or auction.status != AuctionStatus.SCHEDULED.value:
-                    continue
-
-                if auction.ends_at <= now_utc:
-                    # Expired while scheduled -> directly ENDED with no winner
-                    auction.status = AuctionStatus.ENDED.value
-                    auction.winner_id = None
-                    auction.final_price = None
-                    auction.winner_checkout_deadline = None
-                    await tx_session.commit()
-                    logger.info(f"Directly ended expired scheduled auction ID {auction_id}")
-                    processed_count += 1
-                elif auction.starts_at <= now_utc:
-                    auction.status = AuctionStatus.ACTIVE.value
-                    await tx_session.commit()
-                    await publish_auction_event(
-                        auction.auction_id,
-                        {
-                            "event": "AUCTION_STARTED",
-                            "auction_id": auction.auction_id,
-                            "current_price": str(auction.starting_price),
-                            "bid_count": 0,
-                            "server_time": now_utc.isoformat(),
-                        },
+            async def _activate():
+                async with session_factory() as tx_session:
+                    service = AuctionService(tx_session)
+                    return await service.activate_or_end_single_scheduled_auction(
+                        auction_id, now_utc=now_utc
                     )
-                    logger.info(f"Activated scheduled auction ID {auction_id}")
-                    processed_count += 1
+
+            changed = await execute_with_retry(
+                _activate,
+                max_retries=settings.WORKER_MAX_RETRIES,
+                backoff_seconds=settings.WORKER_RETRY_BACKOFF_SECONDS,
+                operation_name=f"auction_scheduled_sweep:{auction_id}",
+            )
+            if changed:
+                changed_count += 1
+            else:
+                noop_count += 1
         except Exception as e:
-            logger.error(f"Error during scheduled auction sweep for auction {auction_id}: {e}", exc_info=True)
+            failed_count += 1
+            logger.error(
+                f"[run_auction_scheduled_sweep] Error processing auction {auction_id} ({type(e).__name__}): {e}"
+            )
 
-    return processed_count
+    elapsed_ms = (time.monotonic() - start_time) * 1000
+    logger.info(
+        f"[run_auction_scheduled_sweep] completed in {elapsed_ms:.1f}ms: "
+        f"candidates={len(candidate_ids)}, changed={changed_count}, no_op={noop_count}, failed={failed_count}"
+    )
+    return SweepResult(
+        changed=changed_count,
+        candidates=len(candidate_ids),
+        no_op=noop_count,
+        failed=failed_count,
+    )
 
 
-async def run_auction_close_sweep(session_factory: async_sessionmaker[AsyncSession]) -> int:
+async def run_auction_close_sweep(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> SweepResult:
     """Closes ACTIVE auctions whose ends_at <= NOW(), determines winner and reserves inventory."""
+    start_time = time.monotonic()
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     async with session_factory() as read_session:
         repo = AuctionRepository(read_session)
-        candidate_ids = await repo.get_active_auctions_to_close(now_utc=now_utc, limit=50)
+        candidate_ids = await repo.get_active_auctions_to_close(
+            now_utc=now_utc, limit=settings.WORKER_BATCH_SIZE
+        )
 
     if not candidate_ids:
-        return 0
+        return SweepResult(changed=0, candidates=0, no_op=0, failed=0)
 
-    closed_count = 0
+    changed_count = 0
+    noop_count = 0
+    failed_count = 0
+
     for auction_id in candidate_ids:
         try:
-            async with session_factory() as tx_session:
-                service = AuctionService(tx_session)
-                auc = await service.close_single_auction_if_expired(auction_id, now_utc=now_utc)
-                if auc and auc.status == AuctionStatus.ENDED.value:
-                    await tx_session.commit()
-                    closed_count += 1
+            async def _close():
+                async with session_factory() as tx_session:
+                    service = AuctionService(tx_session)
+                    return await service.close_single_auction_sweep(
+                        auction_id, now_utc=now_utc
+                    )
+
+            changed = await execute_with_retry(
+                _close,
+                max_retries=settings.WORKER_MAX_RETRIES,
+                backoff_seconds=settings.WORKER_RETRY_BACKOFF_SECONDS,
+                operation_name=f"auction_close_sweep:{auction_id}",
+            )
+            if changed:
+                changed_count += 1
+            else:
+                noop_count += 1
         except Exception as e:
-            logger.error(f"Error closing auction {auction_id}: {e}", exc_info=True)
+            failed_count += 1
+            logger.error(
+                f"[run_auction_close_sweep] Error closing auction {auction_id} ({type(e).__name__}): {e}"
+            )
 
-    return closed_count
+    elapsed_ms = (time.monotonic() - start_time) * 1000
+    logger.info(
+        f"[run_auction_close_sweep] completed in {elapsed_ms:.1f}ms: "
+        f"candidates={len(candidate_ids)}, changed={changed_count}, no_op={noop_count}, failed={failed_count}"
+    )
+    return SweepResult(
+        changed=changed_count,
+        candidates=len(candidate_ids),
+        no_op=noop_count,
+        failed=failed_count,
+    )
 
 
-async def run_winner_timeout_sweep(session_factory: async_sessionmaker[AsyncSession]) -> int:
+async def run_winner_timeout_sweep(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> SweepResult:
     """Releases expired winner stock reservations if no order was created."""
+    start_time = time.monotonic()
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     async with session_factory() as read_session:
         repo = AuctionRepository(read_session)
-        candidate_ids = await repo.get_expired_winner_auctions(now_utc=now_utc, limit=50)
+        candidate_ids = await repo.get_expired_winner_auctions(
+            now_utc=now_utc, limit=settings.WORKER_BATCH_SIZE
+        )
 
     if not candidate_ids:
-        return 0
+        return SweepResult(changed=0, candidates=0, no_op=0, failed=0)
 
-    released_count = 0
+    changed_count = 0
+    noop_count = 0
+    failed_count = 0
+
     for auction_id in candidate_ids:
         try:
-            async with session_factory() as tx_session:
-                tx_repo = AuctionRepository(tx_session)
-                # 1. Lock Auction FOR UPDATE
-                auction = await tx_repo.get_auction_by_id(auction_id, for_update=True)
-                if (
-                    not auction
-                    or auction.status != AuctionStatus.ENDED.value
-                    or not auction.winner_checkout_deadline
-                    or auction.winner_checkout_deadline > now_utc
-                ):
-                    continue
+            async def _timeout():
+                async with session_factory() as tx_session:
+                    service = AuctionService(tx_session)
+                    return await service.timeout_single_winner_checkout(
+                        auction_id, now_utc=now_utc
+                    )
 
-                # Check if an order already exists for this auction
-                has_order = await tx_repo.has_order_for_auction(auction.auction_id)
-                if has_order:
-                    # Order was created, reservation is managed by the Order
-                    continue
-
-                # 2. Lock Product FOR UPDATE
-                stmt_prod = select(Product).where(Product.product_id == auction.product_id).with_for_update()
-                res_prod = await tx_session.execute(stmt_prod)
-                product = res_prod.scalar_one_or_none()
-
-                if product and product.reserved_stock == 1:
-                    product.reserved_stock = 0
-                    logger.info(f"Released expired winner reservation on product {product.product_id} from auction {auction_id}.")
-                    released_count += 1
-
-                await tx_session.commit()
+            changed = await execute_with_retry(
+                _timeout,
+                max_retries=settings.WORKER_MAX_RETRIES,
+                backoff_seconds=settings.WORKER_RETRY_BACKOFF_SECONDS,
+                operation_name=f"winner_timeout_sweep:{auction_id}",
+            )
+            if changed:
+                changed_count += 1
+            else:
+                noop_count += 1
         except Exception as e:
-            logger.error(f"Error during winner timeout sweep for auction {auction_id}: {e}", exc_info=True)
+            failed_count += 1
+            logger.error(
+                f"[run_winner_timeout_sweep] Error timing out auction {auction_id} ({type(e).__name__}): {e}"
+            )
 
-    return released_count
+    elapsed_ms = (time.monotonic() - start_time) * 1000
+    logger.info(
+        f"[run_winner_timeout_sweep] completed in {elapsed_ms:.1f}ms: "
+        f"candidates={len(candidate_ids)}, changed={changed_count}, no_op={noop_count}, failed={failed_count}"
+    )
+    return SweepResult(
+        changed=changed_count,
+        candidates=len(candidate_ids),
+        no_op=noop_count,
+        failed=failed_count,
+    )

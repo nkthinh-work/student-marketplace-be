@@ -1,13 +1,14 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select, delete, and_
+from sqlalchemy import select, delete, and_, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.modules.favorites.models import Favorite
 from app.modules.products.models import Product
+from app.modules.users.capability_models import UserCapabilityRestriction, CapabilityType
 
 
 def _encode_cursor(created_at: datetime, product_id: int) -> str:
@@ -26,11 +27,30 @@ def _decode_cursor(cursor_str: str) -> tuple[datetime, int]:
         raise ValueError("Invalid cursor") from e
 
 
-# Điều kiện product hiển thị cho Favorites
-_VISIBLE_PRODUCT = and_(
-    Product.is_deleted.is_(False),
-    Product.status == "AVAILABLE",
-)
+# Điều kiện product hiển thị cho Favorites (loại trừ cả seller bị hạn chế bán hàng)
+def _get_visible_product_condition(now_utc: Optional[datetime] = None):
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    sell_restricted_exists = exists(
+        select(1)
+        .select_from(UserCapabilityRestriction)
+        .where(
+            UserCapabilityRestriction.user_id == Product.seller_id,
+            UserCapabilityRestriction.capability == CapabilityType.SELL.value,
+            UserCapabilityRestriction.revoked_at.is_(None),
+            UserCapabilityRestriction.starts_at <= now_utc,
+            or_(
+                UserCapabilityRestriction.expires_at.is_(None),
+                UserCapabilityRestriction.expires_at > now_utc,
+            ),
+        )
+    )
+    return and_(
+        Product.is_deleted.is_(False),
+        Product.status == "AVAILABLE",
+        Product.moderation_status == "CLEAR",
+        ~sell_restricted_exists,
+    )
 
 
 class FavoriteRepository:
@@ -71,7 +91,7 @@ class FavoriteRepository:
             .join(Favorite, Favorite.product_id == Product.product_id)
             .where(
                 Favorite.user_id == user_id,
-                _VISIBLE_PRODUCT,
+                _get_visible_product_condition(),
             )
         )
 
@@ -115,7 +135,7 @@ class FavoriteRepository:
             .join(Product, Favorite.product_id == Product.product_id)
             .where(
                 Favorite.user_id == user_id,
-                _VISIBLE_PRODUCT,
+                _get_visible_product_condition(),
             )
             .order_by(Favorite.product_id)
         )

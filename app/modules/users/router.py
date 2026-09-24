@@ -1,22 +1,51 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.banks import SUPPORTED_BANKS, BankInfo
 from app.core.database import get_db
-from app.modules.auth.dependencies import get_current_active_user
+from app.modules.auth.dependencies import get_current_active_user, get_current_user
 from app.modules.users.models import User, UserStatus
+from datetime import datetime, timezone
+from app.modules.users.capability_service import CapabilityService
 from app.modules.users.schemas import (
     BankAccountResponse,
     BankAccountUpdate,
     PublicUserProfileResponse,
     SoldProductListResponse,
+    UserAccessStatusResponse,
+    UserCapabilityRestrictionResponse,
     UserResponse,
     UserUpdate,
 )
+from app.modules.conversations.schemas import UserSearchResponse
 from app.modules.users.service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])
+
+
+@router.get(
+    "/search",
+    response_model=List[UserSearchResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Tìm kiếm người dùng công khai (cho mời nhóm)",
+)
+async def search_users(
+    q: str = Query(..., min_length=2, description="Từ khóa tìm kiếm tên người dùng"),
+    limit: int = Query(20, ge=1, le=50),
+    conversation_id: Optional[int] = Query(None, description="Loại trừ thành viên nhóm hiện tại"),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> List[UserSearchResponse]:
+    """
+    Tìm kiếm người dùng an toàn theo tên, chỉ trả về user_id, full_name, avatar_url.
+    Không để lộ email, SĐT hay tài khoản ngân hàng.
+    """
+    from app.modules.conversations.service import ConversationService
+    conv_service = ConversationService(db)
+    return await conv_service.search_users(
+        current_user, query=q, limit=limit, conversation_id=conversation_id
+    )
 
 
 @router.get(
@@ -30,6 +59,41 @@ async def get_supported_banks() -> List[BankInfo]:
     Trả về danh sách ngân hàng chính thức tại Việt Nam bao gồm BIN, Code, tên viết tắt và tên đầy đủ.
     """
     return SUPPORTED_BANKS
+
+
+@router.get(
+    "/me/access-status",
+    response_model=UserAccessStatusResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Lấy trạng thái truy cập tài khoản (cho phép tài khoản bị khóa/chưa kích hoạt)",
+)
+async def get_my_access_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserAccessStatusResponse:
+    """
+    Xác định trạng thái truy cập tài khoản có tính định danh máy.
+    Chấp nhận danh tính Firebase hợp lệ kể cả khi người dùng bị BANNED hoặc INACTIVE.
+    Không để lộ thông tin nhạy cảm.
+    """
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    capability_service = CapabilityService(db)
+    can_buy, can_sell, restrictions = await capability_service.get_user_capabilities(current_user, now_utc)
+
+    return UserAccessStatusResponse(
+        user_id=current_user.user_id,
+        status=current_user.status.value if hasattr(current_user.status, "value") else str(current_user.status),
+        role=current_user.role,
+        can_buy=can_buy,
+        can_sell=can_sell,
+        active_restrictions=[
+            UserCapabilityRestrictionResponse(
+                capability=r.capability,
+                expires_at=r.expires_at,
+            )
+            for r in restrictions
+        ],
+    )
 
 
 @router.get(

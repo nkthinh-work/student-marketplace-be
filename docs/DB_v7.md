@@ -27,7 +27,7 @@ Tài liệu này là **nguồn chuẩn duy nhất (source of truth)** cho schema
 
 ## 1. Danh sách bảng
 
-Schema hiện có **17 bảng**:
+Schema hiện có **29 bảng** (25 bảng thực thể chính và 4 bảng quan hệ phụ trợ tin nhắn/nhóm):
 
 1. `users`
 2. `user_auth_identities`
@@ -46,6 +46,19 @@ Schema hiện có **17 bảng**:
 15. `auction_bids`
 16. `notifications`
 17. `reports`
+18. `daily_needs`
+19. `daily_journal_checkins`
+20. `report_attachments`
+21. `moderation_actions`
+22. `user_capability_restrictions`
+23. `community_moments`
+24. `site_feedback`
+25. `site_feedback_attachments`
+26. `conversation_members`
+27. `conversation_invites`
+28. `message_mentions`
+29. `message_reactions`
+
 
 Giỏ hàng không thuộc phạm vi hệ thống; không định nghĩa bảng `cart_items`.
 
@@ -120,7 +133,8 @@ Quy tắc:
 | `stock` | INT | NO | 1 | Số lượng hàng hiện có; CHECK >= 0 |
 | `reserved_stock` | INT | NO | 0 | Số lượng đang được giữ cho giao dịch; CHECK 0 <= reserved_stock <= stock |
 | `status` | VARCHAR(10) + CHECK | NO | - | `AVAILABLE` / `HIDDEN` / `SOLD_OUT` |
-| `view_count` | INT | NO | 0 | projection đồng bộ từ Redis |
+| `moderation_status` | VARCHAR(20) + CHECK | NO | `CLEAR` | `CLEAR` / `BLOCKED` (chk_products_moderation_status) |
+| `view_count` | INT | NO | 0 | durable monotonic projection synchronized periodically from Redis Product View Counter |
 | `is_deleted` | BOOLEAN | NO | FALSE | soft delete |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 | `updated_at` | TIMESTAMP | NO | NOW() | trigger tự cập nhật |
@@ -165,6 +179,7 @@ Quy tắc ý nghĩa:
 | `meetup_place` | VARCHAR(255) | YES | - | |
 | `meetup_time` | TIMESTAMP | YES | - | |
 | `shipping_address` | VARCHAR(500) | YES | - | dùng khi `SHIPPING` |
+| `shipping_expected_at` | TIMESTAMP | YES | - | ngày dự kiến giao hàng (dùng khi `SHIPPING`) |
 | `contact_name` | VARCHAR(100) | NO | - | snapshot; không join vào profile có thể thay đổi |
 | `contact_phone` | VARCHAR(20) | NO | - | snapshot |
 | `buyer_note` | VARCHAR(500) | YES | - | |
@@ -214,10 +229,45 @@ Luồng mua:
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
 | `conversation_id` | BIGINT IDENTITY | NO | auto | PK |
-| `user_one_id` | BIGINT | NO | - | FK -> users; luôn < user_two_id |
-| `user_two_id` | BIGINT | NO | - | FK -> users; luôn > user_one_id |
-| `last_message_at` | TIMESTAMP | YES | - | cache/projection từ messages |
+| `type` | VARCHAR(20) | NO | `DIRECT` | `DIRECT` / `GROUP` / `COMMUNITY` |
+| `title` | VARCHAR(255) | YES | - | Tiêu đề nhóm / cộng đồng |
+| `description` | TEXT | YES | - | Mô tả nhóm / cộng đồng |
+| `avatar_url` | VARCHAR(500) | YES | - | Avatar nhóm |
+| `user_one_id` | BIGINT | YES | - | FK -> users; cho DIRECT chat (luôn < user_two_id) |
+| `user_two_id` | BIGINT | YES | - | FK -> users; cho DIRECT chat (luôn > user_one_id) |
+| `created_by` | BIGINT | YES | - | FK -> users; người tạo nhóm |
+| `requires_approval` | BOOLEAN | NO | FALSE | Khi TRUE, thành viên mới cần Trưởng nhóm (OWNER) phê duyệt |
+| `last_message_at` | TIMESTAMP | YES | - | cache/projection từ messages (SYSTEM message KHÔNG cập nhật trường này) |
 | `created_at` | TIMESTAMP | NO | NOW() | |
+| `deleted_at` | TIMESTAMP | YES | - | Soft delete nhóm |
+
+### 2.9.1. conversation_members
+
+Quản lý thành viên tham gia nhóm / cộng đồng / hội thoại. Thành viên hợp lệ/đang hoạt động được xác định bằng điều kiện `left_at IS NULL`.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `conversation_id` | BIGINT | NO | - | PK (composite 1/2); FK -> conversations CASCADE |
+| `user_id` | BIGINT | NO | - | PK (composite 2/2); FK -> users CASCADE |
+| `role` | VARCHAR(10) | NO | `MEMBER` | `OWNER` / `ADMIN` / `MEMBER` (chk_conversation_members_role) |
+| `joined_at` | TIMESTAMP | NO | NOW() | Thời điểm tham gia nhóm |
+| `left_at` | TIMESTAMP | YES | - | Thời điểm rời/bị xóa khỏi nhóm; NULL = thành viên đang hoạt động (ACTIVE) |
+| `last_read_message_id` | BIGINT | YES | - | FK -> messages(message_id) ON DELETE SET NULL |
+| `nickname` | VARCHAR(40) | YES | - | Biệt danh tự đặt của thành viên trong nhóm (cục bộ, tối đa 40 ký tự) |
+
+### 2.9.2. conversation_invites
+
+Quản lý lời mời tham gia nhóm và hàng đợi phê duyệt.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `invite_id` | BIGINT IDENTITY | NO | auto | PK |
+| `conversation_id` | BIGINT | NO | - | FK -> conversations CASCADE |
+| `inviter_id` | BIGINT | NO | - | FK -> users CASCADE |
+| `invitee_id` | BIGINT | NO | - | FK -> users CASCADE |
+| `status` | VARCHAR(20) | NO | `PENDING` | `PENDING` / `PENDING_APPROVAL` / `ACCEPTED` / `DECLINED` / `CANCELLED` |
+| `created_at` | TIMESTAMP | NO | NOW() | |
+| `responded_at` | TIMESTAMP | YES | - | |
 
 ### 2.10. messages
 
@@ -227,9 +277,10 @@ Luồng mua:
 | `conversation_id` | BIGINT | NO | - | FK -> conversations CASCADE |
 | `sender_id` | BIGINT | NO | - | FK -> users |
 | `type` | VARCHAR(12) + CHECK | NO | `TEXT` | `TEXT` / `IMAGE` / `FILE` / `PRODUCT_CARD` / `ORDER_CARD` / `SYSTEM` |
-| `content` | TEXT | YES | - | bắt buộc khi `TEXT` |
+| `content` | TEXT | YES | - | Cho phép NULL khi có attachments |
 | `product_id` | BIGINT | YES | - | FK -> products SET NULL |
 | `order_id` | BIGINT | YES | - | FK -> orders SET NULL |
+| `reply_to_message_id` | BIGINT | YES | - | FK -> messages(message_id) ON DELETE SET NULL |
 | `is_deleted` | BOOLEAN | NO | FALSE | |
 | `sent_at` | TIMESTAMP | NO | NOW() | |
 | `read_at` | TIMESTAMP | YES | - | |
@@ -240,28 +291,55 @@ Luồng mua:
 |---|---|---:|---|---|
 | `attachment_id` | BIGINT IDENTITY | NO | auto | PK |
 | `message_id` | BIGINT | NO | - | FK -> messages CASCADE |
-| `kind` | VARCHAR(5) + CHECK | NO | - | `IMAGE` / `FILE` |
-| `file_url` | VARCHAR(500) | NO | - | Cloudinary |
-| `file_name` | VARCHAR(255) | NO | - | |
-| `mime_type` | VARCHAR(100) | NO | - | |
-| `file_size` | INT | NO | - | CHECK > 0 |
-| `width` | INT | YES | - | chỉ dùng cho ảnh |
-| `height` | INT | YES | - | chỉ dùng cho ảnh |
-| `thumbnail_url` | VARCHAR(500) | YES | - | Cloudinary |
+| `kind` | VARCHAR(10) + CHECK | NO | - | `IMAGE` / `VIDEO` / `PDF` / `AUDIO` / `DOCUMENT` (chk_message_attachments_kind) |
+| `url` | TEXT | NO | - | Cloudinary secure delivery URL |
+| `storage_key` | VARCHAR(255) | NO | - | Cloudinary public_id |
+| `mime_type` | VARCHAR(100) | NO | - | `image/jpeg`, `video/mp4`, `application/pdf`, `audio/webm`, `application/vnd...`, etc. |
+| `original_name` | VARCHAR(255) | NO | - | Tên file gốc |
+| `size_bytes` | BIGINT | NO | - | Kích thước byte thực tế |
+| `duration_ms` | BIGINT | YES | - | Thời lượng phát (ms) cho voice note / audio |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 
+### 2.11.1. message_mentions
+
+Lưu trữ thông tin gắn thẻ người dùng (@mention) có cấu trúc trong tin nhắn nhóm/cộng đồng. Đảm bảo hiển thị ổn định không phụ thuộc vào việc đổi tên hiển thị của người dùng sau này.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `mention_id` | BIGINT IDENTITY | NO | auto | PK |
+| `message_id` | BIGINT | NO | - | FK -> messages(message_id) CASCADE |
+| `mentioned_user_id` | BIGINT | NO | - | FK -> users(user_id) CASCADE |
+| `display_text` | VARCHAR(100) | NO | - | Snapshot chuỗi hiển thị lúc tag (ví dụ `@Trần Thị B`) |
+| `start_offset` | INT | NO | - | Vị trí ký tự bắt đầu của token trong `content` |
+| `end_offset` | INT | NO | - | Vị trí ký tự kết thúc của token trong `content` |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm tạo |
+
+### 2.11.2. message_reactions
+
+Lưu trữ biểu cảm cảm xúc (reaction) của người dùng đối với tin nhắn. Mỗi người dùng chỉ được bày tỏ tối đa 1 biểu cảm trên mỗi tin nhắn.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `reaction_id` | BIGINT IDENTITY | NO | auto | PK |
+| `message_id` | BIGINT | NO | - | FK -> messages(message_id) CASCADE |
+| `user_id` | BIGINT | NO | - | FK -> users(user_id) CASCADE |
+| `reaction_key` | VARCHAR(50) | NO | - | 12 giá trị ASCII: LIKE, HEART, LAUGH, WOW, SAD, ANGRY, PTIT_HEART, PTIT_FIRE, PTIT_LIKE, PTIT_STAR, PTIT_CROWN, PTIT_GRAD |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm tạo |
+
 ### 2.12. reviews
+
+Đánh giá uy tín người bán dựa trên giao dịch đơn hàng thực tế đã hoàn tất (`COMPLETED`).
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
 | `review_id` | BIGINT IDENTITY | NO | auto | PK |
-| `order_item_id` | BIGINT | NO | - | FK -> order_items RESTRICT |
-| `reviewer_id` | BIGINT | NO | - | FK -> users |
-| `reviewee_id` | BIGINT | NO | - | FK -> users |
+| `order_id` | BIGINT | NO | - | FK -> orders(order_id) RESTRICT |
+| `reviewer_id` | BIGINT | NO | - | FK -> users(user_id) RESTRICT |
+| `reviewee_id` | BIGINT | NO | - | FK -> users(user_id) RESTRICT |
 | `rating` | SMALLINT | NO | - | CHECK 1..5 |
-| `comment` | TEXT | YES | - | |
-| `is_deleted` | BOOLEAN | NO | FALSE | |
+| `comment` | VARCHAR(1000) | YES | - | Tối đa 1000 ký tự |
 | `created_at` | TIMESTAMP | NO | NOW() | |
+| `updated_at` | TIMESTAMP | NO | NOW() | trigger tự cập nhật |
 
 ### 2.13. favorites
 
@@ -350,11 +428,143 @@ Quy tắc đặt giá:
 | `handled_at` | TIMESTAMP | YES | - | |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 
+### 2.18. daily_needs
+
+Lưu trữ "Nhu cầu hôm nay" (Daily Student Needs) — các tín hiệu mua bán, trao đổi nhanh trong ngày của sinh viên. Mỗi sinh viên được đăng/chỉnh sửa tối đa 1 nhu cầu cho mỗi ngày dương lịch (theo múi giờ `Asia/Ho_Chi_Minh`). Hiển thị công khai tối đa 10 nhu cầu mới nhất trên Home ticker.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `daily_need_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT | NO | - | FK -> users CASCADE |
+| `note_date` | DATE | NO | - | Ngày tính theo múi giờ Việt Nam (Asia/Ho_Chi_Minh) |
+| `content` | VARCHAR(120) | NO | - | Tối đa 120 ký tự, không rỗng, rút gọn 1 dòng |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | |
+| `updated_at` | TIMESTAMPTZ | NO | NOW() | |
+
+### 2.18.1. daily_journal_checkins
+
+Lưu trữ sự kiện chứng nhận chuỗi ngày điểm danh bất biến của sinh viên. Bản ghi không bao giờ bị xóa khi người dùng xóa nội dung trong `daily_needs`.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `checkin_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT | NO | - | FK -> users(user_id) CASCADE |
+| `checkin_date` | DATE | NO | - | Ngày điểm danh theo múi giờ Việt Nam, UNIQUE(user_id, checkin_date) |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm ghi nhận |
+
+### 2.19. report_attachments
+
+Lưu trữ ảnh minh chứng đính kèm khiếu nại/báo cáo vi phạm từ người dùng. Tối đa 5 ảnh/báo cáo. Không lưu trữ blob nhị phân trong cơ sở dữ liệu (lưu trên Cloudinary).
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `attachment_id` | BIGINT IDENTITY | NO | auto | PK |
+| `report_id` | BIGINT | NO | - | FK -> reports CASCADE |
+| `url` | VARCHAR(500) | NO | - | URL Cloudinary nội bộ (không bao giờ lộ ra DTO công khai) |
+| `storage_key` | VARCHAR(255) | NO | - | Cloudinary public_id phục vụ xóa/bù trừ và streaming bảo mật |
+| `mime_type` | VARCHAR(50) | NO | - | CHECK IN (`image/jpeg`, `image/png`, `image/webp`) |
+| `original_name` | VARCHAR(255) | NO | - | Tên tệp gốc do người dùng tải lên |
+| `size_bytes` | INTEGER | NO | - | CHECK > 0, tối đa 10MB (10,485,760 bytes) |
+| `created_at` | TIMESTAMP | NO | NOW() | |
+
+### 2.20. moderation_actions
+
+Bảng nhật ký kiểm duyệt (Audit Log) ghi nhận các hành động chế tài của Quản trị viên áp dụng lên Người dùng hoặc Tin đăng dựa trên báo cáo vi phạm.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `moderation_action_id` | BIGINT IDENTITY | NO | auto | PK |
+| `report_id` | BIGINT | NO | - | FK -> reports CASCADE |
+| `admin_id` | BIGINT | NO | - | FK -> users RESTRICT |
+| `target_type` | VARCHAR(10) + CHECK | NO | - | `USER` / `PRODUCT` (chk_moderation_actions_target_type) |
+| `target_id` | BIGINT | NO | - | polymorphic reference tới users.user_id hoặc products.product_id |
+| `action_type` | VARCHAR(20) + CHECK | NO | - | `USER_BAN` / `USER_UNBAN` / `PRODUCT_HIDE` / `PRODUCT_RESTORE` (chk_moderation_actions_action_type) |
+| `previous_status` | VARCHAR(20) | NO | - | Trạng thái trước khi chế tài |
+| `new_status` | VARCHAR(20) | NO | - | Trạng thái sau khi chế tài |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm thực thi chế tài |
+
+### 2.21. user_capability_restrictions
+
+Bảng lưu trữ các lệnh hạn chế quyền có thời hạn áp dụng lên tài khoản người dùng (`BUY` hoặc `SELL`), phát sinh từ quy trình xử lý báo cáo vi phạm (`POST /api/v1/admin/reports/{id}/enforcement`).
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `restriction_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT | NO | - | FK -> users(user_id) RESTRICT |
+| `source_report_id` | BIGINT | NO | - | FK -> reports(report_id) RESTRICT |
+| `imposed_by` | BIGINT | NO | - | FK -> users(user_id) RESTRICT |
+| `capability` | VARCHAR(10) | NO | - | CHECK IN ('BUY', 'SELL') |
+| `starts_at` | TIMESTAMP | NO | NOW() | Thời điểm bắt đầu hiệu lực |
+| `expires_at` | TIMESTAMP | YES | NULL | CHECK (expires_at IS NULL OR expires_at > starts_at) |
+| `revoked_at` | TIMESTAMP | YES | NULL | CHECK (revoked_at IS NULL OR revoked_at >= starts_at) |
+| `revoked_by` | BIGINT | YES | NULL | FK -> users(user_id) SET NULL |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm tạo |
+
+### 2.22. community_moments
+
+Lưu trữ ảnh khoảnh khắc cộng đồng sinh viên PTIT (giao dịch, nhận hàng, kỷ niệm) hiển thị trên Hero Carousel sau khi được Quản trị viên duyệt. Kèm theo một lời nhắn ngắn gọn (1..80 ký tự) hiển thị đè ở góc dưới bên trái ảnh.
+
+**Vòng đời lưu trữ và kiểm soát Hero (Phase 8H-A.2 - Bounded Lifecycle):**
+- Trạng thái hoạt động (active domain statuses): Chỉ gồm `PENDING` (chờ duyệt) và `APPROVED` (đang hiển thị trên Hero Carousel).
+- Ràng buộc vật lý: `CHECK IN ('PENDING', 'APPROVED', 'REJECTED')` được giữ lại cho tính tương thích ngược vật lý, tầng nghiệp vụ ứng dụng chỉ vận hành `PENDING` và `APPROVED`.
+- Hard delete vĩnh viễn:
+  - Khi Admin từ chối (`REJECT`): Bản ghi bị xóa vĩnh viễn khỏi DB ngay lập tức và asset Cloudinary được dọn dẹp sau khi commit DB.
+  - Khi Admin gỡ khoảnh khắc khỏi Hero (`DELETE`): Bản ghi bị xóa vĩnh viễn khỏi DB và Cloudinary.
+  - Khi phê duyệt khoảnh khắc thứ 6 (`APPROVE`): Hệ thống tự động cắt tỉa bản ghi APPROVED cũ nhất theo thứ tự `reviewed_at ASC, moment_id ASC` bằng hard delete và dọn dẹp Cloudinary.
+- Giới hạn Hero tối đa: Luôn duy trì tối đa **5 ảnh APPROVED** trên toàn hệ thống, bảo vệ an toàn tương tranh bằng PostgreSQL transactional advisory lock (`hashtext('community_hero_lifecycle')`).
+- Client-side touch crop: Ảnh được người dùng cắt chuẩn tỉ lệ Hero chuẩn ngang **16:9** (tối đa 1600x900px, ngưỡng tối thiểu 320x180px) trực tiếp trên trình duyệt trước khi upload.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `moment_id` | BIGINT IDENTITY | NO | auto | PK |
+| `uploader_id` | BIGINT | NO | - | FK -> users(user_id) RESTRICT |
+| `image_url` | VARCHAR(500) | NO | - | URL ảnh Cloudinary đầy đủ (chuẩn w_1600 f_auto,q_auto) |
+| `storage_key` | VARCHAR(255) | NO | - | Cloudinary public_id |
+| `mime_type` | VARCHAR(100) | NO | - | JPEG, PNG hoặc WebP |
+| `size_bytes` | BIGINT | NO | - | CHECK size_bytes > 0, tối đa 10MB |
+| `note` | VARCHAR(80) | YES | NULL | Lời nhắn khoảnh khắc (1..80 ký tự single-line) |
+| `status` | VARCHAR(20) | NO | 'PENDING' | CHECK IN ('PENDING', 'APPROVED', 'REJECTED') |
+| `reviewed_by` | BIGINT | YES | NULL | FK -> users(user_id) SET NULL |
+| `reviewed_at` | TIMESTAMP | YES | NULL | Thời điểm duyệt |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm gửi |
+
+### 2.23. site_feedback
+
+Lưu trữ phản hồi, góp ý và báo lỗi của sinh viên về website Chợ PTITers theo mô hình issue board công khai ẩn danh. Mỗi người dùng có thể gửi nhiều feedback theo thời gian (đã loại bỏ `UNIQUE(user_id)`). Feedback là bất biến (immutable) sau khi tạo, người dùng có thể xóa feedback của chính mình (hard delete), quản trị viên có thể xóa bất kỳ feedback nào (hard delete). Không có trạng thái kiểm duyệt (không có PENDING/APPROVED/REJECTED), không có đánh giá sao (rating), không có marquee/featured. Nội dung feedback hiển thị công khai ngay sau khi gửi thành công; danh tính tác giả và các tệp minh chứng (ảnh/video) được bảo mật tuyệt đối, chỉ hiển thị cho quản trị viên và người gửi.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `feedback_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT | NO | - | FK -> users CASCADE |
+| `content` | VARCHAR(500) | NO | - | 5..500 ký tự (Unicode NFC, plain text) |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | |
+| `updated_at` | TIMESTAMPTZ | NO | NOW() | |
+
+### 2.24. site_feedback_attachments
+
+Lưu trữ metadata tệp minh chứng hình ảnh (tối đa 3 ảnh JPEG/PNG/WebP, tối đa 10MB/ảnh) hoặc video (tối đa 1 video MP4/WebM/MOV, tối đa 30MB, thời lượng tối đa 60 giây) đính kèm với feedback. Tệp blob thực tế được lưu tại Cloudinary (`student-marketplace/feedback`). Minh chứng là riêng tư, chỉ quản trị viên (và chủ sở hữu) được phép xem/stream an toàn, không hiển thị ra bảng tin công khai. Khi feedback bị xóa, các bản ghi đính kèm sẽ tự động xóa theo (`ON DELETE CASCADE`) và Cloudinary assets được dọn dẹp theo chính sách best-effort sau khi commit database.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `attachment_id` | BIGINT IDENTITY | NO | auto | PK |
+| `feedback_id` | BIGINT | NO | - | FK -> site_feedback CASCADE |
+| `kind` | VARCHAR(10) | NO | - | CHECK IN ('IMAGE', 'VIDEO') |
+| `media_url` | VARCHAR(500) | NO | - | URL Cloudinary gốc an toàn |
+| `storage_key` | VARCHAR(255) | NO | - | Public ID trên Cloudinary |
+| `mime_type` | VARCHAR(50) | NO | - | MIME type chuẩn hoá |
+| `size_bytes` | BIGINT | NO | - | Dung lượng tệp (bytes), CHECK > 0 |
+| `duration_ms` | BIGINT | YES | NULL | Thời lượng video tính bằng milliseconds (cho video <= 60000ms) |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | |
+
 ## 3. Khoá và hành động tham chiếu
 
 | Bảng | PK | FK |
 |---|---|---|
 | `users` | user_id | - |
+| `moderation_actions` | moderation_action_id | report_id -> reports (CASCADE); admin_id -> users (RESTRICT) |
+| `community_moments` | moment_id | user_id -> users (CASCADE); reviewed_by -> users (SET NULL) |
+| `site_feedback` | feedback_id | user_id -> users (CASCADE) |
+| `site_feedback_attachments` | attachment_id | feedback_id -> site_feedback (CASCADE) |
 | `user_auth_identities` | user_auth_identity_id | user_id -> users (CASCADE) |
 | `categories` | category_id | - |
 | `products` | product_id | seller_id -> users (RESTRICT); category_id -> categories |
@@ -363,14 +573,20 @@ Quy tắc đặt giá:
 | `order_items` | order_item_id | order_id -> orders (CASCADE); product_id -> products (RESTRICT) |
 | `order_status_history` | history_id | order_id -> orders (CASCADE); changed_by -> users (SET NULL) |
 | `conversations` | conversation_id | user_one_id -> users; user_two_id -> users |
-| `messages` | message_id | conversation_id -> conversations (CASCADE); sender_id -> users; product_id -> products (SET NULL); order_id -> orders (SET NULL) |
+| `conversation_members` | (conversation_id, user_id) | conversation_id -> conversations (CASCADE); user_id -> users (CASCADE); last_read_message_id -> messages (SET NULL) |
+| `conversation_invites` | invite_id | conversation_id -> conversations (CASCADE); inviter_id -> users (CASCADE); invitee_id -> users (CASCADE) |
+| `messages` | message_id | conversation_id -> conversations (CASCADE); sender_id -> users; product_id -> products (SET NULL); order_id -> orders (SET NULL); reply_to_message_id -> messages (SET NULL) |
 | `message_attachments` | attachment_id | message_id -> messages (CASCADE) |
-| `reviews` | review_id | order_item_id -> order_items (RESTRICT); reviewer_id -> users; reviewee_id -> users |
+| `message_mentions` | mention_id | message_id -> messages (CASCADE); mentioned_user_id -> users (CASCADE) |
+| `reviews` | review_id | order_id -> orders (RESTRICT); reviewer_id -> users (RESTRICT); reviewee_id -> users (RESTRICT) |
 | `favorites` | (user_id, product_id) | user_id -> users (CASCADE); product_id -> products (CASCADE) |
 | `auctions` | auction_id | product_id -> products (CASCADE); winner_id -> users (RESTRICT) |
 | `auction_bids` | bid_id | auction_id -> auctions (CASCADE); bidder_id -> users (RESTRICT) |
 | `notifications` | notification_id | user_id -> users (CASCADE) |
 | `reports` | report_id | reporter_id -> users (CASCADE); handled_by -> users (SET NULL) |
+| `daily_needs` | daily_need_id | user_id -> users (CASCADE) |
+| `daily_journal_checkins` | checkin_id | user_id -> users (CASCADE) |
+| `report_attachments` | attachment_id | report_id -> reports (CASCADE) |
 
 ## 4. UNIQUE constraint và index
 
@@ -385,9 +601,11 @@ Quy tắc đặt giá:
 - `orders(order_code)`
 - `order_items(order_id, product_id)`
 - `conversations(user_one_id, user_two_id)`
-- `reviews(order_item_id, reviewer_id, reviewee_id)`
+- `message_mentions(message_id, mentioned_user_id)` qua `uq_message_mentions_msg_user`
+- `reviews(order_id, reviewer_id)`
 - `favorites(user_id, product_id)` qua composite PK
 - `auctions(product_id)`
+- `daily_needs(user_id, note_date)`
 
 ### 4.2. Index thường
 
@@ -402,10 +620,14 @@ Quy tắc đặt giá:
 - Partial UNIQUE `ux_orders_auction_id` trên `orders(auction_id) WHERE auction_id IS NOT NULL`
 - `order_items(product_id)`
 - `conversations(user_one_id, last_message_at)` và `(user_two_id, last_message_at)`
+- `conversation_members(user_id, left_at)` (`ix_conversation_members_user_active`)
+- `conversation_members(conversation_id)` (`ix_conversation_members_conversation_id`)
 - `messages(conversation_id, sent_at)`
 - `messages(conversation_id, sender_id, read_at)`
 - `message_attachments(message_id)`
-- `reviews(reviewee_id, is_deleted, created_at)`
+- `message_mentions(mentioned_user_id)` (`ix_message_mentions_user_id`)
+- `message_mentions(message_id)` (`ix_message_mentions_message_id`)
+- `reviews(reviewee_id, created_at DESC, review_id DESC)` để phân trang keyset đánh giá công khai của người bán
 - `favorites(product_id)`
 - `auctions(product_id)`
 - Partial UNIQUE `ux_auctions_product_active` trên `auctions(product_id) WHERE status IN ('SCHEDULED', 'ACTIVE')`
@@ -415,12 +637,24 @@ Quy tắc đặt giá:
 - `auction_bids(auction_id, amount DESC, created_at ASC, bid_id ASC)` để lấy bid cao nhất và phân trang keyset
 - `auction_bids(bidder_id, created_at)` để xem lịch sử bid của user
 - `notifications(user_id, is_read, created_at)`
+- `daily_needs(note_date, updated_at DESC, daily_need_id DESC)`
+- `daily_needs(user_id)`
+- `report_attachments(report_id)` (`ix_report_attachments_report_id`)
+- `reports(status, created_at DESC, report_id DESC)` (`ix_reports_status_created_desc`) để phân trang keyset hàng đợi kiểm duyệt báo cáo của quản trị viên
+- `reports(reporter_id, target_type, target_id)` (`ix_reports_reporter_target`) để kiểm tra báo cáo đang hoạt động trùng lặp và bảo vệ khoá ngoại `reporter_id -> users`
+- `community_moments(status, created_at DESC, moment_id DESC)` (`idx_community_moments_admin_queue`)
+- `site_feedback(created_at DESC, feedback_id DESC)` (`idx_site_feedback_created_at`) để phân trang keyset bảng tin công khai và danh sách quản trị
+- `site_feedback(user_id, created_at DESC, feedback_id DESC)` (`idx_site_feedback_user_created`) để tra cứu lịch sử feedback của người dùng
+- `site_feedback_attachments(feedback_id)` (`idx_site_feedback_attachments_feedback_id`)
 
 ## 5. CHECK constraints
 
 - `orders.buyer_id <> orders.seller_id`
 - `orders.payment_status <> 'VERIFYING' OR payment_receipt_url IS NOT NULL`
 - `orders.payment_status <> 'PAID' OR paid_confirmed_at IS NOT NULL`
+- `community_moments.status IN ('PENDING', 'APPROVED', 'REJECTED')`
+- `site_feedback_attachments.kind IN ('IMAGE', 'VIDEO')`
+- `site_feedback_attachments.size_bytes > 0`
 - `products.price >= 0`
 - `products.stock >= 0`
 - `products.reserved_stock BETWEEN 0 AND products.stock`
@@ -432,6 +666,8 @@ Quy tắc đặt giá:
 - `reviews.rating BETWEEN 1 AND 5`
 - `reviews.reviewer_id <> reviews.reviewee_id`
 - `message_attachments.file_size > 0`
+- `report_attachments.size_bytes > 0`
+- `report_attachments.mime_type IN ('image/jpeg', 'image/png', 'image/webp')`
 - `auctions.bid_step > 0`
 - `auctions.starting_price >= 0`
 - `auctions.ends_at > auctions.starts_at`
@@ -526,7 +762,151 @@ Nếu sau này cần chống spam hoặc giới hạn auction theo chính sách,
 10. Nếu quá `winner_checkout_deadline` mà chưa có order, worker giải phóng reservation. MVP **không tự động chuyển quyền mua cho người trả giá thứ hai**; seller có thể mở lại đấu giá.
 11. Gửi notification phù hợp cho seller, winner và người vừa bị vượt giá khi cần.
 
+### 7.6. Nhật ký hôm nay (Daily Journal) & Chuỗi ngày (Streak)
+ 
+Tính năng **"Nhật ký hôm nay"** (Daily Journal) tách biệt hai khái niệm miền độc lập:
+1. **Nội dung công khai biến đổi (`daily_needs`)**: Người dùng có thể đăng, chỉnh sửa hoặc xóa nội dung nhật ký công khai trong ngày.
+2. **Sự kiện tích lũy chuỗi bất biến (`daily_journal_checkins`)**: Sự kiện chứng minh người dùng đã tham gia đăng nhật ký thành công ít nhất một lần trong ngày lịch.
+ 
+#### Cấu trúc bảng `daily_needs` (Nội dung có thể xóa/sửa)
+- `daily_need_id` BIGSERIAL PRIMARY KEY
+- `user_id` BIGINT NOT NULL REFERENCES `users(user_id)` ON DELETE CASCADE
+- `note_date` DATE NOT NULL (Ngày lịch theo múi giờ `Asia/Ho_Chi_Minh`)
+- `content` VARCHAR(120) NOT NULL (Nội dung nhật ký công khai, text thuần túy)
+- `created_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- UNIQUE CONSTRAINT `uq_daily_needs_user_date (user_id, note_date)`
+- INDEX `ix_daily_needs_user_id (user_id)`
+- INDEX `ix_daily_needs_today_recency (note_date, updated_at, daily_need_id)`
+
+#### Cấu trúc bảng `daily_journal_checkins` (Chứng nhận chuỗi bất biến)
+- `checkin_id` BIGSERIAL PRIMARY KEY
+- `user_id` BIGINT NOT NULL REFERENCES `users(user_id)` ON DELETE CASCADE
+- `checkin_date` DATE NOT NULL (Ngày điểm danh theo múi giờ `Asia/Ho_Chi_Minh`)
+- `created_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- UNIQUE CONSTRAINT `uq_daily_journal_checkins_user_date (user_id, checkin_date)`
+- INDEX `ix_daily_journal_checkins_user_id (user_id)`
+ 
+#### Quy tắc nghiệp vụ & Tính toán Streak
+1. **Giao dịch đăng bài nguyên tử (Atomic First Publish)**:
+   - Khi đăng bài trong ngày, `daily_needs` và `daily_journal_checkins` được ghi đồng thời trong cùng một transaction.
+   - `INSERT INTO daily_journal_checkins ... ON CONFLICT (user_id, checkin_date) DO NOTHING RETURNING checkin_id` đảm bảo tính lũy đẳng (idempotent), an toàn tuyệt đối với request đồng thời (concurrent).
+   - Server trả về cờ tạm thời `checkin_created: bool` để frontend chỉ kích hoạt hiệu ứng ngọn lửa bùng cháy (activation animation) đúng 1 lần cho lượt đăng đầu tiên tạo ra check-in mới.
+2. **Quy tắc bảo lưu chuỗi khi xóa nội dung (Streak Preservation on Delete)**:
+   - Xóa nhật ký trong ngày chỉ xóa dòng trong `daily_needs`.
+   - Bảng `daily_journal_checkins` KHÔNG bị xóa.
+   - Trạng thái `has_journal_today` trở về `false` (nội dung biến mất khỏi Marquee trang chủ và Direct Chat header).
+   - Trạng thái `has_checked_in_today` vẫn là `true`, số ngày chuỗi `streak_count` giữ nguyên, ngọn lửa trang chủ vẫn giữ màu rực sáng.
+3. **Đăng lại sau khi xóa (Repost after Delete)**:
+   - Tái tạo nội dung `daily_needs`.
+   - Tái sử dụng check-in đã có trong ngày (`checkin_created = false`), chuỗi không bị tăng đúp, không kích hoạt lại animation ngọn lửa.
+4. **Tính toán chuỗi liên tiếp (Streak)**:
+   - Tính toán động, có tính xác định hoàn toàn từ server bằng SQL Recursive CTE dựa trên bảng chuẩn `daily_journal_checkins` qua chỉ mục `(user_id, checkin_date)`:
+     - Nếu hôm nay đã check-in (`has_checked_in_today = true`): đếm số ngày liên tục lùi từ `today`.
+     - Nếu hôm nay chưa check-in: kiểm tra `yesterday`. Nếu hôm qua có check-in, đếm số ngày liên tục lùi từ `yesterday` (hiển thị ngọn lửa xám). Nếu hôm qua bỏ lỡ, chuỗi = 0.
+   - Không giới hạn trần giả định (không có limit 365 ngày).
+5. **Giới hạn chuyển đổi dữ liệu lịch sử (Migration Backfill Limitation)**:
+   - Migration chuyển giao tất cả dữ liệu lịch sử đang tồn tại trong `daily_needs` sang `daily_journal_checkins`.
+   - Các bài đăng đã bị xóa vĩnh viễn trước khi bảng `daily_journal_checkins` được thiết lập không còn dấu vết để khôi phục. Từ thời điểm migration trở đi, mọi hành vi xóa nội dung đều bảo toàn 100% check-in chuỗi.
+
+### 7.7. Bày tỏ cảm xúc tin nhắn Chợ PTITers (Message Reactions)
+
+Bộ cảm xúc chữ ký mang nhận diện Chợ PTITers cho tin nhắn trong Direct và Group Chat.
+
+#### Cấu trúc bảng `message_reactions`
+- `reaction_id` BIGSERIAL PRIMARY KEY
+- `message_id` BIGINT NOT NULL REFERENCES `messages(message_id)` ON DELETE CASCADE
+- `user_id` BIGINT NOT NULL REFERENCES `users(user_id)` ON DELETE CASCADE
+- `reaction_key` VARCHAR(32) NOT NULL
+- `created_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- UNIQUE CONSTRAINT `uq_message_reactions_message_user (message_id, user_id)` (mỗi user tối đa 1 reaction cho mỗi tin nhắn)
+- INDEX `ix_message_reactions_user_id (user_id)`
+- CHECK CONSTRAINT `chk_message_reactions_key`: 12 giá trị ASCII chuẩn hóa:
+  `'THICH', 'HAHA', 'WOW', 'CAM_ON', 'CHOT_DEAL', 'UY_TIN', 'DANG_TOI', 'DOI_CHUT', 'QUAN_TAM', 'HET_TIEN', 'HOC_BAI', 'KHA_NGHI'`
+
+#### Quy tắc nghiệp vụ & Hiệu ứng phụ
+1. **Phạm vi hỗ trợ**:
+   - `DIRECT`: Người dùng phải là một trong 2 người tham gia canonical (`user_one_id` hoặc `user_two_id`). Không yêu cầu dòng `conversation_members`.
+   - `GROUP`: Người dùng phải là thành viên hoạt động (`left_at IS NULL`). Không được reaction tin nhắn gửi trước `joined_at` của mình.
+   - `COMMUNITY`: Từ chối hoàn toàn với mã `400 Bad Request`.
+2. **Không áp dụng cho tin nhắn hệ thống (`type = 'SYSTEM'`)** hoặc tin nhắn đã xóa.
+3. **Zero Side Effects**: Hoạt động reaction là metadata thuần túy. Tuyệt đối không tạo dòng `notifications`, không làm tăng unread counter, không cập nhật `conversations.last_message_at`, không tạo tin nhắn mới.
+4. **Hiển thị & Batch Aggregation**: Truy vấn lịch sử tin nhắn gom nhóm reaction theo batch `IN (:message_ids)` với độ phức tạp O(1) query count cho mỗi trang tin nhắn.
+5. **Realtime**: Phát sóng sự kiện `MESSAGE_REACTIONS_UPDATED` qua hạ tầng WebSocket cá nhân `/ws/me` hiện có tới các thành viên hợp lệ. Thất bại realtime không rollback giao dịch cơ sở dữ liệu.
+
+### 7.8. Minh chứng báo cáo vi phạm (Report Evidence)
+
+1. **Giới hạn số lượng**: Tối đa 5 ảnh minh chứng cho mỗi báo cáo (`existing_count + new_files <= 5`).
+2. **Định dạng & Dung lượng**:
+   - Chỉ chấp nhận các định dạng ảnh: JPEG, PNG, WebP (xác thực chữ ký magic bytes).
+   - Tuyệt đối không chấp nhận file thực thi, SVG, hoặc các định dạng ngoài chính sách.
+   - Dung lượng tối đa: 10MB (10,485,760 bytes) cho mỗi ảnh.
+   - Kiểm tra hợp lệ toàn bộ danh sách tệp cục bộ trước khi thực hiện bất kỳ lệnh upload nào lên Cloudinary.
+3. **An toàn tương tranh & Giao dịch 2 pha (Race-Safe 2-Phase Upload)**:
+   - Pha 1: Tải lên Cloudinary đồng thời theo dõi danh sách `public_id` đã tạo.
+   - Pha 2: Mở transaction ghi DB, thực hiện khóa dòng `reports` bằng `SELECT ... FOR UPDATE` (với `populate_existing = true`).
+   - Kiểm tra lại dưới lock: báo cáo còn tồn tại, thuộc quyền sở hữu của `reporter_id`, trạng thái là `OPEN` hoặc `REVIEWING`, và tổng số lượng minh chứng không vượt quá 5.
+   - Nếu vi phạm (ví dụ: Admin đã giải quyết báo cáo, hoặc request đồng thời khác đã chiếm dung lượng): rollback DB transaction, thực hiện xóa bù trừ (compensation cleanup) tất cả asset vừa tải lên Cloudinary, và trả về mã lỗi 409 Conflict.
+4. **Bảo mật & Phân quyền**:
+   - Người dùng chỉ được đính kèm minh chứng vào báo cáo do chính mình tạo khi báo cáo còn mở (`OPEN` hoặc `REVIEWING`).
+   - Yêu cầu truy cập từ người dùng khác trả về 404 Not Found để không làm lộ sự tồn tại của báo cáo.
+   - DTO công khai không bao giờ để lộ Cloudinary raw URL hoặc `storage_key`.
+   - Admin xem minh chứng thông qua endpoint streaming bảo mật `GET /admin/reports/{report_id}/evidence/{attachment_id}?variant=thumbnail|full`. Không cho phép client truyền các biến thể transformation tùy ý.
+
+### 7.9. Nhật ký thực thi kiểm duyệt (Moderation Actions Audit Trail)
+
+Bảng `moderation_actions` lưu trữ nhật ký bất biến (immutable audit trail) cho mọi hành động thực thi chế tài (Enforcement Actions) của Quản trị viên đối với người dùng, tin đăng, và giao dịch.
+
+#### Cấu trúc bảng `moderation_actions`
+- `moderation_action_id` BIGSERIAL PRIMARY KEY
+- `report_id` BIGINT NOT NULL REFERENCES `reports(report_id)` ON DELETE RESTRICT
+- `admin_id` BIGINT NOT NULL REFERENCES `users(user_id)` ON DELETE RESTRICT
+- `action_type` VARCHAR(50) NOT NULL (`'USER_BAN'`, `'USER_UNBAN'`, `'PRODUCT_HIDE'`, `'PRODUCT_RESTORE'`, `'BUY_RESTRICT'`, `'BUY_RESTORE'`, `'SELL_RESTRICT'`, `'SELL_RESTORE'`)
+- `target_type` VARCHAR(20) NOT NULL (`'USER'`, `'PRODUCT'`)
+- `target_id` BIGINT NOT NULL
+- `previous_status` VARCHAR(50) NOT NULL
+- `new_status` VARCHAR(50) NOT NULL
+- `created_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- INDEX `ix_moderation_actions_report_id (report_id)`
+- INDEX `ix_moderation_actions_target (target_type, target_id)`
+- INDEX `ix_moderation_actions_admin_id (admin_id)`
+- INDEX `ix_moderation_actions_created_at (created_at DESC)`
+
+#### Quy tắc nghiệp vụ & Tính toàn vẹn
+1. **Tính bất biến (Immutability)**:
+   - Bản ghi sau khi được tạo chỉ dùng cho mục đích tra cứu và đối soát, không bao giờ được phép UPDATE hay DELETE trong luồng nghiệp vụ.
+   - Không chứa cột `reason` tùy tiện (tránh trùng lặp với lý do báo cáo).
+2. **Khóa thứ tự chuẩn hóa (Canonical Lock Order)**:
+   - Thứ tự khóa bắt buộc cho mọi luồng thực thi liên quan đến người dùng:
+     1. Khóa dòng `reports` (`SELECT ... FOR UPDATE`)
+     2. Khóa dòng `users` (`SELECT ... FOR UPDATE`)
+   - Thứ tự khóa đồng nhất trên mọi luồng BAN, UNBAN, CAPABILITY_RESTRICT, CAPABILITY_RESTORE giúp giảm thiểu đáng kể rủi ro deadlock cơ sở dữ liệu.
+3. **Ràng buộc khóa ngoại an toàn (`ON DELETE RESTRICT`)**:
+   - `report_id` và `admin_id` đều sử dụng `ON DELETE RESTRICT` để ngăn việc xóa báo cáo hoặc tài khoản quản trị viên làm mất vết kiểm duyệt.
+4. **Cô lập tài khoản bị khóa (Banned Account Isolation)**:
+   - Khi tài khoản bị `BANNED`, các tin đăng của người bán tự động bị ẩn khỏi danh sách tìm kiếm công khai thông qua join điều kiện `User.status == 'ACTIVE'`, không làm thay đổi trạng thái gốc `Product.status`.
+   - Các hành động tạo đơn mua hàng hoặc đấu giá với người bán bị khóa bị từ chối với lỗi 403 Forbidden.
+
+### 7.10. Chế tài hạn chế quyền tài khoản (Account Capability Restrictions)
+
+Quy tắc nghiệp vụ áp dụng các lệnh hạn chế quyền có thời hạn lên tài khoản người dùng (`BUY` hoặc `SELL`), phát sinh từ quy trình xử lý báo cáo vi phạm (`POST /api/v1/admin/reports/{id}/enforcement`). Chi tiết schema bảng quan hệ xem tại §2.21 `user_capability_restrictions`.
+
+#### Quy tắc nghiệp vụ & Hiệu lực chế tài
+1. **Hiệu lực chế tài**:
+   - Một restriction được coi là đang có hiệu lực tại thời điểm `T` khi và chỉ khi:
+     `starts_at <= T` AND `revoked_at IS NULL` AND (`expires_at IS NULL` OR `expires_at > T`).
+2. **Quyền BUY bị hạn chế**:
+   - Chặn tạo đơn hàng mua (`POST /api/v1/orders`), chặn đặt bid (`POST /api/v1/auctions/{id}/bids`), chặn checkout thắng đấu giá (`POST /api/v1/auctions/{id}/checkout`).
+3. **Quyền SELL bị hạn chế**:
+   - Chặn đăng tin mới (`POST /api/v1/products`), chặn kích hoạt phiên đấu giá (`POST /api/v1/auctions`).
+   - Tự động hủy nguyên tử các phiên đấu giá `SCHEDULED` hoặc `ACTIVE` của người bán sang `CANCELLED`, bảo lưu bid lịch sử, chuyển `listing_type = 'FIXED_PRICE'`.
+   - Ẩn sản phẩm của người bán khỏi danh sách yêu thích `GET /favorites` và `GET /favorites/ids` của người mua (bảo toàn row trong DB).
+
+
+
 ## 8. Quy ước đặt tên
+
 
 - Table: snake_case, số nhiều.
 - Column: snake_case.

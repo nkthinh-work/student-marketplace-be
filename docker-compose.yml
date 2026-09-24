@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: sm_postgres
-    restart: always
+    restart: "no"
     env_file:
       - .env
     environment:
@@ -22,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sm_redis
-    restart: always
+    restart: "no"
     ports:
       - "6379:6379"
     volumes:
@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sm_api
-    restart: always
+    restart: "no"
     ports:
       - "8000:8000"
     volumes:
@@ -61,7 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sm_worker
-    restart: always
+    restart: "no"
     volumes:
       - .:/app
     env_file:

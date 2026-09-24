@@ -3,29 +3,12 @@ from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.privacy import anonymize_name as core_anonymize_name
 from app.modules.orders.models import FulfillmentMethod, PaymentMethod
 
 
 def anonymize_name(full_name: Optional[str]) -> str:
-    """
-    Shortens a Vietnamese full name for privacy-safe public social display.
-    Examples:
-      - "Nguyễn Khắc Thịnh" -> "Nguyễn K. T."
-      - "Trần Minh Anh" -> "Trần M. A."
-      - "Lê Hoàng Nam" -> "Lê H. N."
-      - "Thịnh" -> "Thịnh"
-      - "Minh Anh" -> "Minh A."
-    """
-    if not full_name:
-        return "Người đặt giá"
-    parts = full_name.strip().split()
-    if not parts:
-        return "Người đặt giá"
-    if len(parts) == 1:
-        return parts[0]
-    first = parts[0]
-    initials = " ".join(f"{p[0].upper()}." for p in parts[1:] if p)
-    return f"{first} {initials}".strip()
+    return core_anonymize_name(full_name, default="Người đặt giá")
 
 
 class AuctionCreateRequest(BaseModel):

@@ -1,4 +1,4 @@
-# TECH STACK & KIẾN TRÚC TRIỂN KHAI — Marketplace C2C Sinh viên v3
+# TECH STACK & KIẾN TRÚC TRIỂN KHAI — Marketplace C2C Sinh viên
 
 ## 1. Mục đích và các nguồn chuẩn
 
@@ -6,9 +6,12 @@ Tài liệu này là nguồn chuẩn cho kiến trúc, ranh giới repository, l
 
 - `DB_v7.md` = nguồn chuẩn cho relational database schema dùng chung.
 - `TechStack_v2.md` = nguồn chuẩn cho kiến trúc và delivery.
-- `.roo/rules/00-project.md` = bộ quy tắc agent cố định cho repository hiện tại.
+- `.roo/rules/00-project.md` = bộ quy tắc agent cố định tại workspace root `student-marketplace/`.
 - `student-marketplace-be/docs/PROJECT_STATE.md` = trạng thái triển khai ngắn hạn và công việc tiếp theo.
+- `student-marketplace-be/docs/PROJECT_HISTORY.md` = kho lưu trữ lịch sử các giai đoạn đã hoàn thành.
 - `student-marketplace-be/docs/API_CONTRACT.md` = API contract backend mà frontend và các client tương thích backend trong tương lai sử dụng.
+- `student-marketplace-be/docs/QUERY_INDEX_AUDIT.md` = hồ sơ bằng chứng kiểm toán chỉ mục & hiệu năng truy vấn Phase 9C-A (tài liệu chuyên biệt, không phải nguồn chuẩn thay thế DB_v7.md).
+- `student-marketplace-be/docs/BACKUP_RESTORE.md` = quy trình vận hành sao lưu, kiểm tra tính toàn vẹn và diễn tập khôi phục PostgreSQL.
 
 Nếu thay đổi code mâu thuẫn với một trong các nguồn trên, phải dừng và báo conflict thay vì tự ý đổi thiết kế.
 
@@ -58,6 +61,13 @@ Frontend chỉ giao tiếp qua backend API contract.
 
 `student-marketplace-be` là mục tiêu triển khai hiện tại.
 
+Cấu trúc thư mục ổn định:
+- `app/`
+- `alembic/`
+- `docs/`
+- `scripts/`
+- `tests/`
+
 Backend sở hữu:
 
 - Python 3.12
@@ -71,6 +81,7 @@ Backend sở hữu:
 - Cloudinary server integration
 - backend worker/scheduler
 - backend Docker Compose infrastructure
+- scripts/ (công cụ vận hành sao lưu, kiểm chứng & diễn tập phục hồi)
 
 ### Backend trong tương lai
 
@@ -191,69 +202,63 @@ Phần này chủ yếu ràng buộc API contract, Cloudinary integration và re
 
 ## 5. Cấu trúc repository
 
-### Backend
+### Workspace Scope
+Quy tắc agent `.roo/rules/00-project.md` nằm tại workspace root `student-marketplace/`. Các tài liệu chuẩn của toàn bộ hệ thống (`DB_v7.md`, `TechStack_v2.md`, `API_CONTRACT.md`, `PROJECT_STATE.md`, `PROJECT_HISTORY.md`) cùng hồ sơ kiểm toán (`QUERY_INDEX_AUDIT.md`) được lưu trữ tập trung tại `student-marketplace-be/docs/`.
 
 ```text
-student-marketplace-be/
+student-marketplace/
 ├── .roo/
 │   └── rules/
 │       └── 00-project.md
-├── docs/
-│   ├── DB.md
-│   ├── TechStack.md
-│   ├── API_CONTRACT.md
-│   └── PROJECT_STATE.md
-├── app/
-│   ├── main.py
-│   ├── core/
-│   ├── db/
-│   ├── integrations/
-│   ├── modules/
-│   └── workers/
-├── alembic/
-│   ├── versions/
-│   └── env.py
-├── tests/
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
-```
-
-Ở Phase 0 chỉ tạo skeleton/foundation cần thiết. Không triển khai toàn bộ business module.
-
-### Frontend
-
-```text
-student-marketplace-fe/
-├── .roo/
-│   └── rules/
-│       └── 00-project.md
-├── docs/
-│   ├── API_CONTRACT.md
-│   └── PROJECT_STATE.md
-├── src/
+├── student-marketplace-be/
+│   ├── docs/
+│   │   ├── DB_v7.md
+│   │   ├── TechStack_v2.md
+│   │   ├── API_CONTRACT.md
+│   │   ├── PROJECT_STATE.md
+│   │   ├── PROJECT_HISTORY.md
+│   │   ├── QUERY_INDEX_AUDIT.md
+│   │   └── BACKUP_RESTORE.md
 │   ├── app/
-│   ├── components/
-│   ├── features/
-│   ├── pages/
-│   ├── services/
-│   ├── hooks/
-│   ├── stores/
-│   ├── lib/
-│   ├── types/
-│   └── utils/
-├── public/
-├── Dockerfile
-├── nginx.conf
-├── .env.example
-├── package.json
-└── README.md
+│   │   ├── main.py
+│   │   ├── core/
+│   │   ├── db/
+│   │   ├── integrations/
+│   │   ├── modules/
+│   │   └── workers/
+│   ├── alembic/
+│   │   ├── versions/
+│   │   └── env.py
+│   ├── scripts/
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── .dockerignore
+│   ├── alembic.ini
+│   ├── requirements.txt
+│   └── README.md
+└── student-marketplace-fe/
+    ├── src/
+    │   ├── app/
+    │   ├── components/
+    │   ├── features/
+    │   ├── lib/
+    │   └── ...
+    ├── public/
+    │   └── support/
+    ├── index.html
+    ├── package.json
+    ├── package-lock.json
+    ├── tsconfig*.json
+    ├── vite.config.ts
+    ├── .env.example
+    ├── .gitignore
+    └── README.md
 ```
 
-Dùng `docs/`, không dùng `.docs/`.
+*Ghi chú*: Các thư mục phát sinh hoặc cục bộ (`.venv`, `node_modules`, `dist`, `__pycache__`, `.pytest_cache`, `*.tsbuildinfo`, `.env`, `scratch`, `secrets`) được cố tình lược bỏ khỏi cây cấu trúc chuẩn. Dùng `docs/`, không dùng `.docs/`. Không nhân bản rule `.roo` vào các thư mục con.
 
 ## 6. Kiến trúc backend
 
@@ -500,16 +505,41 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
 - reports
 - admin permissions/moderation
 
+### Phase 8H — Community Engagement
+
+- Phase 8H-A: Community Hero Moments (ảnh khoảnh khắc sinh viên trên Hero carousel)
+- Phase 8H-B: Feedback (phản hồi & đóng góp ý kiến sinh viên)
+
 ### Phase 9 — Workers + Optimization + Deploy
 
-- Redis view counter
-- worker synchronization hardening
-- retry/idempotency hardening cho scheduled jobs
-- query/index checks
-- backup procedure
-- production Docker build
-- CI
-- deployment
+- **Phase 9A**: Worker synchronization hardening, retry/idempotency hardening cho scheduled jobs (`execute_with_retry`, `SweepResult`, exponential backoff).
+- **Phase 9B — Redis Product View Counter**:
+  - Tầng ghi nhận tần suất cao trên Redis với biến đếm số nguyên chính xác (Exact Atomic Integer Counter via Redis Lua scripts).
+  - Khử trùng lặp người xem 24 giờ (`product:views:seen:{product_id}:{viewer_token}`).
+  - Định danh người xem: Ưu tiên `u:{user_id}` từ verified Firebase token; khách vãng lai dùng `a:{anonymous_uuid}`; tuyệt đối không lưu IP hay fingerprint.
+  - Cơ chế đồng bộ bền vững (Durable Monotonic PostgreSQL Projection): Worker quét định kỳ `product:views:dirty`, cập nhật `products.view_count = GREATEST(...)` bảo toàn `updated_at`.
+  - Khả năng chịu lỗi cao (Fail-open): Sự cố Redis không làm gián đoạn việc xem chi tiết hoặc duyệt sản phẩm.
+- **Phase 9C-A — Query & Index Audit / Performance Hardening**:
+  - Kiểm toán khớp chỉ mục và tối ưu hóa truy vấn cơ sở dữ liệu trên toàn bộ các bảng nghiệp vụ.
+  - Bổ sung các chỉ mục chuyên biệt cho hàng đợi xử lý báo cáo vi phạm, loại bỏ toàn bộ Seq Scan trên tập dữ liệu lớn.
+  - Xác thực không phát sinh N+1 truy vấn trên các endpoint danh sách.
+  - Chi tiết hồ sơ đo lường, kế hoạch thực thi EXPLAIN và kết quả kiểm toán thuộc quyền sở hữu của `QUERY_INDEX_AUDIT.md`.
+- **Phase 9C-B — Backup & Restore Procedure**:
+  - Quy trình sao lưu logic PostgreSQL native (`pg_dump --format=custom`) bảo đảm tính nhất quán giao dịch (MVCC snapshot).
+  - Tự động kiểm tra tính toàn vẹn (checksum SHA-256) và bảng mục lục lưu trữ (manifest metadata).
+  - Diễn tập khôi phục cục bộ trên database tạm thời cô lập; kiểm chứng khớp 100% schema, Alembic revision và số lượng bản ghi nghiệp vụ.
+  - Phân định rõ ranh giới phục hồi: PostgreSQL là nguồn dữ liệu nghiệp vụ chuẩn xác; Redis được khởi tạo mới; tài nguyên Cloudinary và tài khoản Firebase Auth tuân thủ ranh giới nhà cung cấp bên ngoài.
+- **Phase 9C-C — Production Docker Build & Container Hardening**:
+  - Đóng gói ứng dụng backend đa tầng (Multi-stage build) trên nền `python:3.12-slim`, loại bỏ trình biên dịch khỏi runtime image.
+  - Sử dụng chung một image (`student-marketplace-be:prod`) cho cả API và Background Worker, phân tách qua command thực thi.
+  - Cấu hình Production Compose (`docker-compose.prod.yml`) chuẩn hóa 4 services (`api`, `worker`, `postgres`, `redis`), loại bỏ hoàn toàn source bind mounts và dev reload.
+  - Phân quyền người dùng an toàn (non-root `appuser`, UID `10001`), cô lập cổng kết nối PostgreSQL và Redis trong mạng nội bộ Compose.
+  - Thiết lập cơ chế kiểm tra sức khỏe (Healthchecks) và dừng mượt mà (Graceful SIGTERM handling); migration CSDL được thực thi tường minh qua lệnh của người vận hành, không chạy tự động khi khởi động API.
+- **Phase 9C-D — CI / Deployment**:
+  - **CI Provider**: Sử dụng GitHub Actions độc lập cho từng repository (`student-marketplace-be` và `student-marketplace-fe`), tuân thủ nguyên tắc least-privilege (`contents: read`), hủy job cũ khi có commit mới (`cancel-in-progress: true`), không sử dụng secrets sản xuất trong kiểm thử thông thường.
+  - **Backend CI Gates**: Python 3.12, container dịch vụ PostgreSQL 15 & Redis 7 cô lập tạm thời, migration Alembic (`alembic upgrade head`), kiểm toán drift (`alembic check`), toàn bộ test suite (`pytest tests/ -q`), kiểm tra cú pháp Production Compose, build image Production Docker, xác thực non-root runtime (`appuser`), kiểm tra toàn vẹn dependencies (`pip check`) và kiểm toán ranh giới tệp tin.
+  - **Frontend CI Gates**: Node.js 22, cài đặt khóa sạch (`npm ci`), kiểm tra kiểu tĩnh TypeScript và đóng gói tối ưu (`tsc -b && vite build`), xác thực artifact `dist/index.html`.
+  - **Cổng Triển khai Từ xa (Remote Deployment Preflight)**: Môi trường triển khai từ xa (Remote target), tên miền sản xuất, chứng chỉ TLS và container registry chưa được cấu hình. Việc triển khai từ xa được giữ nguyên ở trạng thái sẵn sàng (Deployment Ready) và chờ quyết định hạ tầng chính thức từ người dùng.
 
 Phase 5 được phép dùng worker cho **domain requirement bắt buộc** là đóng auction đúng hạn. Phase 9 dành cho hardening/optimization toàn hệ thống, không trì hoãn correctness của đấu giá.
 
@@ -542,21 +572,9 @@ Kết thúc task phải:
 
 ## 12. Project state
 
-`student-marketplace-be/docs/PROJECT_STATE.md` phải chứa:
+`student-marketplace-be/docs/PROJECT_STATE.md` là bộ nhớ ngắn hạn (short-term memory) của dự án, phản ánh chính xác trạng thái thực thi hiện tại và không ghi nhận công việc chưa được verify như thể đã hoàn thành.
 
-```text
-Giai đoạn hiện tại
-Công việc hiện tại
-Trạng thái
-Đã hoàn thành
-Vấn đề đã biết
-Quyết định / ADR links
-File đã thay đổi
-Trạng thái kiểm thử
-Công việc tiếp theo
-```
-
-Đây là short-term memory cho agent và không được ghi nhận công việc chưa được verify như thể đã hoàn thành.
+Nguyên tắc quản lý, cấu trúc mẫu và quy chuẩn phân chia giữa `PROJECT_STATE.md` và `PROJECT_HISTORY.md` được quy định tập trung tại `.roo/rules/00-project.md`.
 
 ## 13. Definition of Done
 

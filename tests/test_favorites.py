@@ -653,3 +653,29 @@ async def test_stock_reduction_keeps_favorite(
         assert len(items) == 1
         assert items[0]["product_id"] == available_product.product_id
         assert items[0]["available_stock"] == 3
+        assert "view_count" in items[0]
+        assert isinstance(items[0]["view_count"], int)
+
+
+@pytest.mark.asyncio
+async def test_favorites_serializes_view_count(
+    test_client: AsyncClient,
+    user_b: User,
+    available_product: Product,
+):
+    """Proves GET /api/v1/favorites explicitly serializes view_count for FavoriteProductResponse."""
+    with auth_patch(user_b):
+        await test_client.post(
+            f"/api/v1/favorites/{available_product.product_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+
+        res = await test_client.get(
+            "/api/v1/favorites",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert res.status_code == 200
+        items = res.json()["items"]
+        assert len(items) == 1
+        assert items[0]["view_count"] == available_product.view_count
+        assert isinstance(items[0]["view_count"], int)

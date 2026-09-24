@@ -116,6 +116,51 @@ class AuctionRepository:
         result_latest = await self.db.execute(stmt_latest)
         return result_latest.scalar_one_or_none()
 
+    async def get_active_or_latest_by_product_ids(
+        self, product_ids: list[int]
+    ) -> dict[int, Auction]:
+        if not product_ids:
+            return {}
+
+        result_map: dict[int, Auction] = {}
+
+        stmt_active = (
+            select(Auction)
+            .where(
+                Auction.product_id.in_(product_ids),
+                Auction.status.in_([AuctionStatus.SCHEDULED.value, AuctionStatus.ACTIVE.value]),
+            )
+            .options(
+                selectinload(Auction.product),
+                selectinload(Auction.winner),
+                selectinload(Auction.bids),
+            )
+            .order_by(Auction.auction_id.desc())
+        )
+        res_active = await self.db.execute(stmt_active)
+        for a in res_active.scalars().all():
+            if a.product_id not in result_map:
+                result_map[a.product_id] = a
+
+        remaining_pids = [pid for pid in product_ids if pid not in result_map]
+        if remaining_pids:
+            stmt_latest = (
+                select(Auction)
+                .where(Auction.product_id.in_(remaining_pids))
+                .options(
+                    selectinload(Auction.product),
+                    selectinload(Auction.winner),
+                    selectinload(Auction.bids),
+                )
+                .order_by(Auction.created_at.desc(), Auction.auction_id.desc())
+            )
+            res_latest = await self.db.execute(stmt_latest)
+            for a in res_latest.scalars().all():
+                if a.product_id not in result_map:
+                    result_map[a.product_id] = a
+
+        return result_map
+
     async def count_bids(self, auction_id: int) -> int:
         stmt = select(func.count()).select_from(AuctionBid).where(AuctionBid.auction_id == auction_id)
         result = await self.db.execute(stmt)
@@ -213,11 +258,16 @@ class AuctionRepository:
     ) -> list[int]:
         stmt = (
             select(Auction.auction_id)
+            .join(Product, Product.product_id == Auction.product_id)
             .where(
                 Auction.status == AuctionStatus.ENDED.value,
                 Auction.winner_id.is_not(None),
                 Auction.winner_checkout_deadline.is_not(None),
                 Auction.winner_checkout_deadline <= now_utc,
+                Product.reserved_stock > 0,
+                ~select(Order.order_id)
+                .where(Order.auction_id == Auction.auction_id)
+                .exists(),
             )
             .order_by(Auction.winner_checkout_deadline.asc(), Auction.auction_id.asc())
             .limit(limit)
