@@ -10,7 +10,11 @@ from app.modules.feedback.schemas import (
     FeedbackCreateResponse,
     MyFeedbackCursorPage,
     PublicFeedbackCursorPage,
+    SupportClaimCreate,
+    SupportClaimUserItem,
+    SupportClaimUserListPage,
     SupportResponse,
+    SupporterLeaderboardResponse,
 )
 from app.modules.users.models import User
 
@@ -96,6 +100,18 @@ async def delete_my_feedback(
 
 
 @router.get(
+    "/support/leaderboard",
+    response_model=SupporterLeaderboardResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Bảng tri ân những người ủng hộ dự án công khai (Top 10)",
+)
+async def get_supporter_leaderboard(
+    db: AsyncSession = Depends(get_db),
+) -> SupporterLeaderboardResponse:
+    return await service.get_supporter_leaderboard(db)
+
+
+@router.get(
     "/support",
     response_model=SupportResponse,
     status_code=status.HTTP_200_OK,
@@ -105,3 +121,39 @@ async def get_support_info(
     db: AsyncSession = Depends(get_db),
 ) -> SupportResponse:
     return await service.get_support_info(db)
+
+
+@router.post(
+    "/support/claims",
+    response_model=SupportClaimUserItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Người dùng gửi xác nhận chuyển khoản ủng hộ dự án",
+)
+async def submit_support_claim(
+    payload: SupportClaimCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> SupportClaimUserItem:
+    return await service.create_user_support_claim(
+        session=db,
+        current_user=current_user,
+        payload=payload,
+    )
+
+
+@router.get(
+    "/support/claims/me",
+    response_model=SupportClaimUserListPage,
+    status_code=status.HTTP_200_OK,
+    summary="Lấy danh sách các yêu cầu xác nhận ủng hộ của chính người dùng hiện tại",
+)
+async def list_my_support_claims(
+    limit: int = Query(10, ge=1, le=50, description="Số lượng mục (1-50)"),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> SupportClaimUserListPage:
+    return await service.list_my_support_claims(
+        session=db,
+        current_user=current_user,
+        limit=limit,
+    )

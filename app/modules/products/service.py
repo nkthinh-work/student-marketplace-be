@@ -19,10 +19,22 @@ from app.integrations.cloudinary import (
 from app.modules.users.models import User
 from app.modules.categories.repository import CategoryRepository
 from app.modules.categories.schemas import CategorySummary
-from app.modules.products.models import Product, ProductImage, ProductStatus, ProductModerationStatus
+from app.modules.products.models import (
+    Product,
+    ProductImage,
+    ProductStatus,
+    ProductModerationStatus,
+    ProductApprovalStatus,
+)
 from app.modules.reviews.models import Review
 from app.modules.auctions.repository import AuctionRepository
 from app.modules.users.capability_service import CapabilityService
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.service import (
+    NotificationService,
+    format_notification,
+    safe_publish_user_notification,
+)
 from app.modules.products.repository import (
     ProductRepository,
     ProductImageRepository,
@@ -51,6 +63,10 @@ from app.modules.products.schemas import (
     SellerSummary,
     SellerDetailSummary,
     ImageReorderRequest,
+    AdminProductApprovalSummary,
+    AdminProductApprovalListResponse,
+    AdminProductApprovalDetailResponse,
+    AdminApprovalDecisionRequest,
 )
 from app.modules.auctions.models import Auction
 
@@ -147,6 +163,10 @@ def format_seller_product(
         available_stock=product.available_stock,
         status=product.status,
         moderation_status=ProductModerationStatus(product.moderation_status),
+        approval_status=ProductApprovalStatus(product.approval_status),
+        submitted_for_review_at=product.submitted_for_review_at,
+        reviewed_at=product.reviewed_at,
+        review_note=product.review_note,
         view_count=count,
         thumbnail_url=thumb_url,
         category=CategorySummary(
@@ -187,6 +207,7 @@ def format_product_detail(
         available_stock=product.available_stock,
         status=product.status,
         moderation_status=ProductModerationStatus(product.moderation_status),
+        approval_status=ProductApprovalStatus(product.approval_status),
         view_count=effective_view_count if effective_view_count is not None else product.view_count,
         images=formatted_images,
         category=CategorySummary(
@@ -203,6 +224,97 @@ def format_product_detail(
             created_at=product.seller.created_at,
             rating_average=rating_average,
             review_count=review_count,
+        ),
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+    )
+
+
+def format_admin_approval_summary(product: Product) -> AdminProductApprovalSummary:
+    thumb_url = None
+    if product.images:
+        for img in product.images:
+            if img.is_thumbnail:
+                thumb_url = get_thumbnail_url(img.image_url)
+                break
+        if thumb_url is None and product.images:
+            thumb_url = get_thumbnail_url(product.images[0].image_url)
+
+    return AdminProductApprovalSummary(
+        product_id=product.product_id,
+        title=product.title,
+        price=product.price,
+        listing_type=product.listing_type,
+        thumbnail_url=thumb_url,
+        category=CategorySummary(
+            category_id=product.category.category_id,
+            name=product.category.name,
+            slug=product.category.slug,
+        ),
+        seller=SellerSummary(
+            user_id=product.seller.user_id,
+            full_name=product.seller.full_name,
+            avatar_url=product.seller.avatar_url,
+        ),
+        image_count=len(product.images) if product.images else 0,
+        submitted_for_review_at=product.submitted_for_review_at,
+        approval_status=ProductApprovalStatus(product.approval_status),
+        created_at=product.created_at,
+    )
+
+
+def format_admin_approval_detail(product: Product) -> AdminProductApprovalDetailResponse:
+    thumb_url = None
+    if product.images:
+        for img in product.images:
+            if img.is_thumbnail:
+                thumb_url = get_thumbnail_url(img.image_url)
+                break
+        if thumb_url is None and product.images:
+            thumb_url = get_thumbnail_url(product.images[0].image_url)
+
+    formatted_images = [
+        ProductImageResponse(
+            image_id=img.image_id,
+            product_id=img.product_id,
+            image_url=img.image_url,
+            detail_url=get_detail_image_url(img.image_url) or img.image_url,
+            sort_order=img.sort_order,
+            is_thumbnail=img.is_thumbnail,
+        )
+        for img in product.images
+    ]
+
+    return AdminProductApprovalDetailResponse(
+        product_id=product.product_id,
+        title=product.title,
+        description=product.description,
+        listing_type=product.listing_type,
+        price=product.price,
+        stock=product.stock,
+        status=product.status,
+        approval_status=ProductApprovalStatus(product.approval_status),
+        moderation_status=ProductModerationStatus(product.moderation_status),
+        submitted_for_review_at=product.submitted_for_review_at,
+        reviewed_by=product.reviewed_by,
+        reviewed_at=product.reviewed_at,
+        review_note=product.review_note,
+        thumbnail_url=thumb_url,
+        images=formatted_images,
+        category=CategorySummary(
+            category_id=product.category.category_id,
+            name=product.category.name,
+            slug=product.category.slug,
+        ),
+        seller=SellerDetailSummary(
+            user_id=product.seller.user_id,
+            full_name=product.seller.full_name,
+            avatar_url=product.seller.avatar_url,
+            delivery_area=product.seller.delivery_area,
+            default_meetup_area=product.seller.default_meetup_area,
+            created_at=product.seller.created_at,
+            rating_average=None,
+            review_count=0,
         ),
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -247,6 +359,7 @@ class ProductService:
             stock=data.stock,
             reserved_stock=0,
             status=ProductStatus.AVAILABLE.value,
+            approval_status=ProductApprovalStatus.DRAFT.value,
             view_count=0,
             is_deleted=False,
         )
@@ -264,6 +377,18 @@ class ProductService:
         Raises 404 HTTPException if the product is not visible to the current caller,
         preventing information leakage about hidden/blocked/deleted items.
         """
+        # Approval gate: non-APPROVED products are hidden from third parties with privacy-safe 404
+        if product.approval_status != ProductApprovalStatus.APPROVED.value:
+            is_authorized = False
+            if current_user:
+                if current_user.user_id == product.seller_id or current_user.role == "ADMIN":
+                    is_authorized = True
+            if not is_authorized:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Product not found.",
+                )
+
         # Privacy-safe check: Products from SELL-restricted sellers are hidden from third parties
         if not current_user or (current_user.user_id != product.seller_id and current_user.role != "ADMIN"):
             now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -482,6 +607,7 @@ class ProductService:
         self,
         seller: User,
         status_filter: Optional[str] = None,
+        approval_status_filter: Optional[str] = None,
         limit: int = 20,
         cursor: Optional[str] = None,
     ) -> SellerProductListResponse:
@@ -498,6 +624,7 @@ class ProductService:
         items, has_more, next_cursor_tuple = await self.product_repo.list_by_seller(
             seller_id=seller.user_id,
             status=status_filter,
+            approval_status=approval_status_filter,
             limit=limit,
             cursor=cursor_tuple,
         )
@@ -584,6 +711,37 @@ class ProductService:
                     detail="Không thể thay đổi giá, tồn kho hoặc hình thức bán khi đang chờ người thắng đặt mua.",
                 )
 
+        # Check moderation-sensitive field changes
+        is_sensitive_edit = False
+        if data.category_id is not None and data.category_id != product.category_id:
+            is_sensitive_edit = True
+        if data.title is not None and data.title.strip() != product.title:
+            is_sensitive_edit = True
+        if data.description is not None:
+            new_desc = data.description.strip() if data.description else None
+            if new_desc != product.description:
+                is_sensitive_edit = True
+        if data.listing_type is not None and data.listing_type.value != product.listing_type:
+            is_sensitive_edit = True
+        if data.price is not None and data.price != product.price:
+            is_sensitive_edit = True
+
+        if is_sensitive_edit:
+            # Active/Scheduled auction guard (Section 38)
+            active_or_sched = await self.auction_repo.get_active_auction_by_product_id(product.product_id)
+            if active_or_sched:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể thay đổi thông tin kiểm duyệt của sản phẩm khi đang có phiên đấu giá.",
+                )
+            if product.approval_status in (
+                ProductApprovalStatus.APPROVED.value,
+                ProductApprovalStatus.PENDING.value,
+                ProductApprovalStatus.REJECTED.value,
+            ):
+                product.approval_status = ProductApprovalStatus.DRAFT.value
+                product.submitted_for_review_at = None
+
         if data.category_id is not None:
             category = await self.category_repo.get_by_id(data.category_id)
             if not category:
@@ -665,6 +823,14 @@ class ProductService:
                 detail="You do not have permission to upload images for this product.",
             )
 
+        # Auction guard (Section 38): check if active/scheduled auction exists
+        active_auction = await self.auction_repo.get_active_auction_by_product_id(product.product_id)
+        if active_auction:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể tải thêm hình ảnh khi sản phẩm đang có phiên đấu giá.",
+            )
+
         if file.content_type not in ALLOWED_IMAGE_MIME_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -708,6 +874,17 @@ class ProductService:
                 is_thumbnail=is_thumb,
             )
             created_image = await self.image_repo.create(new_image)
+
+            # Invalidate approval in the same transaction
+            if product.approval_status in (
+                ProductApprovalStatus.APPROVED.value,
+                ProductApprovalStatus.PENDING.value,
+                ProductApprovalStatus.REJECTED.value,
+            ):
+                product.approval_status = ProductApprovalStatus.DRAFT.value
+                product.submitted_for_review_at = None
+                await self.product_repo.update(product)
+
             await self.db.commit()
             await self.db.refresh(created_image)
 
@@ -749,6 +926,14 @@ class ProductService:
                 detail="You do not have permission to delete images from this product.",
             )
 
+        # Auction guard (Section 38): check if active/scheduled auction exists
+        active_auction = await self.auction_repo.get_active_auction_by_product_id(product.product_id)
+        if active_auction:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể xóa hình ảnh khi sản phẩm đang có phiên đấu giá.",
+            )
+
         image = await self.image_repo.get_by_product_and_id(product_id, image_id)
         if not image:
             raise HTTPException(
@@ -766,6 +951,16 @@ class ProductService:
             if remaining_images:
                 next_thumb = remaining_images[0]
                 await self.image_repo.set_thumbnail(product_id, next_thumb.image_id)
+
+        # Invalidate approval in the same transaction
+        if product.approval_status in (
+            ProductApprovalStatus.APPROVED.value,
+            ProductApprovalStatus.PENDING.value,
+            ProductApprovalStatus.REJECTED.value,
+        ):
+            product.approval_status = ProductApprovalStatus.DRAFT.value
+            product.submitted_for_review_at = None
+            await self.product_repo.update(product)
 
         await self.db.commit()
 
@@ -825,3 +1020,185 @@ class ProductService:
         reorder_items = [(item.image_id, item.sort_order) for item in data.images]
         await self.image_repo.reorder_images(product_id, reorder_items)
         await self.db.commit()
+
+    async def submit_for_review(
+        self, product_id: int, seller: User
+    ) -> SellerProductResponse:
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        if not await CapabilityService(self.db).can_user_sell(seller, now_utc=now_utc):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "SELL_RESTRICTED",
+                    "message": "Tài khoản của bạn đang bị giới hạn quyền bán hàng.",
+                },
+            )
+
+        product = await self.product_repo.get_by_id(product_id, for_update=True)
+        if not product or product.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found.",
+            )
+
+        if product.seller_id != seller.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to submit this product for review.",
+            )
+
+        if product.moderation_status == ProductModerationStatus.BLOCKED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Tin đăng đang bị quản trị viên ẩn, không thể gửi duyệt.",
+            )
+
+        if product.approval_status not in (
+            ProductApprovalStatus.DRAFT.value,
+            ProductApprovalStatus.REJECTED.value,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Tin đăng đang ở trạng thái '{product.approval_status}', không thể gửi duyệt.",
+            )
+
+        product.approval_status = ProductApprovalStatus.PENDING.value
+        product.submitted_for_review_at = datetime.now(timezone.utc)
+        product.review_note = None
+
+        notif_service = NotificationService(self.db)
+        admin_snapshots = await notif_service.notify_admins(
+            title="Có tin đăng mới chờ duyệt",
+            body="Một tin đăng mới đang chờ quản trị viên kiểm duyệt.",
+            ref_type="ADMIN_PRODUCT_APPROVAL",
+            ref_id=product.product_id,
+        )
+
+        updated_product = await self.product_repo.update(product)
+        await self.db.commit()
+        await self.db.refresh(updated_product)
+
+        # Post-commit best-effort realtime notification dispatch
+        for admin_id, notif_dto in admin_snapshots:
+            await safe_publish_user_notification(admin_id, notif_dto)
+
+        return format_seller_product(updated_product)
+
+    async def list_admin_approvals(
+        self,
+        approval_status: str = "PENDING",
+        limit: int = 20,
+        cursor: Optional[str] = None,
+    ) -> AdminProductApprovalListResponse:
+        cursor_tuple = None
+        if cursor:
+            try:
+                cursor_tuple = decode_cursor(cursor)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Invalid pagination cursor.",
+                ) from e
+
+        items, has_more, next_cursor_tuple = await self.product_repo.list_admin_queue(
+            approval_status=approval_status,
+            limit=limit,
+            cursor=cursor_tuple,
+        )
+
+        next_cursor_str = (
+            encode_cursor(next_cursor_tuple[0], next_cursor_tuple[1])
+            if next_cursor_tuple
+            else None
+        )
+
+        return AdminProductApprovalListResponse(
+            items=[format_admin_approval_summary(p) for p in items],
+            next_cursor=next_cursor_str,
+            has_more=has_more,
+        )
+
+    async def get_admin_approval_detail(
+        self, product_id: int
+    ) -> AdminProductApprovalDetailResponse:
+        product = await self.product_repo.get_by_id(product_id)
+        if not product or product.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found.",
+            )
+        return format_admin_approval_detail(product)
+
+    async def admin_decision(
+        self, product_id: int, admin: User, data: AdminApprovalDecisionRequest
+    ) -> AdminProductApprovalDetailResponse:
+        product = await self.product_repo.get_by_id(product_id, for_update=True)
+        if not product or product.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found.",
+            )
+
+        if product.approval_status != ProductApprovalStatus.PENDING.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Tin đăng đang ở trạng thái '{product.approval_status}', không thể xử lý duyệt.",
+            )
+
+        now_utc = datetime.now(timezone.utc)
+        if data.decision == "APPROVE":
+            product.approval_status = ProductApprovalStatus.APPROVED.value
+            product.reviewed_by = admin.user_id
+            product.reviewed_at = now_utc
+            product.review_note = None
+
+            if product.status == ProductStatus.AVAILABLE.value:
+                notif_title = "Tin đăng đã được duyệt"
+                notif_body = f'"{product.title}" đã được duyệt và có thể hiển thị trên Chợ PTITers.'
+            else:
+                notif_title = "Tin đăng đã được duyệt"
+                notif_body = "Tin đăng đã được duyệt. Bạn có thể hiển thị tin khi sẵn sàng."
+        elif data.decision == "REJECT":
+            if not data.note or not data.note.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Vui lòng cung cấp lý do từ chối (1..500 ký tự).",
+                )
+            note = data.note.strip()
+            if len(note) > 500:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Lý do từ chối không được vượt quá 500 ký tự.",
+                )
+            product.approval_status = ProductApprovalStatus.REJECTED.value
+            product.reviewed_by = admin.user_id
+            product.reviewed_at = now_utc
+            product.review_note = note
+
+            notif_title = "Tin đăng cần được chỉnh sửa"
+            notif_body = f'Tin đăng "{product.title}" cần chỉnh sửa trước khi có thể hiển thị.'
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quyết định không hợp lệ.",
+            )
+
+        notif_service = NotificationService(self.db)
+        seller_notif = await notif_service.create_notification(
+            user_id=product.seller_id,
+            type="SYSTEM",
+            title=notif_title,
+            body=notif_body,
+            ref_type="PRODUCT_APPROVAL",
+            ref_id=product.product_id,
+        )
+
+        updated_product = await self.product_repo.update(product)
+        await self.db.commit()
+        await self.db.refresh(updated_product)
+
+        # Post-commit best-effort realtime notification dispatch
+        notif_dto = format_notification(seller_notif)
+        await safe_publish_user_notification(product.seller_id, notif_dto)
+
+        return format_admin_approval_detail(updated_product)

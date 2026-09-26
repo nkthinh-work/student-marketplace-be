@@ -166,6 +166,7 @@ async def sample_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -898,7 +899,19 @@ async def test_no_notification_rows_created(
         await db_session.execute(select(func.count()).select_from(Notification))
     ).scalar_one()
 
-    assert count_after == count_before
+    # Section 23: Report terminal resolution creates exactly 1 reporter notification
+    assert count_after == count_before + 1
+
+    # Verify notification belongs to the reporter
+    stmt_n = select(Notification).where(
+        Notification.user_id == open_user_report.reporter_id,
+        Notification.ref_type == "REPORT",
+        Notification.ref_id == open_user_report.report_id,
+    )
+    res_n = await db_session.execute(stmt_n)
+    rep_notif = res_n.scalar_one_or_none()
+    assert rep_notif is not None
+    assert "xử lý" in rep_notif.title
 
 
 @pytest.mark.asyncio

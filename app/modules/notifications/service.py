@@ -11,6 +11,8 @@ from app.modules.notifications.schemas import (
     UnreadCountResponse,
 )
 
+from app.modules.notifications.models import Notification, NotificationType
+
 logger = logging.getLogger("app.notifications")
 
 
@@ -25,6 +27,29 @@ def format_notification(n: Notification) -> NotificationResponse:
         is_read=n.is_read,
         created_at=n.created_at,
     )
+
+
+async def safe_publish_user_notification(user_id: int, notif_dto: NotificationResponse) -> None:
+    """Best-effort post-commit realtime notification dispatch isolated per recipient."""
+    try:
+        from app.modules.orders.websocket import publish_user_event
+        await publish_user_event(
+            user_id,
+            {
+                "type": "NOTIFICATION_CREATED",
+                "notification": notif_dto.model_dump(mode="json"),
+            },
+        )
+    except Exception as err:
+        logger.warning("Failed to publish NOTIFICATION_CREATED to user %s: %s", user_id, err)
+
+
+async def dispatch_notification_snapshots(
+    snapshots: list[tuple[int, NotificationResponse]],
+) -> None:
+    """Dispatches multiple notification snapshots sequentially and safely."""
+    for user_id, notif_dto in snapshots:
+        await safe_publish_user_notification(user_id, notif_dto)
 
 
 class NotificationService:
@@ -54,6 +79,37 @@ class NotificationService:
             ref_type=ref_type,
             ref_id=ref_id,
         )
+
+    async def get_active_admin_ids(self) -> list[int]:
+        """Fetch all ACTIVE Admin user IDs."""
+        return await self.repo.get_active_admin_ids()
+
+    async def notify_admins(
+        self,
+        *,
+        title: str,
+        body: Optional[str] = None,
+        ref_type: Optional[str] = None,
+        ref_id: Optional[int] = None,
+    ) -> list[tuple[int, NotificationResponse]]:
+        """
+        Create durable SYSTEM notifications for all ACTIVE Admins.
+        Does NOT commit — caller owns transaction boundary.
+        Returns list of (admin_id, NotificationResponse) snapshots for post-commit dispatch.
+        """
+        admin_ids = await self.get_active_admin_ids()
+        snapshots: list[tuple[int, NotificationResponse]] = []
+        for admin_id in admin_ids:
+            notif = await self.repo.create(
+                user_id=admin_id,
+                type=NotificationType.SYSTEM.value,
+                title=title,
+                body=body,
+                ref_type=ref_type,
+                ref_id=ref_id,
+            )
+            snapshots.append((admin_id, format_notification(notif)))
+        return snapshots
 
     async def list_notifications(
         self,
@@ -99,3 +155,7 @@ class NotificationService:
     async def mark_all_read(self, user_id: int) -> int:
         """Returns number of rows updated. Idempotent."""
         return await self.repo.mark_all_read(user_id)
+
+    async def delete_notification(self, notification_id: int, user_id: int) -> bool:
+        """Returns True if notification existed for user and was deleted."""
+        return await self.repo.delete_user_notification(notification_id, user_id)

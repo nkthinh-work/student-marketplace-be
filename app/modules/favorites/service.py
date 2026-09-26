@@ -36,6 +36,14 @@ class FavoriteService:
         if product.status != "AVAILABLE":
             raise ProductNotFoundError()
 
+        # Approval status check: must be APPROVED → 404
+        if product.approval_status != "APPROVED":
+            raise ProductNotFoundError()
+
+        # Moderation status check: must be CLEAR → 404
+        if product.moderation_status != "CLEAR":
+            raise ProductNotFoundError()
+
         await self.favorite_repo.upsert(user.user_id, product_id)
 
     async def remove_favorite(self, user: User, product_id: int) -> None:

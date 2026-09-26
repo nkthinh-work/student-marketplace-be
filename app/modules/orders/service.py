@@ -43,7 +43,13 @@ from app.modules.orders.websocket import (
     publish_order_updated,
     publish_user_event,
 )
-from app.modules.products.models import ListingType, Product, ProductStatus, ProductModerationStatus
+from app.modules.products.models import (
+    ListingType,
+    Product,
+    ProductStatus,
+    ProductModerationStatus,
+    ProductApprovalStatus,
+)
 from app.modules.users.capability_service import CapabilityService
 from app.modules.users.models import User, UserStatus
 
@@ -261,6 +267,7 @@ class OrderService:
             not product
             or product.status != ProductStatus.AVAILABLE.value
             or product.moderation_status == ProductModerationStatus.BLOCKED.value
+            or product.approval_status != ProductApprovalStatus.APPROVED.value
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

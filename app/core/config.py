@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +19,15 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Student Marketplace C2C Backend"
     API_V1_STR: str = "/api/v1"
     LOG_LEVEL: str = "INFO"
+    ENVIRONMENT: str = "development"
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Any) -> list[str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
     
     # PostgreSQL
     POSTGRES_SERVER: str = "localhost"
@@ -57,8 +66,9 @@ class Settings(BaseSettings):
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
 
-    # Community & Feedback Creator
-    COMMUNITY_CREATOR_USER_ID: Optional[int] = 10
+    # Community & Feedback Creator (stable server-side identity, not environment-local user_id)
+    COMMUNITY_CREATOR_PROVIDER_UID: Optional[str] = None
+    COMMUNITY_CREATOR_EMAIL: Optional[str] = None
 
     @property
     def database_url_async(self) -> str:

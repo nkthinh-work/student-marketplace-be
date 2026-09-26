@@ -24,6 +24,16 @@ Nếu thay đổi code mâu thuẫn với một trong các nguồn trên, phải
 - MVP đấu giá chỉ cho sản phẩm còn đúng một đơn vị hàng (`stock = 1`).
 - Không áp dụng ngưỡng giá khởi điểm tối thiểu cố định cho auction trong MVP; sản phẩm đủ điều kiện về tồn kho và trạng thái đều có thể được đấu giá.
 - PostgreSQL vẫn là source of truth cho bid/kết quả; WebSocket chỉ phục vụ realtime delivery.
+- Đóng góp ủng hộ (Support Contributions & Claims):
+  - Phân tách rạch ròi giữa lời khai người dùng (`support_claims` — staging queue phi tài chính) và sổ cái tài chính chính thức (`support_contributions` — authoritative financial ledger).
+  - Khai báo chuyển khoản của người dùng chỉ là hỗ trợ đối soát, tuyệt đối không được xem là chân lý tài chính và không tác động trực tiếp lên Bảng tri ân.
+  - Quản trị viên đối soát thủ công với sao kê tài khoản ngân hàng thực tế, xác nhận hoặc từ chối thông qua khóa giao dịch (`SELECT FOR UPDATE`). Chỉ sau khi Admin xác nhận thành công mới ghi một bản ghi duy nhất vào `support_contributions`.
+  - Hoàn toàn không tích hợp banking API/webhook/OCR/tải ảnh bill.
+  - Bảng tri ân công khai chỉ tổng hợp từ các bản ghi đã xác thực trong `support_contributions` có `is_public = TRUE`.
+- Trung tâm Hướng dẫn (Tutorial Center v2 — Supersedes v1): Hệ thống hướng dẫn sử dụng nhanh (Quick-Help) định dạng dọc 9:16 do Admin quản trị toàn diện (Admin CMS). Video MP4 là tài sản nhị phân duy nhất của Tutorial được lưu trữ trên Cloudinary (backend tải lên và dọn dẹp an toàn). Ảnh thu nhỏ (thumbnail) là URL phân phối dẫn xuất (derived delivery transformation) tự động từ frame video trên Cloudinary, không lưu trữ tệp poster riêng biệt. Metadata lưu trữ bền vững trong bảng PostgreSQL `tutorials` (32 bảng nghiệp vụ). Giao diện người dùng tích hợp dạng Global Overlay Modal toàn cục, mở trực tiếp trên màn hình hiện tại mà không đổi route, bố cục Navigation Section -> Navigation Item -> Tutorials dạng accordion dọc, phát video bằng HTML5 native player với seeking tiện lợi, hỗ trợ nút hành động "Làm ngay" theo Action Registry chuẩn hóa. Không sử dụng WebSocket realtime và không theo dõi tiến độ học tập (không phải LMS).
+- Quy tắc xử lý đa phương tiện (Media Handling Rules):
+  - **PRESENTATION IMAGES** (ảnh khoảnh khắc cộng đồng, ảnh sản phẩm): client-side crop/reposition có thể được sử dụng trước khi upload để chuẩn hóa khung hình hiển thị (16:9 cho Hero Community Moments, 4:3 cho Product Images).
+  - **EVIDENCE/CONTENT MEDIA** (minh chứng báo cáo, minh chứng phản hồi, biên nhận chuyển khoản, tệp đính kèm tin nhắn): bảo toàn nguyên vẹn khung hình gốc (original frame), tuyệt đối không áp dụng client-side crop.
 
 ## 2. Kiến trúc repository
 
@@ -500,10 +510,10 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
 
 ### Phase 8 — Notifications + Reports + Admin
 
-- notifications/read state
+- notifications/read state (PostgreSQL persistent state là chân lý duy nhất; phát tán realtime fan-out qua WebSocket private `/ws/me` là best-effort post-commit)
 - auction notifications (`AUCTION_BID`, `AUCTION_OUTBID`, `AUCTION_WON`, `AUCTION_ENDED`)
-- reports
-- admin permissions/moderation
+- reports + admin notifications fan-out (`ADMIN_REPORT`, `ADMIN_COMMUNITY`, `ADMIN_FEEDBACK`, `ADMIN_SUPPORT_CLAIM`)
+- admin permissions/moderation & user lifecycle notifications (`SUPPORT_CLAIM`, `COMMUNITY_MOMENT`, `COMMUNITY_REJECTED`, `REPORT`, `ACCOUNT_ACCESS`)
 
 ### Phase 8H — Community Engagement
 
@@ -606,3 +616,13 @@ Auction chỉ DONE khi thêm các điều kiện:
 - winner checkout dùng `quantity = 1` và đúng `final_price`
 - reservation được giải phóng đúng khi winner timeout
 - reconnect WebSocket không làm client mất state vì REST có thể phục hồi snapshot
+
+## 14. Architectural Decisions — Pre-Publication Approval & Inbox Cleanup
+
+- **Bắt buộc kiểm duyệt tin đăng tiền xuất bản**: Mọi tin đăng mới đều khởi tạo ở trạng thái `DRAFT`. Ảnh sản phẩm là tùy chọn (cho phép 0, 1, 2... ảnh khi gửi duyệt `submit-review` -> `PENDING`). Quản trị viên duyệt qua hàng đợi chuyên dụng `/admin/product-approvals`, giao diện thẩm định hiển thị rõ ràng placeholder `Tin đăng này không có ảnh.` khi tin không có ảnh và cho phép Approve/Reject bình thường. Nếu người bán thêm hoặc xóa ảnh sau khi đã được duyệt, hệ thống tự động reset `approval_status -> DRAFT`.
+- **Tách biệt rõ ràng 3 miền trạng thái của Product**:
+  1. `status`: Trạng thái kinh doanh của người bán (`AVAILABLE`, `HIDDEN`, `SOLD_OUT`).
+  2. `approval_status`: Trạng thái thẩm định trước xuất bản (`DRAFT`, `PENDING`, `APPROVED`, `REJECTED`).
+  3. `moderation_status`: Chế tài vi phạm sau báo cáo (`CLEAR`, `BLOCKED`).
+- **Notification Hard-delete (User Inbox Cleanup)**: Cho phép người dùng dọn dẹp hòm thư thông báo bằng thao tác hard-delete bản ghi thông báo cá nhân (`DELETE /api/v1/notifications/{id}`); trên thiết bị di động hỗ trợ thao tác vuốt sang phải trực tiếp (direct swipe-right release commit >= 38% chiều rộng và >= 90px) để xóa ngay lập tức khi thả tay mà không cần chạm lần 2 hay modal xác nhận; thao tác này là dọn dẹp hiển thị cục bộ, tuyệt đối không gây hiệu ứng phụ lên các thực thể nghiệp vụ được tham chiếu (Đơn hàng, Báo cáo, Đấu giá, Tin đăng).
+- **Daily Journal Real-data Contract & Continuous Two-Way Marquee**: Giữ nguyên endpoint `/api/v1/daily-needs/today` cho ngữ nghĩa nhật ký hôm nay. Bổ sung `GET /api/v1/daily-needs/recent` (limit clamped 1..10, sắp xếp xác định `note_date DESC, updated_at DESC, daily_need_id DESC`) lấy 10 bản ghi nhật ký thật gần nhất xuyên suốt các ngày để cung cấp dữ liệu cho Marquee trang chủ. Tuyệt đối không sinh dữ liệu giả ở backend. Trên frontend, khi có 1..9 bản ghi thật, tạo presentation pool 10 slots thông qua round-robin tuần hoàn (render key duy nhất dạng `${daily_need_id}-${slotIndex}`) để hai hàng marquee liên tục chuyển động ngược hướng (RTL và LTR) mượt mà; track B phục vụ loop mang `aria-hidden="true"`; khi 0 bản ghi hiển thị empty state trang trọng.

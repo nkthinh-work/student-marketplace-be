@@ -87,6 +87,7 @@ async def view_data(db_session: AsyncSession):
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         view_count=10,
         is_deleted=False,
     )
@@ -100,6 +101,7 @@ async def view_data(db_session: AsyncSession):
         stock=1,
         status=ProductStatus.HIDDEN.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=False,
     )
@@ -113,6 +115,7 @@ async def view_data(db_session: AsyncSession):
         stock=1,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.BLOCKED.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=False,
     )
@@ -126,6 +129,7 @@ async def view_data(db_session: AsyncSession):
         stock=1,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=True,
     )

@@ -4,10 +4,11 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import desc, func, select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.notifications.models import Notification
+from app.modules.users.models import User, UserRole, UserStatus
 
 logger = logging.getLogger("app.notifications")
 
@@ -145,3 +146,25 @@ class NotificationRepository:
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount
+
+    async def get_active_admin_ids(self) -> list[int]:
+        """Query user_ids for all users with role=ADMIN and status=ACTIVE."""
+        stmt = (
+            select(User.user_id)
+            .where(
+                User.role == UserRole.ADMIN.value,
+                User.status == UserStatus.ACTIVE,
+            )
+            .order_by(User.user_id.asc())
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete_user_notification(self, notification_id: int, user_id: int) -> bool:
+        stmt = delete(Notification).where(
+            Notification.notification_id == notification_id,
+            Notification.user_id == user_id,
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount > 0

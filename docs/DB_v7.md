@@ -27,7 +27,7 @@ Tài liệu này là **nguồn chuẩn duy nhất (source of truth)** cho schema
 
 ## 1. Danh sách bảng
 
-Schema hiện có **29 bảng** (25 bảng thực thể chính và 4 bảng quan hệ phụ trợ tin nhắn/nhóm):
+Schema hiện có **32 bảng** (28 bảng thực thể chính và 4 bảng quan hệ phụ trợ tin nhắn/nhóm):
 
 1. `users`
 2. `user_auth_identities`
@@ -58,6 +58,11 @@ Schema hiện có **29 bảng** (25 bảng thực thể chính và 4 bảng quan
 27. `conversation_invites`
 28. `message_mentions`
 29. `message_reactions`
+30. `support_contributions`
+31. `support_claims`
+32. `tutorials`
+
+> Ngoài ra, cơ sở dữ liệu có 1 bảng quản lý phiên bản di trú hệ thống của Alembic là `alembic_version` (tổng cộng 33 bảng vật lý).
 
 
 Giỏ hàng không thuộc phạm vi hệ thống; không định nghĩa bảng `cart_items`.
@@ -132,18 +137,32 @@ Quy tắc:
 | `price` | DECIMAL(12,0) | NO | - | Giá bán khi `FIXED_PRICE`; giá khởi điểm khi `AUCTION`; CHECK >= 0 |
 | `stock` | INT | NO | 1 | Số lượng hàng hiện có; CHECK >= 0 |
 | `reserved_stock` | INT | NO | 0 | Số lượng đang được giữ cho giao dịch; CHECK 0 <= reserved_stock <= stock |
-| `status` | VARCHAR(10) + CHECK | NO | - | `AVAILABLE` / `HIDDEN` / `SOLD_OUT` |
-| `moderation_status` | VARCHAR(20) + CHECK | NO | `CLEAR` | `CLEAR` / `BLOCKED` (chk_products_moderation_status) |
+| `status` | VARCHAR(10) + CHECK | NO | - | Business/Seller state: `AVAILABLE` / `HIDDEN` / `SOLD_OUT` |
+| `approval_status` | VARCHAR(20) + CHECK | NO | `DRAFT` | Pre-publication review state: `DRAFT` / `PENDING` / `APPROVED` / `REJECTED` |
+| `submitted_for_review_at` | TIMESTAMPTZ | YES | - | Thời điểm người bán gửi duyệt tin đăng |
+| `reviewed_by` | BIGINT | YES | - | FK -> users(user_id) ON DELETE SET NULL; Quản trị viên duyệt |
+| `reviewed_at` | TIMESTAMPTZ | YES | - | Thời điểm quản trị viên duyệt/từ chối |
+| `review_note` | VARCHAR(500) | YES | - | Lý do từ chối kiểm duyệt (khi REJECTED) |
+| `moderation_status` | VARCHAR(20) + CHECK | NO | `CLEAR` | Platform enforcement: `CLEAR` / `BLOCKED` (chk_products_moderation_status) |
 | `view_count` | INT | NO | 0 | durable monotonic projection synchronized periodically from Redis Product View Counter |
 | `is_deleted` | BOOLEAN | NO | FALSE | soft delete |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 | `updated_at` | TIMESTAMP | NO | NOW() | trigger tự cập nhật |
 
+Tách bạch rõ ba miền trạng thái của Product:
+1. **Business Status (`status`)**: Trạng thái bán hàng do người bán quản lý (`AVAILABLE`, `HIDDEN`, `SOLD_OUT`).
+2. **Pre-publication Approval (`approval_status`)**: Quy trình kiểm duyệt trước khi công khai do Admin quản trị (`DRAFT`, `PENDING`, `APPROVED`, `REJECTED`). Mặc định khi tạo tin là `DRAFT`.
+3. **Platform Moderation (`moderation_status`)**: Xử lý vi phạm/báo cáo (`CLEAR`, `BLOCKED`).
+
+Quy tắc xuất bản công khai (Public Visibility Invariant):
+Tin đăng chỉ được xuất hiện công khai trên sàn (Danh sách sản phẩm, Tìm kiếm, Chi tiết công khai, Yêu thích, Đặt hàng, v.v.) khi thỏa mãn đồng thời:
+`is_deleted = FALSE AND status = 'AVAILABLE' AND approval_status = 'APPROVED' AND moderation_status = 'CLEAR'` cùng các điều kiện về tài khoản người bán (`ACTIVE`, không bị hạn chế SELL).
+
 Quy tắc ý nghĩa:
 
 - Với `FIXED_PRICE`, người dùng mua trực tiếp từ tin; không đi qua giỏ hàng.
 - Với `AUCTION`, `products.price` là **giá khởi điểm**, không phải giá thắng cuối cùng.
-- Điều kiện `stock = 1`, `reserved_stock = 0`, `status = AVAILABLE`, `is_deleted = FALSE` được kiểm tra khi **bật/kích hoạt đấu giá** ở service layer.
+- Điều kiện `stock = 1`, `reserved_stock = 0`, `status = AVAILABLE`, `approval_status = APPROVED`, `is_deleted = FALSE` được kiểm tra khi **bật/kích hoạt đấu giá** ở service layer.
 - MVP không áp dụng ngưỡng giá khởi điểm tối thiểu cố định cho đấu giá. Mọi sản phẩm đủ điều kiện về trạng thái và tồn kho đều có thể được bật đấu giá, không phụ thuộc giá trị sản phẩm.
 - Không đặt CHECK cứng `stock = 1` cho mọi bản ghi `AUCTION` vì sau khi giao dịch hoàn tất tồn kho hợp lệ có thể giảm về `0` trong khi lịch sử tin vẫn là đấu giá.
 
@@ -556,15 +575,101 @@ Lưu trữ metadata tệp minh chứng hình ảnh (tối đa 3 ảnh JPEG/PNG/W
 | `duration_ms` | BIGINT | YES | NULL | Thời lượng video tính bằng milliseconds (cho video <= 60000ms) |
 | `created_at` | TIMESTAMPTZ | NO | NOW() | |
 
+### 2.25. support_contributions
+
+Lưu trữ sổ cái các khoản đóng góp ủng hộ tài chính (financial support ledger) dành cho người sáng lập và duy trì hệ thống Chợ PTITers, do Quản trị viên (Admin) đối soát và ghi nhận thủ công từ giao dịch ngân hàng thực tế bên ngoài ứng dụng.
+
+**Ngữ nghĩa nghiệp vụ & Bảo vệ quyền riêng tư (Privacy & Immutability):**
+- **Xác thực thủ công tuyệt đối (Manual Admin-Verified Only)**: Bản thân bảng `support_contributions` chỉ chứa các khoản đóng góp thực tế đã được Admin đối soát và xác nhận tiền về tài khoản ngân hàng. Sổ cái này tuyệt đối KHÔNG lưu trữ các yêu cầu chờ duyệt (không có cờ PENDING/REJECTED). Lời khai báo từ người dùng được lưu trữ riêng biệt tại bảng staging `support_claims` (`POST /api/v1/feedback/support/claims`). Hệ thống hoàn toàn KHÔNG tích hợp banking API/webhook và không upload ảnh chụp biên lai/OCR.
+- **Tính bất biến tài chính (Immutability)**: Không cung cấp API sửa đổi tùy tiện số tiền. Trường hợp ghi nhận nhầm lẫn hoặc trùng lặp, Admin sử dụng thao tác xóa bản ghi sai (`DELETE /api/v1/admin/support-contributions/{id}`) và tạo lại bản ghi mới chính xác.
+- **Quyền riêng tư mặc định (`is_public = FALSE`)**: Mọi khoản đóng góp khi tạo mới mặc định ở trạng thái riêng tư (`is_public = FALSE`). Chỉ khi người ủng hộ xác nhận đồng ý xuất hiện công khai trên Bảng tri ân, Admin mới chuyển cờ sang `TRUE` qua endpoint thu hẹp (`PATCH /api/v1/admin/support-contributions/{id}/visibility`).
+- **Tổng hợp Bảng tri ân công khai (`GET /api/v1/feedback/support/leaderboard`)**: Chỉ tổng hợp các bản ghi có `is_public = TRUE`. Bản ghi riêng tư hoàn toàn không xuất hiện và không được cộng gộp vào tổng tiền công khai của người dùng. Tuyệt đối không để lộ mã giao dịch (`transaction_ref`), ghi chú admin (`admin_note`), danh tính admin ghi nhận (`recorded_by`), email, số điện thoại hay tài khoản ngân hàng.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `contribution_id` | BIGINT IDENTITY | NO | auto | PK |
+| `supporter_id` | BIGINT | NO | - | FK -> users(user_id) ON DELETE RESTRICT |
+| `amount_vnd` | BIGINT | NO | - | Số tiền VND nguyên dương, CHECK amount_vnd > 0 |
+| `is_public` | BOOLEAN | NO | FALSE | Quyền riêng tư: mặc định FALSE, chỉ hiển thị công khai khi TRUE |
+| `received_at` | TIMESTAMPTZ | NO | - | Thời điểm thực tế nhận tiền theo sao kê ngân hàng |
+| `recorded_by` | BIGINT | NO | - | FK -> users(user_id) ON DELETE RESTRICT (Admin ghi nhận) |
+| `transaction_ref` | VARCHAR(100) | YES | NULL | Mã tham chiếu/đối soát giao dịch ngân hàng nội bộ |
+| `admin_note` | VARCHAR(255) | YES | NULL | Ghi chú quản trị nội bộ |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm tạo bản ghi hệ thống |
+
+### 2.26. support_claims
+
+Lưu trữ các yêu cầu xác nhận chuyển khoản ủng hộ do người dùng tự khai báo (user support declaration / reconciliation aid). Bảng này đóng vai trò hàng đợi đối soát (staging queue), **KHÔNG** mang giá trị thẩm quyền tài chính (financial truth).
+
+**Ngữ nghĩa nghiệp vụ & Vòng đời đối soát:**
+- **Phân định rõ ranh giới**:
+  - `support_claims`: Khai báo từ người dùng ("Tôi tin rằng tôi đã chuyển số tiền này"). Trạng thái: `PENDING`, `VERIFIED`, `REJECTED`.
+  - `support_contributions`: Sổ cái tài chính có thẩm quyền ("Tiền thực tế đã về tài khoản ngân hàng và được Admin xác minh").
+- **Quy trình xác thực nguyên tử**:
+  - Khi Admin đối soát thành công: Khóa dòng claim (SELECT FOR UPDATE) -> Tạo 1 bản ghi `support_contributions` với số tiền và thời gian thực nhận -> Cập nhật claim (`status = 'VERIFIED'`, `reviewed_by = admin_id`, `reviewed_at = NOW()`, `contribution_id = created_id`) -> Commit nguyên tử.
+  - Idempotency: Không cho phép xác thực lặp lại để chống tạo trùng lặp đóng góp.
+- **Quyền riêng tư Bảng tri ân (`wants_public`)**:
+  - Mặc định `FALSE`. Khi Admin xác nhận, giá trị `is_public` của khoản đóng góp sẽ lấy theo `claim.wants_public`.
+- **Bảng tri ân công khai**: Tuyệt đối **KHÔNG** đọc từ `support_claims`. Chỉ đọc từ `support_contributions` có `is_public = TRUE`.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `claim_id` | BIGINT IDENTITY | NO | auto | PK |
+| `supporter_id` | BIGINT | NO | - | FK -> users(user_id) ON DELETE RESTRICT (người khai báo) |
+| `claimed_amount_vnd` | BIGINT | NO | - | Số tiền khai báo VND nguyên dương, CHECK > 0 |
+| `claimed_transferred_at` | TIMESTAMPTZ | NO | - | Thời gian chuyển tiền do người dùng khai báo |
+| `sender_account_name` | VARCHAR(120) | YES | NULL | Tên chủ tài khoản chuyển tiền (bắt buộc nhập từ phía API/UI) |
+| `wants_public` | BOOLEAN | NO | FALSE | Nguyện vọng công khai Bảng tri ân (mặc định FALSE) |
+| `status` | VARCHAR(20) | NO | 'PENDING' | Trạng thái: PENDING, VERIFIED, REJECTED |
+| `reviewed_by` | BIGINT | YES | NULL | FK -> users(user_id) ON DELETE SET NULL (Admin đối soát) |
+| `reviewed_at` | TIMESTAMPTZ | YES | NULL | Thời điểm đối soát |
+| `contribution_id` | BIGINT | YES | NULL | FK -> support_contributions(contribution_id) ON DELETE SET NULL |
+| `rejection_reason` | VARCHAR(255) | YES | NULL | Lý do từ chối nếu không khớp sao kê |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm gửi yêu cầu xác nhận |
+
+### 2.27. tutorials
+
+Lưu trữ các video hướng dẫn sử dụng nhanh (Quick-Help Tutorial) định dạng dọc 9:16 do Quản trị viên (Admin) quản lý và tải lên trực tiếp thông qua Cloudinary. Video hướng dẫn được phân loại theo vị trí menu điều hướng thực tế (`feature_key` thuộc 10 mục điều hướng người dùng canonical) và có thể kèm theo một nút hành động điều hướng nhanh (`action_key` - "Làm ngay") đến tính năng tương ứng trên hệ sinh thái Chợ PTITers.
+
+**Ngữ nghĩa nghiệp vụ & Vòng đời quản lý:**
+- **Quản lý Admin động (Dynamic CMS)**: Quản trị viên có toàn quyền thêm mới, chỉnh sửa tiêu đề/mô tả, thay thế video 9:16 MP4, bật/tắt xuất bản (`is_published`), sắp xếp thứ tự hiển thị trực quan (`↑ ↓`), và xóa vĩnh viễn (hard delete). Không có chức năng tải lên/quản lý ảnh bìa (poster) tùy biến; ảnh thu nhỏ (thumbnail) được sinh tự động (derived) từ chính video Cloudinary.
+- **Quyền riêng tư & Xuất bản**: Khách và sinh viên chỉ có thể xem các video có `is_published = TRUE` thông qua endpoint công khai `GET /api/v1/tutorials`. Các bản ghi nháp (`is_published = FALSE`) chỉ hiển thị trong giao diện Admin (`/admin/tutorials`).
+- **Lưu trữ Blob & Metadata**: Tệp video MP4 là tài sản nhị phân duy nhất của Tutorial được lưu trữ trên Cloudinary (`student-marketplace/tutorials/videos`). PostgreSQL chỉ lưu URL và storage key của video. Ảnh thu nhỏ (`thumbnail_url`) là URL phân phối dẫn xuất (derived delivery transformation) từ video frame Cloudinary (thời điểm 1s hoặc 0.5s), không được lưu trữ như một cột database và không tạo thêm asset nhị phân độc lập trên Cloudinary.
+- **Dọn dẹp & Bù trừ an toàn (Compensation & Post-commit Cleanup)**:
+  - Khi tạo bản ghi mới hoặc thay thế video: nếu commit database thất bại, video mới tải lên Cloudinary được dọn dẹp theo chính sách best-effort.
+  - Khi thay thế video hoặc xóa bản ghi: video cũ trên Cloudinary chỉ được dọn dẹp sau khi commit database thành công (post-commit). Lỗi dọn dẹp Cloudinary không làm hủy bỏ kết quả giao dịch database.
+- **Thứ tự hiển thị (`sort_order`)**: Hệ thống tự động gán bước số (10, 20, 30...) vào cuối danh sách của nhóm tính năng khi tạo mới, không yêu cầu Admin nhập số thứ tự thủ công.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `tutorial_id` | BIGINT IDENTITY | NO | auto | PK |
+| `feature_key` | VARCHAR(40) | NO | - | Khóa điều hướng canonical: HOME, FAVORITES, CREATE_PRODUCT, MY_LISTINGS, BUYER_ORDERS, SELLER_ORDERS, NOTIFICATIONS, MESSAGES, PROFILE, FEEDBACK |
+| `title` | VARCHAR(120) | NO | - | Tiêu đề hướng dẫn (1..120 ký tự, trimmed) |
+| `description` | VARCHAR(500) | YES | NULL | Mô tả chi tiết hướng dẫn (tối đa 500 ký tự) |
+| `video_url` | VARCHAR(500) | NO | - | URL Cloudinary phân phối video (secure_url) |
+| `video_storage_key` | VARCHAR(255) | NO | - | Cloudinary public_id của video (bảo mật, không lộ ra DTO công khai) |
+| `video_mime_type` | VARCHAR(50) | NO | - | MIME type của video (video/mp4) |
+| `video_size_bytes` | BIGINT | NO | - | Dung lượng video (bytes), CHECK video_size_bytes > 0 |
+| `duration_ms` | BIGINT | YES | NULL | Thời lượng video (ms), CHECK duration_ms IS NULL OR duration_ms > 0 |
+| `action_key` | VARCHAR(50) | YES | NULL | Khóa hành động điều hướng "Làm ngay" theo canonical Action Registry |
+| `sort_order` | INTEGER | NO | 0 | Thứ tự hiển thị trong feature group, CHECK sort_order >= 0 |
+| `is_published` | BOOLEAN | NO | FALSE | Trạng thái xuất bản công khai (mặc định FALSE - nháp) |
+| `created_by` | BIGINT | NO | - | FK -> users(user_id) ON DELETE RESTRICT (Admin tạo) |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm tạo |
+| `updated_at` | TIMESTAMPTZ | NO | NOW() | Trigger tự động cập nhật thời điểm sửa |
+
 ## 3. Khoá và hành động tham chiếu
 
 | Bảng | PK | FK |
 |---|---|---|
 | `users` | user_id | - |
+| `tutorials` | tutorial_id | created_by -> users (RESTRICT) |
 | `moderation_actions` | moderation_action_id | report_id -> reports (CASCADE); admin_id -> users (RESTRICT) |
 | `community_moments` | moment_id | user_id -> users (CASCADE); reviewed_by -> users (SET NULL) |
 | `site_feedback` | feedback_id | user_id -> users (CASCADE) |
 | `site_feedback_attachments` | attachment_id | feedback_id -> site_feedback (CASCADE) |
+| `support_contributions` | contribution_id | supporter_id -> users (RESTRICT); recorded_by -> users (RESTRICT) |
+| `support_claims` | claim_id | supporter_id -> users (RESTRICT); reviewed_by -> users (SET NULL); contribution_id -> support_contributions (SET NULL) |
 | `user_auth_identities` | user_auth_identity_id | user_id -> users (CASCADE) |
 | `categories` | category_id | - |
 | `products` | product_id | seller_id -> users (RESTRICT); category_id -> categories |
@@ -646,15 +751,28 @@ Lưu trữ metadata tệp minh chứng hình ảnh (tối đa 3 ảnh JPEG/PNG/W
 - `site_feedback(created_at DESC, feedback_id DESC)` (`idx_site_feedback_created_at`) để phân trang keyset bảng tin công khai và danh sách quản trị
 - `site_feedback(user_id, created_at DESC, feedback_id DESC)` (`idx_site_feedback_user_created`) để tra cứu lịch sử feedback của người dùng
 - `site_feedback_attachments(feedback_id)` (`idx_site_feedback_attachments_feedback_id`)
+- `support_contributions(received_at DESC, contribution_id DESC)` (`ix_support_contributions_ledger`) để phân trang keyset sổ cái quản trị
+- `support_contributions(is_public, supporter_id)` (`ix_support_contributions_public`) để tổng hợp nhanh Bảng tri ân công khai
+- `support_claims(status, created_at DESC, claim_id DESC)` (`ix_support_claims_status_created`) để phân trang keyset hàng đợi đối soát Admin
+- `support_claims(supporter_id, created_at DESC, claim_id DESC)` (`ix_support_claims_supporter`) để tra cứu lịch sử yêu cầu của người dùng
+- `support_claims(reviewed_by)` (`ix_support_claims_reviewed_by`) bảo vệ khoá ngoại Admin đối soát
+- `support_claims(contribution_id)` (`ix_support_claims_contribution_id`) bảo vệ khoá ngoại liên kết đóng góp
+- `tutorials(is_published, feature_key, sort_order, tutorial_id)` (`ix_tutorials_pub_feature_sort`) để tối ưu hóa truy vấn danh sách hướng dẫn công khai và sắp xếp danh mục quản trị
 
 ## 5. CHECK constraints
 
+- `tutorials.video_size_bytes > 0`
+- `tutorials.duration_ms IS NULL OR tutorials.duration_ms > 0`
+- `tutorials.sort_order >= 0`
 - `orders.buyer_id <> orders.seller_id`
 - `orders.payment_status <> 'VERIFYING' OR payment_receipt_url IS NOT NULL`
 - `orders.payment_status <> 'PAID' OR paid_confirmed_at IS NOT NULL`
 - `community_moments.status IN ('PENDING', 'APPROVED', 'REJECTED')`
 - `site_feedback_attachments.kind IN ('IMAGE', 'VIDEO')`
 - `site_feedback_attachments.size_bytes > 0`
+- `support_contributions.amount_vnd > 0`
+- `support_claims.claimed_amount_vnd > 0`
+- `support_claims.status IN ('PENDING', 'VERIFIED', 'REJECTED')`
 - `products.price >= 0`
 - `products.stock >= 0`
 - `products.reserved_stock BETWEEN 0 AND products.stock`

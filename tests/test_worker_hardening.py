@@ -112,6 +112,7 @@ async def committed_entities(real_session_factory):
             reserved_stock=0,
             listing_type=ListingType.FIXED_PRICE.value,
             status=ProductStatus.AVAILABLE.value,
+            approval_status="APPROVED",
             is_deleted=False,
         )
         session.add(prod)

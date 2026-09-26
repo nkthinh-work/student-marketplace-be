@@ -132,3 +132,5 @@ scratch/
 
 # Local database backups
 backups/
+*.dump
+*.dump.part

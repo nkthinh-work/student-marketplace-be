@@ -104,6 +104,7 @@ async def available_product(
         stock=2,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -411,6 +412,7 @@ async def test_own_product_report_returns_400(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -462,6 +464,7 @@ async def test_soft_deleted_product_returns_404(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=True,
     )
@@ -496,6 +499,7 @@ async def test_hidden_product_returns_404_for_non_owner(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.HIDDEN.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -530,6 +534,7 @@ async def test_sold_out_product_is_reportable(
         stock=0,
         reserved_stock=0,
         status=ProductStatus.SOLD_OUT.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -819,6 +824,10 @@ async def test_report_creation_has_no_side_effects(
     assert sample_order.status == initial_order_status
     assert sample_order.payment_status == initial_order_payment_status
 
-    # 4. Zero notifications created
-    current_notif_count = await db_session.scalar(select(func.count(Notification.notification_id))) or 0
-    assert current_notif_count == initial_notif_count
+    # 4. Reporter and target users receive zero notifications on report creation (only active admins are notified)
+    user_notifs = await db_session.execute(
+        select(Notification).where(
+            Notification.user_id.in_([reporter_user.user_id, other_user.user_id])
+        )
+    )
+    assert len(user_notifs.scalars().all()) == 0

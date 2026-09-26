@@ -97,6 +97,7 @@ async def sample_product(
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -596,6 +597,7 @@ async def test_sell_restriction_cancels_active_and_scheduled_auctions(
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         listing_type=ListingType.AUCTION.value,
         is_deleted=False,
     )
@@ -610,6 +612,7 @@ async def test_sell_restriction_cancels_active_and_scheduled_auctions(
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         listing_type=ListingType.AUCTION.value,
         is_deleted=False,
     )

@@ -49,6 +49,7 @@ def _get_visible_product_condition(now_utc: Optional[datetime] = None):
         Product.is_deleted.is_(False),
         Product.status == "AVAILABLE",
         Product.moderation_status == "CLEAR",
+        Product.approval_status == "APPROVED",
         ~sell_restricted_exists,
     )
 

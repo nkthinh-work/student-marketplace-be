@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from typing import Any, Literal, Optional
@@ -47,23 +48,38 @@ def init_cloudinary() -> None:
         )
 
 
+def get_cloudinary_root_folder() -> str:
+    """
+    Phân giải namespace thư mục gốc theo môi trường (dev vs prod):
+    - production -> {root}/prod
+    - development / testing / others -> {root}/dev
+    Nếu cấu hình CLOUDINARY_ROOT_FOLDER đã chứa hậu tố môi trường (/dev hoặc /prod) thì giữ nguyên.
+    """
+    raw_root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    if raw_root.endswith("/dev") or raw_root.endswith("/prod"):
+        return raw_root
+    env = getattr(settings, "ENVIRONMENT", "development").lower()
+    env_segment = "prod" if env in ("production", "prod") else "dev"
+    return f"{raw_root}/{env_segment}"
+
+
 def get_cloudinary_folder(folder_key: CloudinaryFolderKey = "products") -> str:
     """
-    Phân giải namespace folder trên Cloudinary từ cấu hình root.
-    products -> student-marketplace/products
+    Phân giải namespace folder trên Cloudinary từ cấu hình root theo môi trường.
+    products -> student-marketplace/dev/products (hoặc student-marketplace/prod/products)
     """
     if folder_key not in SUPPORTED_CLOUDINARY_FOLDERS:
         raise ValueError(
             f"Unsupported Cloudinary folder key: '{folder_key}'. Supported: {', '.join(sorted(SUPPORTED_CLOUDINARY_FOLDERS))}"
         )
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/{folder_key}"
 
 
 def get_product_cloudinary_folder(product_id: int) -> str:
     """
     Phân giải namespace folder trên Cloudinary cho một product cụ thể:
-    student-marketplace/products/product-{product_id}
+    student-marketplace/dev/products/product-{product_id}
     """
     base = get_cloudinary_folder("products")
     return f"{base}/product-{product_id}"
@@ -72,27 +88,27 @@ def get_product_cloudinary_folder(product_id: int) -> str:
 def get_order_receipt_cloudinary_folder(order_id: int) -> str:
     """
     Phân giải namespace folder trên Cloudinary cho biên nhận đơn hàng:
-    student-marketplace/orders/order-{order_id}
+    student-marketplace/dev/orders/order-{order_id}
     """
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/orders/order-{order_id}"
 
 
 def get_conversation_attachment_cloudinary_folder(conversation_id: int) -> str:
     """
     Phân giải namespace folder trên Cloudinary cho tệp đính kèm tin nhắn:
-    student-marketplace/conversations/conv-{conversation_id}
+    student-marketplace/dev/conversations/conv-{conversation_id}
     """
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/conversations/conv-{conversation_id}"
 
 
 def get_report_evidence_cloudinary_folder(report_id: int) -> str:
     """
     Phân giải namespace folder trên Cloudinary cho tệp ảnh minh chứng báo cáo:
-    student-marketplace/reports/report-{report_id}
+    student-marketplace/dev/reports/report-{report_id}
     """
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/reports/report-{report_id}"
 
 
@@ -253,6 +269,13 @@ def destroy_asset(public_id: str, resource_type: str = "image") -> bool:
         return False
 
 
+async def destroy_asset_async(public_id: str, resource_type: str = "image") -> bool:
+    """
+    Asynchronously destroys an asset on Cloudinary off the main asyncio event loop thread.
+    """
+    return await asyncio.to_thread(destroy_asset, public_id, resource_type=resource_type)
+
+
 def destroy_image(public_id: str) -> bool:
     """Convenience alias for image assets."""
     return destroy_asset(public_id, resource_type="image")
@@ -334,9 +357,9 @@ def get_hero_image_url(image_url: Optional[str]) -> Optional[str]:
 def get_community_moment_cloudinary_folder() -> str:
     """
     Phân giải namespace folder trên Cloudinary cho ảnh khoảnh khắc cộng đồng:
-    student-marketplace/community-moments
+    student-marketplace/dev/community-moments
     """
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/community-moments"
 
 
@@ -371,9 +394,9 @@ def upload_community_moment_image(
 def get_feedback_cloudinary_folder() -> str:
     """
     Phân giải namespace folder trên Cloudinary cho tệp minh chứng feedback:
-    student-marketplace/feedback
+    student-marketplace/dev/feedback
     """
-    root = (settings.CLOUDINARY_ROOT_FOLDER or "student-marketplace").strip("/")
+    root = get_cloudinary_root_folder()
     return f"{root}/feedback"
 
 
@@ -404,3 +427,136 @@ def upload_feedback_attachment(
         logger.error(f"Failed to upload feedback attachment to Cloudinary: {e}")
         raise CloudinaryUploadError(f"Cloudinary feedback attachment upload failed: {e}") from e
 
+
+def get_tutorial_video_cloudinary_folder() -> str:
+    """
+    Phân giải namespace folder trên Cloudinary cho video hướng dẫn:
+    student-marketplace/dev/tutorials/videos
+    """
+    root = get_cloudinary_root_folder()
+    return f"{root}/tutorials/videos"
+
+
+def build_tutorial_thumbnail_url(
+    video_storage_key: str,
+    duration_ms: Optional[int] = None,
+) -> str:
+    """
+    Derives an optimized image thumbnail URL from a Cloudinary video asset.
+    Chooses a frame at second 1 (or 0.5s for very short clips), formats as JPG,
+    and scales to width 360 (c_limit, f_auto, q_auto).
+    Does NOT store or upload a separate asset.
+    """
+    if not video_storage_key:
+        return ""
+    start_offset = "0.5" if (duration_ms and duration_ms < 2000) else "1"
+    url, _ = cloudinary.utils.cloudinary_url(
+        video_storage_key,
+        resource_type="video",
+        format="jpg",
+        start_offset=start_offset,
+        width=360,
+        crop="limit",
+        quality="auto",
+        fetch_format="auto",
+        secure=True,
+    )
+    return url
+
+
+def get_tutorial_video_delivery_url(video_url: str) -> str:
+    """
+    Returns a web-optimized, universally playable Cloudinary video delivery URL.
+    Ensures vc_auto is applied so that modern mobile uploads (e.g. HEVC/hvc1 from iPhones)
+    are delivered as universally compatible H.264 (avc1) in all desktop and mobile browsers.
+    Preserves existing valid video/upload structure and does NOT use image/upload.
+    """
+    if not video_url:
+        return ""
+    pattern = r"(https?://res\.cloudinary\.com/[^/]+/video/upload/)(?:[^/]+/)?(v[0-9]+/.+|\w+/.+)"
+    match = re.match(pattern, video_url)
+    if match and "vc_" not in video_url:
+        prefix, rest = match.groups()
+        return f"{prefix}vc_auto/{rest}"
+    return video_url
+
+
+def _upload_tutorial_video_sync(
+    file: Any,
+    filename: str = "tutorial.mp4",
+    file_size: Optional[int] = None,
+) -> dict[str, Any]:
+    """
+    Synchronous Cloudinary SDK invocation for tutorial video upload.
+    Must be called off the event loop via upload_tutorial_video.
+    Uses normal upload for files <= 20 MB, and upload_large for files > 20 MB.
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    target_folder = get_tutorial_video_cloudinary_folder()
+
+    if hasattr(file, "seek") and callable(file.seek):
+        file.seek(0)
+
+    if file_size is None and hasattr(file, "seek") and callable(file.seek):
+        try:
+            file_size = cloudinary.utils.file_io_size(file)
+            file.seek(0)
+        except Exception:
+            file_size = None
+
+    try:
+        UPLOAD_LARGE_THRESHOLD_BYTES = 20 * 1024 * 1024  # 20 MB
+        if file_size is not None and file_size > UPLOAD_LARGE_THRESHOLD_BYTES:
+            result = cloudinary.uploader.upload_large(
+                file,
+                folder=target_folder,
+                resource_type="video",
+                unique_filename=True,
+                filename=filename,
+                chunk_size=20 * 1024 * 1024,
+            )
+        else:
+            result = cloudinary.uploader.upload(
+                file,
+                folder=target_folder,
+                resource_type="video",
+                unique_filename=True,
+                filename=filename,
+            )
+
+        if not result or not isinstance(result, dict):
+            raise CloudinaryUploadError("Cloudinary returned an invalid or empty response.")
+
+        res_type = result.get("resource_type")
+        if res_type != "video":
+            pub_id = result.get("public_id")
+            if pub_id:
+                destroy_asset(pub_id, resource_type=res_type or "raw")
+            raise CloudinaryUploadError(f"Cloudinary upload returned unexpected resource_type: {res_type}")
+
+        raw_url = result.get("secure_url") or result.get("url") or ""
+        if not raw_url:
+            raise CloudinaryUploadError("Cloudinary upload did not return a valid delivery URL.")
+
+        result["secure_url"] = get_tutorial_video_delivery_url(raw_url)
+        return result
+    except CloudinaryUploadError:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload tutorial video to Cloudinary: {e}")
+        raise CloudinaryUploadError(f"Cloudinary tutorial video upload failed: {e}") from e
+
+
+async def upload_tutorial_video(
+    file: Any,
+    filename: str = "tutorial.mp4",
+    file_size: Optional[int] = None,
+) -> dict[str, Any]:
+    """
+    Asynchronously uploads a tutorial MP4 video to Cloudinary off the event loop thread.
+    """
+    return await asyncio.to_thread(_upload_tutorial_video_sync, file, filename=filename, file_size=file_size)

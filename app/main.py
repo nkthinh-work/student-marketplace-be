@@ -36,6 +36,12 @@ from app.modules.community_moments.admin_router import (
 )
 from app.modules.feedback.router import router as feedback_router
 from app.modules.feedback.admin_router import router as admin_feedback_router
+from app.modules.feedback.admin_support_router import router as admin_support_router
+from app.modules.feedback.admin_support_claims_router import router as admin_support_claims_router
+from app.modules.tutorials.router import router as tutorials_router
+from app.modules.tutorials.admin_router import router as admin_tutorials_router
+from app.modules.products.admin_router import router as admin_product_approvals_router
+
 
 
 logger = logging.getLogger("app")
@@ -84,6 +90,11 @@ app.include_router(community_moments_router, prefix=settings.API_V1_STR)
 app.include_router(admin_community_moments_router, prefix=settings.API_V1_STR)
 app.include_router(feedback_router, prefix=settings.API_V1_STR)
 app.include_router(admin_feedback_router, prefix=settings.API_V1_STR)
+app.include_router(admin_support_router, prefix=settings.API_V1_STR)
+app.include_router(admin_support_claims_router, prefix=settings.API_V1_STR)
+app.include_router(tutorials_router, prefix=settings.API_V1_STR)
+app.include_router(admin_tutorials_router, prefix=settings.API_V1_STR)
+app.include_router(admin_product_approvals_router, prefix=settings.API_V1_STR)
 
 @app.get("/health")
 async def health_check(

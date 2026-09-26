@@ -30,7 +30,8 @@ from app.modules.daily_needs.models import DailyNeed, DailyJournalCheckin  # noq
 from app.modules.notifications.models import Notification  # noqa: F401
 from app.modules.reports.models import Report  # noqa: F401
 from app.modules.community_moments.models import CommunityMoment  # noqa: F401
-from app.modules.feedback.models import SiteFeedback  # noqa: F401
+from app.modules.feedback.models import SiteFeedback, SupportContribution, SupportClaim  # noqa: F401
+from app.modules.tutorials.models import Tutorial  # noqa: F401
 target_metadata = Base.metadata
 
 

@@ -79,6 +79,7 @@ async def single_stock_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)

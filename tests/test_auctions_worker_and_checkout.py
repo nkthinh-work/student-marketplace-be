@@ -90,6 +90,7 @@ async def product(db_session: AsyncSession, seller: User, sample_category: Categ
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=False,
     )
@@ -334,6 +335,7 @@ async def test_on_demand_finalization_on_get_auction_detail_and_by_product(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -400,6 +402,7 @@ async def test_close_sweep_resilience_to_pubsub_errors(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -438,6 +441,7 @@ async def test_expired_active_auction_direct_checkout_without_prior_get(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -506,6 +510,7 @@ async def test_active_unexpired_auction_checkout_rejected(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -554,6 +559,7 @@ async def test_get_my_won_auctions_service_scenarios(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod1)
     await db_session.flush()
@@ -587,6 +593,7 @@ async def test_get_my_won_auctions_service_scenarios(
         reserved_stock=0,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod2)
     await db_session.flush()
@@ -641,6 +648,7 @@ async def test_seller_cannot_delete_or_hide_product_with_active_winner_right(
         reserved_stock=1,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -699,6 +707,7 @@ async def test_legacy_orphan_won_auction_excluded_from_my_won(
         reserved_stock=1,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=True,
     )
     db_session.add(prod)

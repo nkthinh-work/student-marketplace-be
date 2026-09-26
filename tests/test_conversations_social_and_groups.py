@@ -110,6 +110,7 @@ async def test_order(
         title="Bàn phím cơ DareU",
         price=Decimal("450000"),
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -556,7 +557,7 @@ async def test_product_sharing_direct_only(
     # Create group and product
     conv = Conversation(type="GROUP", title="Nhóm Thảo Luận Mua Bán")
     db_session.add(conv)
-    prod = Product(seller_id=owner_user.user_id, category_id=category.category_id, title="Tai nghe Sony", price=Decimal("1200000"))
+    prod = Product(seller_id=owner_user.user_id, category_id=category.category_id, title="Tai nghe Sony", price=Decimal("1200000"), approval_status="APPROVED")
     db_session.add(prod)
     await db_session.flush()
 

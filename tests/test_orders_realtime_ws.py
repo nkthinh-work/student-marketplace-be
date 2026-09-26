@@ -216,6 +216,7 @@ async def test_order_service_emits_realtime_events_throughout_lifecycle(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -312,6 +313,7 @@ async def test_order_terms_and_cancellation_emits_realtime(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -377,6 +379,7 @@ async def test_winner_checkout_emits_realtime_events_to_seller(
         reserved_stock=1,
         listing_type=ListingType.AUCTION.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()

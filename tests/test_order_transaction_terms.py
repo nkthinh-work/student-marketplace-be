@@ -114,6 +114,7 @@ async def paid_product(
         stock=3,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -135,6 +136,7 @@ async def free_product(
         stock=5,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -684,6 +686,7 @@ async def test_cash_to_bank_transfer_rejected_if_seller_has_no_bank(
         price=Decimal("50000"),
         stock=1,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)

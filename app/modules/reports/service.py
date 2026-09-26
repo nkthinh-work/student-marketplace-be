@@ -64,6 +64,14 @@ from app.modules.reports.schemas import (
     UserTargetSummary,
 
 )
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.schemas import NotificationResponse
+from app.modules.notifications.service import (
+    NotificationService,
+    format_notification,
+    safe_publish_user_notification,
+    dispatch_notification_snapshots,
+)
 from app.modules.users.capability_models import (
     CapabilityType,
     UserCapabilityRestriction,
@@ -175,6 +183,66 @@ class ReportService:
         self.auction_repo = AuctionRepository(db)
         self.order_repo = OrderRepository(db)
         self.cap_repo = CapabilityRestrictionRepository(db)
+
+    async def _create_reporter_terminal_notification(
+        self, report: Report, is_resolved: bool
+    ) -> Optional[tuple[int, NotificationResponse]]:
+        try:
+            notif_service = NotificationService(self.db)
+            if is_resolved:
+                title = "Báo cáo của bạn đã được xử lý"
+                body = "Báo cáo vi phạm của bạn đã được quản trị viên xem xét và xử lý."
+            else:
+                title = "Báo cáo của bạn đã được xem xét"
+                body = "Báo cáo vi phạm của bạn đã được quản trị viên xem xét và kết luận không có vi phạm."
+            notif = await notif_service.create_notification(
+                user_id=report.reporter_id,
+                type=NotificationType.SYSTEM.value,
+                title=title,
+                body=body,
+                ref_type="REPORT",
+                ref_id=report.report_id,
+            )
+            return (report.reporter_id, format_notification(notif))
+        except Exception as e:
+            logger.warning("Could not dispatch reporter notification for report %s: %s", report.report_id, e)
+            return None
+
+    async def _create_capability_enforcement_notification(
+        self,
+        target_user_id: int,
+        report_id: int,
+        cap_strs: list[str],
+        is_restrict: bool,
+        expires_at: Optional[datetime] = None,
+    ) -> Optional[tuple[int, NotificationResponse]]:
+        try:
+            notif_service = NotificationService(self.db)
+            caps_desc = (
+                "mua hàng và bán hàng"
+                if len(cap_strs) > 1
+                else ("mua hàng" if "BUY" in cap_strs else "bán hàng")
+            )
+            if is_restrict:
+                title = "Quyền tài khoản của bạn đã được cập nhật"
+                expiry_str = expires_at.strftime("%d/%m/%Y") if expires_at else ""
+                body = f"Quyền {caps_desc} của bạn bị tạm hạn chế đến {expiry_str}."
+            else:
+                title = "Quyền tài khoản của bạn đã được khôi phục"
+                body = f"Quyền {caps_desc} của bạn đã được khôi phục."
+
+            notif = await notif_service.create_notification(
+                user_id=target_user_id,
+                type=NotificationType.SYSTEM.value,
+                title=title,
+                body=body,
+                ref_type="ACCOUNT_ACCESS",
+                ref_id=report_id,
+            )
+            return (target_user_id, format_notification(notif))
+        except Exception as e:
+            logger.warning("Could not dispatch capability notification for user %s: %s", target_user_id, e)
+            return None
 
     async def _resolve_subject_from_report(
         self, report: Report
@@ -301,8 +369,21 @@ class ReportService:
         )
 
         await self.report_repo.create(report)
+
+        # Notify active admins of new report
+        notif_service = NotificationService(self.db)
+        admin_snapshots = await notif_service.notify_admins(
+            title="Có báo cáo vi phạm mới",
+            body=f"Một báo cáo {report.target_type} mới đang chờ xử lý.",
+            ref_type="ADMIN_REPORT",
+            ref_id=report.report_id,
+        )
+
         await self.db.commit()
         await self.db.refresh(report)
+
+        # Post-commit best-effort realtime dispatch
+        await dispatch_notification_snapshots(admin_snapshots)
 
         return report
 
@@ -987,12 +1068,20 @@ class ReportService:
         report.status = new_status.value
         report.handled_by = current_admin.user_id
 
+        reporter_snapshot = None
         if new_status == ReportStatus.REVIEWING:
             report.handled_at = None
         else:  # RESOLVED or REJECTED
             report.handled_at = now_utc
+            reporter_snapshot = await self._create_reporter_terminal_notification(
+                report, is_resolved=(new_status == ReportStatus.RESOLVED)
+            )
 
         await self.db.commit()
+
+        # Post-commit best-effort realtime dispatch
+        if reporter_snapshot:
+            await safe_publish_user_notification(reporter_snapshot[0], reporter_snapshot[1])
 
         return await self.get_admin_report_detail(current_admin, report_id)
 
@@ -1105,8 +1194,16 @@ class ReportService:
             report.handled_by = current_admin.user_id
             report.handled_at = now_utc
 
+            reporter_snapshot = await self._create_reporter_terminal_notification(
+                report, is_resolved=True
+            )
+
             # Single atomic commit
             await self.db.commit()
+
+            # Post-commit best-effort reporter notification dispatch
+            if reporter_snapshot:
+                await safe_publish_user_notification(reporter_snapshot[0], reporter_snapshot[1])
 
             # ONLY AFTER successful commit: best-effort socket revocation
             try:
@@ -1262,8 +1359,16 @@ class ReportService:
             report.handled_by = current_admin.user_id
             report.handled_at = now_utc
 
+            reporter_snapshot = await self._create_reporter_terminal_notification(
+                report, is_resolved=True
+            )
+
             # Single atomic commit
             await self.db.commit()
+
+            # Post-commit best-effort reporter notification dispatch
+            if reporter_snapshot:
+                await safe_publish_user_notification(reporter_snapshot[0], reporter_snapshot[1])
 
             # Post-commit best-effort realtime auction cancellation event
             if cancelled_auction_id:
@@ -1515,7 +1620,20 @@ class ReportService:
             report.handled_by = current_admin.user_id
             report.handled_at = now_utc
 
+            target_snapshot = await self._create_capability_enforcement_notification(
+                target_user.user_id, report.report_id, cap_strs, is_restrict=True, expires_at=expires_at
+            )
+            reporter_snapshot = await self._create_reporter_terminal_notification(
+                report, is_resolved=True
+            )
+
             await self.db.commit()
+
+            # Post-commit best-effort realtime notifications
+            if target_snapshot:
+                await safe_publish_user_notification(target_snapshot[0], target_snapshot[1])
+            if reporter_snapshot:
+                await safe_publish_user_notification(reporter_snapshot[0], reporter_snapshot[1])
 
             # Post-commit best-effort realtime emit for cancelled auctions
             for auction_id in cancelled_auction_ids:
@@ -1580,8 +1698,16 @@ class ReportService:
                 )
                 await self.report_repo.add_moderation_action(audit_action)
 
+            target_snapshot = await self._create_capability_enforcement_notification(
+                target_user.user_id, report.report_id, cap_strs, is_restrict=False
+            )
+
             # Report remains RESOLVED; do NOT alter handled_by or handled_at
             await self.db.commit()
+
+            # Post-commit best-effort realtime notification
+            if target_snapshot:
+                await safe_publish_user_notification(target_snapshot[0], target_snapshot[1])
 
         return await self.get_admin_report_detail(current_admin, report_id)
 

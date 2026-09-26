@@ -6,7 +6,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.categories.schemas import CategorySummary
-from app.modules.products.models import ListingType, ProductStatus, ProductModerationStatus
+from app.modules.products.models import (
+    ListingType,
+    ProductStatus,
+    ProductModerationStatus,
+    ProductApprovalStatus,
+)
 
 MAX_PRODUCT_PRICE_VND = Decimal("50000000")
 
@@ -131,6 +136,7 @@ class ProductDetailResponse(BaseModel):
     available_stock: int
     status: str
     moderation_status: ProductModerationStatus
+    approval_status: ProductApprovalStatus = ProductApprovalStatus.DRAFT
     view_count: int
     images: list[ProductImageResponse]
     category: CategorySummary
@@ -166,6 +172,10 @@ class SellerProductResponse(BaseModel):
     available_stock: int
     status: str
     moderation_status: ProductModerationStatus
+    approval_status: ProductApprovalStatus = ProductApprovalStatus.DRAFT
+    submitted_for_review_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
     view_count: int
     thumbnail_url: Optional[str] = None
     category: CategorySummary
@@ -199,3 +209,58 @@ class ProductViewResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     view_count: int
     counted: bool
+
+
+class AdminProductApprovalSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    product_id: int
+    title: str
+    price: Decimal
+    listing_type: str
+    thumbnail_url: Optional[str] = None
+    category: CategorySummary
+    seller: SellerSummary
+    image_count: int = 0
+    submitted_for_review_at: Optional[datetime] = None
+    approval_status: ProductApprovalStatus
+    created_at: datetime
+
+
+class AdminProductApprovalListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AdminProductApprovalSummary]
+    next_cursor: Optional[str] = None
+    has_more: bool
+
+
+class AdminProductApprovalDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    product_id: int
+    title: str
+    description: Optional[str] = None
+    listing_type: str
+    price: Decimal
+    stock: int
+    status: str
+    approval_status: ProductApprovalStatus
+    moderation_status: ProductModerationStatus
+    submitted_for_review_at: Optional[datetime] = None
+    reviewed_by: Optional[int] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    images: list[ProductImageResponse]
+    category: CategorySummary
+    seller: SellerDetailSummary
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(..., pattern="^(APPROVE|REJECT)$")
+    note: Optional[str] = Field(None, max_length=500)

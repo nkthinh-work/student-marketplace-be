@@ -49,6 +49,13 @@ class DailyNeedService:
             items=[self._to_response(note) for note in notes]
         )
 
+    async def get_recent_public_notes(self, limit: int = 10) -> DailyNeedListResponse:
+        clamped_limit = max(1, min(limit, 10))
+        notes = await self.repo.get_recent_notes(limit=clamped_limit)
+        return DailyNeedListResponse(
+            items=[self._to_response(note) for note in notes]
+        )
+
     async def get_my_today_note(
         self, current_user: User
     ) -> Optional[DailyNeedResponse]:

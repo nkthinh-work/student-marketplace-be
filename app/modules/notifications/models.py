@@ -64,7 +64,7 @@ class Notification(Base):
         Text, nullable=True
     )
     ref_type: Mapped[str | None] = mapped_column(
-        String(20), nullable=True
+        String(32), nullable=True
     )
     ref_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True

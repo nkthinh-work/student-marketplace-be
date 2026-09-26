@@ -34,6 +34,20 @@ class DailyNeedRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().unique().all())
 
+    async def get_recent_notes(self, limit: int = 10) -> list[DailyNeed]:
+        stmt = (
+            select(DailyNeed)
+            .options(joinedload(DailyNeed.user))
+            .order_by(
+                DailyNeed.note_date.desc(),
+                DailyNeed.updated_at.desc(),
+                DailyNeed.daily_need_id.desc(),
+            )
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().unique().all())
+
     async def get_user_note_for_date(
         self, user_id: int, note_date: date
     ) -> Optional[DailyNeed]:

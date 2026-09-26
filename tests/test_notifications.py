@@ -82,6 +82,7 @@ async def fixed_product(
         stock=5,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -474,3 +475,162 @@ async def test_order_creation_realtime_failure_does_not_break_order(
         )
         result = await db_session.execute(stmt)
         assert result.scalar_one_or_none() is not None
+
+
+# 10. Delete own read Notification -> 204, row gone
+@pytest.mark.asyncio
+async def test_delete_own_read_notification(
+    test_client: AsyncClient,
+    user_a: User,
+    db_session: AsyncSession,
+):
+    notif = Notification(
+        user_id=user_a.user_id,
+        type="SYSTEM",
+        title="Test Read Notif",
+        body="Body",
+        is_read=True,
+    )
+    db_session.add(notif)
+    await db_session.commit()
+    await db_session.refresh(notif)
+
+    with auth_patch(user_a):
+        res = await test_client.delete(
+            f"/api/v1/notifications/{notif.notification_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert res.status_code == 204
+
+    # Verify row is hard deleted from DB
+    stmt = select(Notification).where(Notification.notification_id == notif.notification_id)
+    result = await db_session.execute(stmt)
+    assert result.scalar_one_or_none() is None
+
+
+# 11. Delete own unread Notification -> 204, unread-count decreases canonically
+@pytest.mark.asyncio
+async def test_delete_own_unread_notification_decrements_count(
+    test_client: AsyncClient,
+    user_a: User,
+    db_session: AsyncSession,
+):
+    notif = Notification(
+        user_id=user_a.user_id,
+        type="SYSTEM",
+        title="Test Unread Notif",
+        body="Body",
+        is_read=False,
+    )
+    db_session.add(notif)
+    await db_session.commit()
+    await db_session.refresh(notif)
+
+    with auth_patch(user_a):
+        count_res_before = await test_client.get(
+            "/api/v1/notifications/unread-count",
+            headers={"Authorization": "Bearer token"},
+        )
+        before_count = count_res_before.json()["count"]
+        assert before_count >= 1
+
+        del_res = await test_client.delete(
+            f"/api/v1/notifications/{notif.notification_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert del_res.status_code == 204
+
+        count_res_after = await test_client.get(
+            "/api/v1/notifications/unread-count",
+            headers={"Authorization": "Bearer token"},
+        )
+        after_count = count_res_after.json()["count"]
+        assert after_count == before_count - 1
+
+
+# 12. Delete other user's Notification -> 404 privacy-safe, row remains
+@pytest.mark.asyncio
+async def test_delete_other_user_notification_returns_404(
+    test_client: AsyncClient,
+    user_a: User,
+    user_b: User,
+    db_session: AsyncSession,
+):
+    notif = Notification(
+        user_id=user_a.user_id,
+        type="SYSTEM",
+        title="User A's Notif",
+        body="Body",
+        is_read=False,
+    )
+    db_session.add(notif)
+    await db_session.commit()
+    await db_session.refresh(notif)
+
+    # User B tries to delete User A's notification
+    with auth_patch(user_b):
+        res = await test_client.delete(
+            f"/api/v1/notifications/{notif.notification_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert res.status_code == 404
+
+    # Verify row still exists for User A
+    stmt = select(Notification).where(Notification.notification_id == notif.notification_id)
+    result = await db_session.execute(stmt)
+    assert result.scalar_one_or_none() is not None
+
+
+# 13. Delete nonexistent notification -> 404
+@pytest.mark.asyncio
+async def test_delete_nonexistent_notification_returns_404(
+    test_client: AsyncClient,
+    user_a: User,
+):
+    with auth_patch(user_a):
+        res = await test_client.delete(
+            "/api/v1/notifications/999999999",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert res.status_code == 404
+
+
+# 14. Delete Admin actionable notification -> underlying referenced object remains unchanged
+@pytest.mark.asyncio
+async def test_delete_admin_actionable_notification_preserves_underlying_object(
+    test_client: AsyncClient,
+    user_a: User,
+    fixed_product: Product,
+    db_session: AsyncSession,
+):
+    # Create an admin notification referencing a product
+    admin_notif = Notification(
+        user_id=user_a.user_id,
+        type="SYSTEM",
+        title="Có tin đăng mới chờ duyệt",
+        body="Chi tiết",
+        ref_type="ADMIN_PRODUCT_APPROVAL",
+        ref_id=fixed_product.product_id,
+        is_read=False,
+    )
+    db_session.add(admin_notif)
+    await db_session.commit()
+    await db_session.refresh(admin_notif)
+
+    with auth_patch(user_a):
+        res = await test_client.delete(
+            f"/api/v1/notifications/{admin_notif.notification_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+        assert res.status_code == 204
+
+    # Notification row is gone
+    stmt_notif = select(Notification).where(Notification.notification_id == admin_notif.notification_id)
+    assert (await db_session.execute(stmt_notif)).scalar_one_or_none() is None
+
+    # Underlying product remains intact and untouched
+    stmt_prod = select(Product).where(Product.product_id == fixed_product.product_id)
+    prod = (await db_session.execute(stmt_prod)).scalar_one_or_none()
+    assert prod is not None
+    assert prod.title == fixed_product.title
+    assert prod.is_deleted is False

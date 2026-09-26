@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.main import app
 from app.modules.auth.dependencies import get_current_active_user, require_admin, get_admin_for_evidence
 from app.modules.feedback.models import SiteFeedback, SiteFeedbackAttachment
-from app.modules.users.models import User, UserRole, UserStatus
+from app.modules.users.models import User, UserAuthIdentity, UserRole, UserStatus
 
 # Valid media signatures
 VALID_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00" + b"\x00" * 100
@@ -50,16 +50,21 @@ async def feedback_test_users(db_session: AsyncSession):
         status=UserStatus.ACTIVE,
     )
     creator = User(
-        user_id=10,
-        email="thinhconngua@gmail.com",
+        email=f"fb_creator_{uuid.uuid4().hex[:8]}@ptit.edu.vn",
         full_name="Nguyễn Khắc Thịnh - Admin1",
         role=UserRole.ADMIN.value,
         status=UserStatus.ACTIVE,
     )
-    # Add creator if not present
-    existing_creator = await db_session.get(User, 10)
-    if not existing_creator:
-        db_session.add(creator)
+    db_session.add(creator)
+    await db_session.flush()
+
+    creator_uid = f"fb_creator_uid_{uuid.uuid4().hex[:8]}"
+    creator_ident = UserAuthIdentity(
+        user_id=creator.user_id,
+        provider="FIREBASE",
+        provider_uid=creator_uid,
+    )
+    db_session.add(creator_ident)
 
     db_session.add_all([student1, student2, banned, admin])
     await db_session.flush()
@@ -68,7 +73,8 @@ async def feedback_test_users(db_session: AsyncSession):
         "student2": student2,
         "banned": banned,
         "admin": admin,
-        "creator": existing_creator or creator,
+        "creator": creator,
+        "creator_uid": creator_uid,
     }
 
 
@@ -497,15 +503,70 @@ async def test_concurrent_delete_safety(test_client: AsyncClient, feedback_test_
 # ======================================================================
 
 @pytest.mark.asyncio
-async def test_support_info_endpoint(test_client: AsyncClient, feedback_test_users: dict):
+async def test_support_info_endpoint_resolved_by_provider_uid(
+    test_client: AsyncClient, feedback_test_users: dict, monkeypatch
+):
+    creator = feedback_test_users["creator"]
+    creator_uid = feedback_test_users["creator_uid"]
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_PROVIDER_UID", creator_uid)
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_EMAIL", None)
+
     res = await test_client.get("/api/v1/feedback/support")
     assert res.status_code == 200
     data = res.json()
     assert data["fixed_qr_url"] == "/support/nguyen-khac-thinh-vietqr.png"
     assert data["support_message"] == "Quan trọng là tấm lòng 💛"
     assert data["creator"] is not None
-    assert data["creator"]["user_id"] == 10
+    assert data["creator"]["user_id"] == creator.user_id
+    assert data["creator"]["full_name"] == creator.full_name
     assert data["creator"]["title"] == "Người phát triển Chợ PTITers"
-    assert data["profile_path"] == "/users/10"
-    # Never expose email
+    assert data["profile_path"] == f"/users/{creator.user_id}"
+    # Never expose email or provider_uid
     assert "email" not in str(data)
+    assert creator_uid not in str(data)
+
+
+@pytest.mark.asyncio
+async def test_support_info_endpoint_resolved_by_email_fallback(
+    test_client: AsyncClient, feedback_test_users: dict, monkeypatch
+):
+    creator = feedback_test_users["creator"]
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_PROVIDER_UID", None)
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_EMAIL", creator.email)
+
+    res = await test_client.get("/api/v1/feedback/support")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["creator"] is not None
+    assert data["creator"]["user_id"] == creator.user_id
+    assert data["profile_path"] == f"/users/{creator.user_id}"
+
+
+@pytest.mark.asyncio
+async def test_support_info_endpoint_unconfigured_produces_safe_controlled_response(
+    test_client: AsyncClient, monkeypatch
+):
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_PROVIDER_UID", None)
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_EMAIL", None)
+
+    res = await test_client.get("/api/v1/feedback/support")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["fixed_qr_url"] == "/support/nguyen-khac-thinh-vietqr.png"
+    assert data["support_message"] == "Quan trọng là tấm lòng 💛"
+    assert data["creator"] is None
+    assert data["profile_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_support_info_endpoint_unresolvable_uid_produces_safe_controlled_response(
+    test_client: AsyncClient, monkeypatch
+):
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_PROVIDER_UID", "non_existent_firebase_uid_99999")
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_EMAIL", None)
+
+    res = await test_client.get("/api/v1/feedback/support")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["creator"] is None
+    assert data["profile_path"] is None

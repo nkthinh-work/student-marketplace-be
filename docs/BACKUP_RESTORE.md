@@ -22,9 +22,9 @@ Cung cấp quy trình an toàn, lặp lại được và đã được kiểm ch
 
 | Hệ thống | Trạng thái sao lưu | Dữ liệu bao gồm |
 | :--- | :--- | :--- |
-| **PostgreSQL** | **ĐƯỢC SAO LƯU TOÀN DIỆN** | Toàn bộ 29 bảng nghiệp vụ quan hệ (users, products, categories, product_images, orders, order_items, order_status_history, auctions, auction_bids, reviews, favorites, conversations, conversation_members, conversation_invites, messages, message_attachments, message_reactions, message_mentions, notifications, reports, report_attachments, moderation_actions, user_capability_restrictions, user_auth_identities, daily_needs, daily_journal_checkins, community_moments, site_feedback, site_feedback_attachments) và bảng hệ thống `alembic_version`. |
+| **PostgreSQL** | **ĐƯỢC SAO LƯU TOÀN DIỆN** | Toàn bộ 32 bảng nghiệp vụ quan hệ (users, products, categories, product_images, orders, order_items, order_status_history, auctions, auction_bids, reviews, favorites, conversations, conversation_members, conversation_invites, messages, message_attachments, message_reactions, message_mentions, notifications, reports, report_attachments, moderation_actions, user_capability_restrictions, user_auth_identities, daily_needs, daily_journal_checkins, community_moments, site_feedback, site_feedback_attachments, support_contributions, support_claims, tutorials) và bảng hệ thống `alembic_version` (tổng cộng 33 bảng vật lý). |
 | **Redis** | **KHÔNG SAO LƯU VÀO DUMP** | Tầng dữ liệu tạm thời/tối ưu hóa (product view buffer, dedupe seen keys, dirty set, Pub/Sub channels, presence, download tickets). Khi phục hồi, khởi tạo Redis mới hoặc làm sạch namespace của ứng dụng. Dữ liệu số lượt xem bền vững được tái cấu trúc từ trường `view_count` trong PostgreSQL. |
-| **Cloudinary** | **CHỈ LƯU METADATA & URL** | Chỉ lưu trữ đường dẫn URL, `storage_key`/`public_id`, metadata tệp đính kèm trong PostgreSQL. Binary media blobs nằm trên hạ tầng Cloudinary. |
+| **Cloudinary** | **CHỈ LƯU METADATA & URL** | Chỉ lưu trữ đường dẫn URL, `storage_key`/`public_id`, metadata tệp đính kèm và video tutorial (không lưu trữ metadata poster do ảnh thumbnail được sinh dẫn xuất từ video) trong PostgreSQL. Binary media blobs nằm trên hạ tầng Cloudinary. |
 | **Firebase Auth** | **CHỈ LƯU UID MAPPING** | Chỉ lưu `user_auth_identities` (ánh xạ provider UID sang local `user_id`). Tài khoản và thông tin xác thực trên Firebase Authentication do Google quản lý độc lập. |
 | **Secrets / Env** | **TUYỆT ĐỐI LOẠI TRỪ** | Tệp `.env`, API keys, service-account JSON và thông tin nhạy cảm KHÔNG ĐƯỢC PHÉP chứa trong tệp dump hoặc manifest. |
 | **Source Code** | **KHÔNG ĐÓNG GÓI** | Git là hệ thống lưu trữ và quản lý phiên bản mã nguồn. |
@@ -220,7 +220,7 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 - [ ] Database đích được tạo trên môi trường cô lập hoặc cluster mới.
 - [ ] `pg_restore` thực thi thành công không phát sinh cảnh báo lỗi cấu trúc.
 - [ ] Bảng `alembic_version` được kiểm tra và khớp với revision của mã nguồn.
-- [ ] Số lượng bảng vật lý đạt đủ 30 (29 bảng ứng dụng + 1 bảng Alembic).
+- [ ] Số lượng bảng vật lý đạt đủ 33 (32 bảng ứng dụng + 1 bảng Alembic).
 - [ ] Redis được khởi tạo mới hoặc làm sạch an toàn trước khi kết nối ứng dụng.
 - [ ] Biến môi trường kết nối đã được kiểm tra tính chính xác.
 - [ ] Chạy các truy vấn SELECT kiểm tra danh tính và đơn hàng mẫu.
@@ -229,6 +229,8 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 ---
 
 ## 16. Bằng chứng diễn tập kiểm chứng thực tế (Tested Evidence)
+
+> **Ghi chú**: Bằng chứng diễn tập bên dưới thuộc thời điểm Phase 9C-B (Alembic `c2f84937f5d2`, 29 bảng), phản ánh trung thực kết quả diễn tập tại thời điểm đó trước khi bổ sung bảng `support_contributions`. Công cụ `db_backup.py` đo lường số lượng bảng hoàn toàn động qua `information_schema.tables`, bảo đảm tự động bao gồm toàn bộ 30 bảng nghiệp vụ mà không cần chỉnh sửa mã nguồn.
 
 Bản sao lưu và diễn tập thực tế gần nhất được ghi nhận trên môi trường phát triển:
 

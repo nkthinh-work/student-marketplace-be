@@ -136,6 +136,7 @@ async def paid_product(db_session: AsyncSession, seller_user: User, sample_cat: 
         stock=5,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(product)
@@ -155,6 +156,7 @@ async def free_product(db_session: AsyncSession, seller_user: User, sample_cat: 
         stock=5,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(product)
@@ -421,6 +423,7 @@ async def test_seller_without_bank_account_cannot_confirm_paid_bank_transfer(
         price=Decimal("100000"),
         stock=1,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -648,6 +651,7 @@ async def test_free_order_requires_no_bank_account_on_seller_confirm(
         price=Decimal("0"),
         stock=1,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(free_prod)

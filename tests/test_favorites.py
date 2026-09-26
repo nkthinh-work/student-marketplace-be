@@ -113,6 +113,7 @@ async def available_product(
         stock=7,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -229,6 +230,7 @@ async def test_favorite_hidden_product(
         title="Sách ẩn",
         price=Decimal(20000),
         status=ProductStatus.HIDDEN.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -258,6 +260,7 @@ async def test_favorite_sold_out_product(
         price=Decimal(20000),
         stock=0,
         status=ProductStatus.SOLD_OUT.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add(prod)
@@ -286,6 +289,7 @@ async def test_favorite_soft_deleted_product(
         title="Sách đã xóa mềm",
         price=Decimal(20000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=True,
     )
     db_session.add(prod)
@@ -449,6 +453,7 @@ async def test_get_favorites_excludes_unavailable(
         title="P1 Available",
         price=Decimal(10000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     p2 = Product(
@@ -457,6 +462,7 @@ async def test_get_favorites_excludes_unavailable(
         title="P2 Hidden",
         price=Decimal(20000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     p3 = Product(
@@ -465,6 +471,7 @@ async def test_get_favorites_excludes_unavailable(
         title="P3 Sold Out",
         price=Decimal(30000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     p4 = Product(
@@ -473,6 +480,7 @@ async def test_get_favorites_excludes_unavailable(
         title="P4 Deleted",
         price=Decimal(40000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add_all([p1, p2, p3, p4])
@@ -517,6 +525,7 @@ async def test_get_favorite_ids_visibility_policy(
         title="P1 Available",
         price=Decimal(10000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     p2 = Product(
@@ -525,6 +534,7 @@ async def test_get_favorite_ids_visibility_policy(
         title="P2 Sold Out",
         price=Decimal(20000),
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         is_deleted=False,
     )
     db_session.add_all([p1, p2])
@@ -585,6 +595,7 @@ async def test_favorites_pagination(
             title=f"Book {i+1}",
             price=Decimal(10000 * (i + 1)),
             status=ProductStatus.AVAILABLE.value,
+            approval_status="APPROVED",
             is_deleted=False,
         )
         db_session.add(p)

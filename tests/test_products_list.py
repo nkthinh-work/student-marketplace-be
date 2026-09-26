@@ -54,6 +54,7 @@ async def seed_data(db_session: AsyncSession):
         stock=2,
         reserved_stock=1,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
     # 2. Available Tech
@@ -67,6 +68,7 @@ async def seed_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
     # 3. Hidden Product
@@ -80,6 +82,7 @@ async def seed_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="HIDDEN",
+        approval_status="APPROVED",
         is_deleted=False,
     )
     # 4. Soft-deleted Product
@@ -93,6 +96,7 @@ async def seed_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=True,
     )
     # 5. Product for Seller 2 (Auction)
@@ -106,6 +110,7 @@ async def seed_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
 
@@ -230,6 +235,7 @@ async def test_keyset_cursor_pagination(test_client: AsyncClient, seed_data: dic
             price=10000 * (i + 1),
             stock=1,
             status="AVAILABLE",
+            approval_status="APPROVED",
             is_deleted=False,
         )
         db_session.add(p)

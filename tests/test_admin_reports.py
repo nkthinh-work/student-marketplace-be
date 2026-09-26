@@ -134,6 +134,7 @@ async def sample_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -155,6 +156,7 @@ async def hidden_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.HIDDEN.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -176,6 +178,7 @@ async def soft_deleted_product(
         stock=0,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=True,
     )
@@ -915,11 +918,20 @@ async def test_moderation_causes_zero_domain_mutations_and_zero_notifications(
     assert sample_order.status == OrderStatus.PENDING.value
     assert sample_order.payment_status == PaymentStatus.UNPAID.value
 
-    # 4. Check Notifications table has 0 new records
+    # 4. Check Notifications table: exactly 2 new records for the reporter (1 per resolved report)
     notif_count_after = (
         await db_session.execute(select(func.count()).select_from(Notification))
     ).scalar_one()
-    assert notif_count_after == notif_count_before
+    assert notif_count_after == notif_count_before + 2
+
+    # Verify notifications belong to reporter
+    stmt_n = select(Notification).where(
+        Notification.user_id == student_user.user_id,
+        Notification.ref_type == "REPORT",
+    )
+    res_n = await db_session.execute(stmt_n)
+    rep_notifs = list(res_n.scalars().all())
+    assert len(rep_notifs) == 2
 
 
 @pytest.mark.asyncio

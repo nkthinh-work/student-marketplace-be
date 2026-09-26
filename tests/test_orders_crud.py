@@ -19,7 +19,7 @@ from app.modules.orders.models import (
     PaymentStatus,
 )
 from app.modules.orders.repository import OrderRepository
-from app.modules.products.models import ListingType, Product, ProductStatus
+from app.modules.products.models import ListingType, Product, ProductStatus, ProductApprovalStatus
 from app.modules.users.models import User, UserAuthIdentity, UserRole, UserStatus
 
 
@@ -105,6 +105,7 @@ async def fixed_product(
         stock=5,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status=ProductApprovalStatus.APPROVED.value,
         is_deleted=False,
     )
     db_session.add(prod)
@@ -126,6 +127,7 @@ async def free_product(
         stock=3,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status=ProductApprovalStatus.APPROVED.value,
         is_deleted=False,
     )
     db_session.add(prod)
@@ -147,6 +149,7 @@ async def auction_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status=ProductApprovalStatus.APPROVED.value,
         is_deleted=False,
     )
     db_session.add(prod)

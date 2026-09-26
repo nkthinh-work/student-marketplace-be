@@ -410,6 +410,7 @@ Backend cung cấp các dependency authorization nền tảng dùng cho các mod
 - **Method**: `POST`
 - **Path**: `/api/v1/products`
 - **Auth**: Bắt buộc (`ACTIVE` user)
+- **Approval Lifecycle**: Sản phẩm tạo mới luôn khởi tạo ở trạng thái tiền xuất bản `approval_status = 'DRAFT'`. Tin đăng chưa xuất hiện công khai trên sàn cho đến khi người bán thực hiện gửi duyệt và được Quản trị viên phê duyệt thành công. Ảnh sản phẩm là tùy chọn (không bắt buộc có ảnh khi gửi duyệt).
 - **Request Body** (`ProductCreate` - `extra = "forbid"`):
 ```json
 {
@@ -421,12 +422,33 @@ Backend cung cấp các dependency authorization nền tảng dùng cho các mod
   "stock": 1
 }
 ```
-*Ghi chú*: Inject các protected fields (`seller_id`, `reserved_stock`, `view_count`, `is_deleted`, `status`) sẽ bị từ chối với HTTP `422`.
+*Ghi chú*: Inject các protected fields (`seller_id`, `reserved_stock`, `view_count`, `is_deleted`, `status`, `approval_status`, `moderation_status`) sẽ bị từ chối với HTTP `422`.
 
-#### 4.3.3. Cập nhật thông tin tin đăng
+#### 4.3.3. Gửi kiểm duyệt tin đăng (Submit for Review)
+- **Method**: `POST`
+- **Path**: `/api/v1/products/{product_id}/submit-review`
+- **Auth**: Bắt buộc (Chính chủ sở hữu là `ACTIVE` user, không bị hạn chế quyền `SELL`)
+- **Điều kiện hợp lệ**:
+  - Sản phẩm tồn tại, thuộc quyền sở hữu của user, `is_deleted = False`.
+  - Người bán `status = 'ACTIVE'`, không có hiệu lực hạn chế `SELL`.
+  - `moderation_status != 'BLOCKED'`.
+  - Ảnh sản phẩm là tùy chọn: người bán có thể gửi duyệt tin đăng có 0 ảnh hoặc 1, 2, ... ảnh hợp lệ trong `product_images`.
+  - Trạng thái hợp lệ cho phép chuyển đổi: `DRAFT -> PENDING` hoặc `REJECTED -> PENDING`.
+  - Nếu sản phẩm đang ở `PENDING` hoặc đã `APPROVED`: trả về `409 Conflict`.
+- **Hành vi Transaction**:
+  - Gán `approval_status = 'PENDING'`, `submitted_for_review_at = NOW()`.
+  - Tạo thông báo hệ thống persistent (`ADMIN_PRODUCT_APPROVAL`) cho tất cả quản trị viên `ADMIN` đang `ACTIVE` trong cùng transaction.
+  - Sau commit: bắn realtime WebSocket event `NOTIFICATION_CREATED` (best effort) tới các Admin.
+- **Response**: `200 OK` (`SellerProductResponse`)
+
+#### 4.3.4. Cập nhật thông tin tin đăng & Vô hiệu hoá kiểm duyệt (Sensitive Edit Invalidation)
 - **Method**: `PATCH`
 - **Path**: `/api/v1/products/{product_id}`
 - **Auth**: Bắt buộc (Chính chủ sở hữu hoặc ADMIN)
+- **Quy tắc bảo vệ nội dung đã duyệt (Approval Invalidation)**:
+  - Khi người bán chỉnh sửa các trường nhạy cảm về nội dung/giá (`title`, `description`, `category_id`, `price`, `listing_type`), nếu tin đang ở `APPROVED`, `PENDING` hoặc `REJECTED`, hệ thống tự động reset `approval_status -> 'DRAFT'`. Người bán phải gửi duyệt lại để tin được công khai.
+  - Chuyển đổi trạng thái kinh doanh thông thường (`status: AVAILABLE <-> HIDDEN`) hoặc thay đổi số lượng tồn kho `stock` KHÔNG làm reset trạng thái kiểm duyệt `approval_status`.
+  - Nếu sản phẩm đang gắn phiên đấu giá `SCHEDULED` hoặc `ACTIVE`, các chỉnh sửa nhạy cảm hoặc chỉnh sửa ảnh bị chặn với `400 Bad Request` để đảm bảo an toàn giao dịch đấu giá.
 - **Request Body** (`ProductUpdate` - `extra = "forbid"`):
 ```json
 {
@@ -437,7 +459,7 @@ Backend cung cấp các dependency authorization nền tảng dùng cho các mod
 ```
 *Ghi chú*: Trạng thái `status` chỉ được phép chuyển đổi giữa `AVAILABLE <-> HIDDEN`. Cố tình gán `SOLD_OUT` hoặc các trường protected sẽ nhận HTTP `422`.
 
-#### 4.3.4. Xóa mềm tin đăng
+#### 4.3.5. Xóa mềm tin đăng
 - **Method**: `DELETE`
 - **Path**: `/api/v1/products/{product_id}`
 - **Auth**: Bắt buộc (Chính chủ sở hữu hoặc ADMIN)
@@ -452,13 +474,17 @@ Backend cung cấp các dependency authorization nền tảng dùng cho các mod
 - **Path**: `/api/v1/products/{product_id}/images/upload`
 - **Auth**: Bắt buộc (Owner only)
 - **Content-Type**: `multipart/form-data` (`file: UploadFile`)
+- **Client Presentation Crop**: Ứng dụng web người dùng (first-party frontend) thực hiện cắt ảnh trình bày (presentation crop) trực tiếp trên client trước khi upload với tỉ lệ chuẩn **4:3** (tương ứng tỉ lệ hiển thị của ProductCard và ProductImageGallery, tối đa 1200x900px, tối thiểu 320x240px, hỗ trợ kéo/chụm thu phóng/cuộn chuột, không upscale). Backend tiếp nhận tệp ảnh đã cắt như dữ liệu ảnh có thẩm quyền và thẩm định độc lập (JPEG/PNG/WebP, tối đa 10MB).
+- **Phạm vi không cắt (Evidence/Content Media Exclusion)**: Tuyệt đối KHÔNG áp dụng công cụ cắt ảnh cho các tệp minh chứng pháp lý hoặc nội dung gốc: Minh chứng báo cáo (Report evidence), Minh chứng góp ý/báo lỗi (Feedback evidence), Biên nhận chuyển khoản ngân hàng (Payment receipt), Tệp ảnh đính kèm tin nhắn (Chat attachments).
 - **Response**: `201 Created` (`ProductImageResponse`)
+- **Approval Invalidation**: Ảnh sản phẩm là nội dung được duyệt. Khi upload ảnh mới, nếu sản phẩm đang ở `APPROVED`, `PENDING` hoặc `REJECTED`, hệ thống tự động reset `approval_status -> 'DRAFT'`.
 - **Compensation**: Nếu lưu DB thất bại sau khi upload Cloudinary thành công, service tự động trigger best-effort cleanup xóa asset Cloudinary để tránh rác storage.
 
 #### 4.4.2. Xóa ảnh sản phẩm
 - **Method**: `DELETE`
 - **Path**: `/api/v1/products/{product_id}/images/{image_id}`
 - **Auth**: Bắt buộc (Owner only)
+- **Approval Invalidation**: Khi xóa ảnh sản phẩm, nếu sản phẩm đang ở `APPROVED`, `PENDING` hoặc `REJECTED`, hệ thống tự động reset `approval_status -> 'DRAFT'`.
 - **Response**: `204 No Content`
 - **Thumbnail Auto-Promotion**: Nếu ảnh bị xóa là thumbnail, ảnh kế tiếp theo thứ tự `(sort_order ASC, image_id ASC)` sẽ tự động được promote làm thumbnail mới.
 
@@ -466,12 +492,14 @@ Backend cung cấp các dependency authorization nền tảng dùng cho các mod
 - **Method**: `PATCH`
 - **Path**: `/api/v1/products/{product_id}/images/{image_id}/thumbnail`
 - **Auth**: Bắt buộc (Owner only)
+- **Approval Invariance**: Đặt ảnh làm thumbnail chính trong số các ảnh hiện có KHÔNG làm mất trạng thái kiểm duyệt (giữ nguyên `approval_status`).
 - **Response**: `200 OK` (Atomic transaction đảm bảo duy nhất 1 thumbnail).
 
 #### 4.4.4. Sắp xếp lại thứ tự ảnh
 - **Method**: `PUT`
 - **Path**: `/api/v1/products/{product_id}/images/reorder`
 - **Auth**: Bắt buộc (Owner only)
+- **Approval Invariance**: Sắp xếp lại thứ tự giữa các ảnh hiện có KHÔNG làm mất trạng thái kiểm duyệt (giữ nguyên `approval_status`).
 - **Request Body**:
 ```json
 {
@@ -1400,7 +1428,40 @@ Tích hợp:
 
 ---
 
-### 10.2. Nhật ký hôm nay của tôi
+### 10.2. Danh sách 10 nhật ký thật mới nhất đa ngày (Home Public Continuous Marquee)
+- **Method**: `GET`
+- **Path**: `/api/v1/daily-needs/recent`
+- **Auth**: Public (không bắt buộc)
+- **Query Parameters**:
+  - `limit`: int (mặc định 10, tối thiểu 1, tối đa 10, tự động kẹp clamp trong khoảng 1..10)
+- **Quy tắc**:
+  - Trả về tối đa 10 bản ghi nhật ký thật mới nhất xuyên suốt các ngày (không giới hạn trong ngày hôm nay) để phục vụ Marquee hai chiều trang chủ.
+  - Sắp xếp xác định: `note_date DESC, updated_at DESC, daily_need_id DESC`.
+  - Backend tuyệt đối không sinh dữ liệu giả, không tự nhân bản bản ghi (`items` chứa đúng `N` bản ghi thực tế với `0 <= N <= 10`).
+  - Không để lộ email, phone, số tài khoản ngân hàng của tác giả (chỉ gồm `user_id`, `full_name`, `avatar_url`).
+- **Response**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "daily_need_id": 105,
+        "content": "Cần tìm giáo trình Giải tích 1 PTIT",
+        "note_date": "2026-09-26",
+        "created_at": "2026-09-26T08:00:00+07:00",
+        "updated_at": "2026-09-26T08:00:00+07:00",
+        "author": {
+          "user_id": 12,
+          "full_name": "Nguyễn Văn B",
+          "avatar_url": "https://..."
+        }
+      }
+    ]
+  }
+  ```
+
+---
+
+### 10.3. Nhật ký hôm nay của tôi
 - **Method**: `GET`
 - **Path**: `/api/v1/daily-needs/me/today`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
@@ -1410,7 +1471,7 @@ Tích hợp:
 
 ---
 
-### 10.3. Tóm tắt nhật ký và chuỗi ngày của tôi (Streak Summary)
+### 10.4. Tóm tắt nhật ký và chuỗi ngày của tôi (Streak Summary)
 - **Method**: `GET`
 - **Path**: `/api/v1/daily-needs/me/summary`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
@@ -1446,7 +1507,7 @@ Tích hợp:
 
 ---
 
-### 10.4. Nhật ký hôm nay của người dùng công khai (Direct Chat Status)
+### 10.5. Nhật ký hôm nay của người dùng công khai (Direct Chat Status)
 - **Method**: `GET`
 - **Path**: `/api/v1/daily-needs/users/{user_id}/today`
 - **Auth**: Public / Optional
@@ -1473,7 +1534,7 @@ Tích hợp:
 
 ---
 
-### 10.5. Đăng hoặc cập nhật nhật ký hôm nay (Upsert)
+### 10.6. Đăng hoặc cập nhật nhật ký hôm nay (Upsert)
 - **Method**: `PUT`
 - **Path**: `/api/v1/daily-needs/me/today`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
@@ -1496,7 +1557,7 @@ Tích hợp:
 
 ---
 
-### 10.6. Xóa nhật ký hôm nay
+### 10.7. Xóa nhật ký hôm nay
 - **Method**: `DELETE`
 - **Path**: `/api/v1/daily-needs/me/today`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
@@ -1645,7 +1706,20 @@ Tích hợp:
 - **Lỗi 404 Not Found**: Nếu thông báo không tồn tại hoặc thuộc người dùng khác (non-leaking 404).
 - **Response 204 No Content**
 
-### 12.5. Realtime Event: NOTIFICATION_CREATED
+### 12.5. DELETE /api/v1/notifications/{notification_id}
+- **Mô tả**: Xoá một thông báo khỏi hòm thư của người dùng hiện tại (User Inbox Cleanup).
+- **Auth**: Bắt buộc (`get_current_active_user`)
+- **Ngữ nghĩa bảo mật**:
+  - Thực hiện hard delete bản ghi thông báo duy nhất thoả mãn `notification_id = :id AND user_id = current_user.user_id`.
+  - Nếu thông báo không tồn tại hoặc thuộc quyền sở hữu của người dùng khác: trả về `404 Not Found` (privacy-safe, tuyệt đối không trả 403 để tránh rò rỉ sự tồn tại của bản ghi).
+  - **Giới hạn phạm vi (Inbox Cleanup Only)**: Việc xoá thông báo chỉ loại bỏ bản ghi hiển thị trong hộp thư đến của người dùng, TUYỆT ĐỐI KHÔNG làm thay đổi, huỷ hoặc xoá thực thể nghiệp vụ được tham chiếu (`ORDER`, `REPORT`, `PRODUCT_APPROVAL`, `ADMIN_PRODUCT_APPROVAL`, `SUPPORT_CLAIM`, v.v.).
+- **Tương tác Client**:
+  - Trên thiết bị di động: Hỗ trợ cử chỉ vuốt sang phải trực tiếp (**direct swipe-right release commit** với ngưỡng >= 38% chiều rộng thẻ và >= 90px) để xóa ngay lập tức khi thả tay mà không cần modal xác nhận hay chạm lần 2. Nền đỏ chứa icon thùng rác và chữ "Xóa" đóng vai trò phản hồi thị giác trực quan (không phải nút bấm chờ tap). Nếu thả tay dưới ngưỡng, thẻ tự động bật về vị trí cũ (snap back). Thao tác cuộn dọc màn hình được bảo toàn tự nhiên, không bị xung đột với vuốt ngang.
+  - Trên máy tính để bàn: Hiển thị nút thùng rác tinh tế khi hover chuột vào thẻ thông báo.
+  - Cập nhật lạc quan (Optimistic Deletion): Xóa item khỏi danh sách và giảm số đếm chưa đọc ngay lập tức, tự động hoàn tác (rollback) kèm toast thông báo nếu API thất bại.
+- **Response**: `204 No Content`
+
+### 12.6. Realtime Event: NOTIFICATION_CREATED
 - **Kênh phát**: WebSocket cá nhân (`/ws/me`) và Redis pub/sub channel `user:{user_id}:events`.
 - **Payload**:
   ```json
@@ -2279,8 +2353,9 @@ Schema cấu hình `extra = "forbid"`, cấm nhận `handled_by` hay `handled_at
 
 #### Phạm vi hiệu ứng (Scope Boundaries):
 - `RESOLVED` chỉ biểu thị "Quản trị viên đã xử lý xong khiếu nại/báo cáo này".
-- Tuyệt đối KHÔNG tự ý khoá tài khoản User, ẩn Product, huỷ Order, hay thay đổi dữ liệu miền trong Phase 8G-A.
-- Tạo chính xác 0 dòng `Notification` và 0 sự kiện realtime WebSocket.
+- Tuyệt đối KHÔNG tự ý khoá tài khoản User, ẩn Product, huỷ Order, hay thay đổi dữ liệu miền ngoài các hành động chế tài tường minh.
+- Chuyển trạng thái nội bộ `OPEN -> REVIEWING`: Tạo 0 thông báo (tránh làm loãng hộp thư người dùng).
+- Chuyển trạng thái kết thúc (`OPEN/REVIEWING -> RESOLVED` hoặc `OPEN/REVIEWING -> REJECTED`): Tạo chính xác 1 thông báo hệ thống bền vững cho người báo cáo (`reporter`), phát tán `NOTIFICATION_CREATED` post-commit. Không làm rò rỉ danh tính quản trị viên, ghi chú nội bộ, hoặc bằng chứng vi phạm. Người bị báo cáo không nhận thông báo kết quả báo cáo.
 
 ---
 
@@ -3042,8 +3117,9 @@ Tính năng thu thập phản hồi, góp ý và báo lỗi của sinh viên cho
 - **Path**: `/api/v1/feedback/support`
 - **Auth**: Public (không bắt buộc)
 - **Quy tắc**:
-  - Đọc tài khoản creator qua cấu hình nội bộ cố định `COMMUNITY_CREATOR_USER_ID = 10` (tài khoản verified `thinhconngua@gmail.com`).
-  - Trả về thông tin an toàn: `user_id`, `full_name`, `avatar_url`, `profile_path = "/users/10"`. Tuyệt đối không để lộ email.
+  - Tra cứu tài khoản creator qua định danh cấu hình ổn định phía server (`COMMUNITY_CREATOR_PROVIDER_UID`, dự phòng `COMMUNITY_CREATOR_EMAIL`), liên kết qua `user_auth_identities` sang `users.user_id` hiện hành. Tuyệt đối không hardcode DB user_id hay giả định ID cố định giữa các môi trường.
+  - Trả về thông tin an toàn: `user_id`, `full_name`, `avatar_url`, `profile_path = "/users/{creator_user_id}"`. Tuyệt đối không để lộ email hay Firebase provider UID ra client.
+  - Nếu creator chưa cấu hình hoặc không tìm thấy, trả về `creator: null`, `profile_path: null` an toàn có kiểm soát, không fallback tùy tiện hay suy diễn tài khoản Admin.
   - Mã VietQR là tài sản ảnh tĩnh cố định (`/support/nguyen-khac-thinh-vietqr.png`), không sinh động qua API bên thứ ba ở runtime. Thông điệp hỗ trợ: `"Quan trọng là tấm lòng 💛"`.
 - **Response**: `200 OK`
   ```json
@@ -3057,6 +3133,100 @@ Tính năng thu thập phản hồi, góp ý và báo lỗi của sinh viên cho
     "profile_path": "/users/10",
     "fixed_qr_url": "/support/nguyen-khac-thinh-vietqr.png",
     "support_message": "Quan trọng là tấm lòng 💛"
+  }
+  ```
+
+---
+
+### 14.5.1. Bảng tri ân người ủng hộ công khai (Public Supporter Leaderboard)
+- **Method**: `GET`
+- **Path**: `/api/v1/feedback/support/leaderboard`
+- **Auth**: Public (không bắt buộc đăng nhập)
+- **Quy tắc**:
+  - Không có tham số query lớn tùy tiện; giới hạn cứng Top 10 người ủng hộ (`limit = 10`).
+  - Chỉ tổng hợp các khoản đóng góp đã được Quản trị viên kích hoạt công khai (`is_public = TRUE`). Các khoản riêng tư (`is_public = FALSE`) bị loại trừ hoàn toàn khỏi tổng số tiền và số lượt đóng góp.
+  - Sắp xếp tất định (Deterministic Tie-Breaking): (1) `total_amount_vnd DESC`, (2) `last_supported_at ASC`, (3) `supporter_id ASC`.
+  - Bảo mật dữ liệu: Tuyệt đối không để lộ `transaction_ref`, `admin_note`, `recorded_by`, email, số điện thoại hay tài khoản ngân hàng. Người dùng bị khóa/không hoạt động được lọc an toàn, không làm lộ trạng thái kiểm duyệt tài khoản.
+- **Response**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "rank": 1,
+        "supporter": {
+          "user_id": 15,
+          "full_name": "Nguyễn Văn A",
+          "avatar_url": "https://...",
+          "profile_path": "/users/15"
+        },
+        "total_amount_vnd": 250000,
+        "contribution_count": 3,
+        "last_supported_at": "2026-09-24T10:00:00Z"
+      }
+    ]
+  }
+  ```
+
+---
+
+### 14.5.2. Khai báo chuyển khoản ủng hộ (Submit Support Claim)
+- **Method**: `POST`
+- **Path**: `/api/v1/feedback/support/claims`
+- **Auth**: Bắt buộc (`ACTIVE` user)
+- **Quy tắc**:
+  - `supporter_id` luôn được trích xuất an toàn trên server từ `current_user.user_id`. Tuyệt đối không tin cậy `supporter_id` hoặc Firebase UID gửi từ client.
+  - `claimed_amount_vnd` phải là số nguyên dương (`> 0`, tối đa `1_000_000_000`).
+  - `sender_account_name` là bắt buộc (`str`, 1..120 ký tự, tự động cắt khoảng trắng đầu/cuối, không chấp nhận chuỗi rỗng/chỉ chứa khoảng trắng).
+  - `wants_public` mặc định `false`.
+  - Khởi tạo trạng thái ban đầu là `PENDING` (Đang chờ đối soát).
+  - Bản ghi này chỉ mang tính chất khai báo đối soát, KHÔNG có giá trị tài chính và KHÔNG xuất hiện trên Bảng tri ân.
+- **Request Body**:
+  ```json
+  {
+    "claimed_amount_vnd": 50000,
+    "claimed_transferred_at": "2026-09-25T10:30:00Z",
+    "sender_account_name": "NGUYEN VAN A",
+    "wants_public": true
+  }
+  ```
+- **Response**: `201 Created`
+  ```json
+  {
+    "claim_id": 1,
+    "claimed_amount_vnd": 50000,
+    "claimed_transferred_at": "2026-09-25T10:30:00Z",
+    "sender_account_name": "NGUYEN VAN A",
+    "wants_public": true,
+    "status": "PENDING",
+    "created_at": "2026-09-25T10:32:00Z"
+  }
+  ```
+
+---
+
+### 14.5.3. Lịch sử yêu cầu xác nhận ủng hộ của tôi (My Support Claims)
+- **Method**: `GET`
+- **Path**: `/api/v1/feedback/support/claims/me`
+- **Auth**: Bắt buộc (`ACTIVE` user)
+- **Query Params**:
+  - `limit`: Số lượng mục (1..50, mặc định 10).
+- **Quy tắc**:
+  - Chỉ trả về các khai báo của chính người dùng hiện tại, sắp xếp mới nhất trước (`created_at DESC, claim_id DESC`).
+  - Tuyệt đối không để lộ danh tính Admin đối soát (`reviewed_by`), ghi chú nội bộ hay chi tiết giao dịch nhạy cảm.
+- **Response**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "claim_id": 1,
+        "claimed_amount_vnd": 50000,
+        "claimed_transferred_at": "2026-09-25T10:30:00Z",
+        "sender_account_name": "NGUYEN VAN A",
+        "wants_public": true,
+        "status": "PENDING",
+        "created_at": "2026-09-25T10:32:00Z"
+      }
+    ]
   }
   ```
 
@@ -3151,6 +3321,221 @@ Tính năng thu thập phản hồi, góp ý và báo lỗi của sinh viên cho
 
 ---
 
+### 14.10. Quản lý sổ cái ủng hộ tài chính dành cho Quản trị viên (Admin Support Contributions)
+
+#### 14.10.1. Tìm kiếm người dùng ủng hộ cho ghi nhận thủ công (Admin Search Supporters)
+- **Method**: `GET`
+- **Path**: `/api/v1/admin/support-contributions/search-supporters`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Query Params**:
+  - `query`: Chuỗi tìm kiếm (tên hiển thị `full_name` hoặc User ID nguyên dương). Tối thiểu 1 ký tự, tối đa 100 ký tự (tự động loại bỏ khoảng trắng thừa).
+  - `limit`: Số lượng kết quả (1..20, mặc định 10).
+- **Quy tắc**:
+  - Chỉ tìm kiếm và trả về người dùng có trạng thái hoạt động (`UserStatus.ACTIVE`).
+  - Phục vụ luồng đối soát và ghi nhận thủ công dự phòng khi người dùng chuyển khoản nhưng không gửi khai báo.
+  - Bảo mật dữ liệu: Chỉ trả về thông tin định danh công khai an toàn (`user_id`, `full_name`, `avatar_url`, `profile_path`), tuyệt đối không làm lộ email, số điện thoại, Firebase UID hay tài khoản ngân hàng.
+- **Response**: `200 OK`
+  ```json
+  [
+    {
+      "user_id": 15,
+      "full_name": "Nguyễn Văn Sinh Viên",
+      "avatar_url": "https://...",
+      "profile_path": "/users/15"
+    }
+  ]
+  ```
+
+#### 14.10.2. Ghi nhận khoản ủng hộ đã xác thực (Record Verified Contribution)
+- **Method**: `POST`
+- **Path**: `/api/v1/admin/support-contributions`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Quy tắc**:
+  - Bản ghi đại diện cho giao dịch tiền thực tế đã được Admin kiểm tra bên ngoài ứng dụng.
+  - `recorded_by` được trích xuất an toàn từ Admin đã xác thực trên server, không chấp nhận ID gửi từ client.
+  - `amount_vnd` phải là số nguyên dương (`> 0`, tối đa `1_000_000_000_000`).
+  - `is_public` mặc định là `false`. Chỉ bật khi người ủng hộ xác nhận đồng ý xuất hiện công khai trên Bảng tri ân.
+  - Kiểm tra `supporter_id` tồn tại trong hệ thống.
+- **Request Body**:
+  ```json
+  {
+    "supporter_id": 15,
+    "amount_vnd": 100000,
+    "received_at": "2026-09-24T08:30:00Z",
+    "is_public": false,
+    "transaction_ref": "FT24092412345678",
+    "admin_note": "Chuyển khoản ủng hộ duy trì server"
+  }
+  ```
+- **Response**: `201 Created`
+  ```json
+  {
+    "contribution_id": 1,
+    "supporter": {
+      "user_id": 15,
+      "full_name": "Nguyễn Văn Sinh Viên",
+      "avatar_url": "https://...",
+      "profile_path": "/users/15"
+    },
+    "amount_vnd": 100000,
+    "is_public": false,
+    "received_at": "2026-09-24T08:30:00Z",
+    "transaction_ref": "FT24092412345678",
+    "admin_note": "Chuyển khoản ủng hộ duy trì server",
+    "recorded_by": {
+      "user_id": 1,
+      "full_name": "Quản Trị Viên",
+      "avatar_url": "https://..."
+    },
+    "created_at": "2026-09-24T08:35:00Z"
+  }
+  ```
+
+#### 14.10.3. Danh sách sổ cái đóng góp quản trị (Admin List Support Contributions)
+- **Method**: `GET`
+- **Path**: `/api/v1/admin/support-contributions`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Query Params**:
+  - `limit`: Số lượng mỗi trang (1..50, mặc định 20).
+  - `cursor`: Keyset cursor định dạng `<received_at_iso>_<contribution_id>`.
+- **Response**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "contribution_id": 1,
+        "supporter": {
+          "user_id": 15,
+          "full_name": "Nguyễn Văn Sinh Viên",
+          "avatar_url": "https://...",
+          "profile_path": "/users/15"
+        },
+        "amount_vnd": 100000,
+        "is_public": false,
+        "received_at": "2026-09-24T08:30:00Z",
+        "transaction_ref": "FT24092412345678",
+        "admin_note": "Chuyển khoản ủng hộ duy trì server",
+        "recorded_by": {
+          "user_id": 1,
+          "full_name": "Quản Trị Viên",
+          "avatar_url": "https://..."
+        },
+        "created_at": "2026-09-24T08:35:00Z"
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false
+  }
+  ```
+
+#### 14.10.4. Cập nhật trạng thái hiển thị công khai (Update Contribution Visibility)
+- **Method**: `PATCH`
+- **Path**: `/api/v1/admin/support-contributions/{contribution_id}/visibility`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Quy tắc**:
+  - Endpoint thu hẹp chỉ cho phép bật/tắt quyền hiển thị Bảng tri ân công khai (`is_public`).
+  - Tuyệt đối không cho phép sửa đổi số tiền, người ủng hộ, ngày nhận hay người ghi nhận.
+- **Request Body**:
+  ```json
+  {
+    "is_public": true
+  }
+  ```
+- **Response**: `200 OK`
+
+#### 14.10.5. Xóa bản ghi sai sót (Admin Delete Erroneous Contribution)
+- **Method**: `DELETE`
+- **Path**: `/api/v1/admin/support-contributions/{contribution_id}`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Quy tắc**:
+  - Dùng để khắc phục sai sót khi Admin ghi nhận nhầm lẫn hoặc trùng lặp bản ghi chuyển khoản.
+  - Thao tác xóa quản trị, không phải hành động người dùng thông thường.
+- **Response**: `204 No Content`
+
+---
+
+### 14.11. Hàng đợi đối soát ủng hộ dành cho Quản trị viên (Admin Support Claims Queue)
+
+#### 14.11.1. Danh sách hàng đợi đối soát (List Pending Support Claims)
+- **Method**: `GET`
+- **Path**: `/api/v1/admin/support-claims`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Query Params**:
+  - `status`: Lọc trạng thái (`PENDING`, `VERIFIED`, `REJECTED`). Mặc định trả về tất cả hoặc lọc theo chỉ định.
+  - `limit`: Số lượng mỗi trang (1..50, mặc định 20).
+  - `cursor`: Keyset cursor `<created_at_iso>|<claim_id>`.
+- **Response**: `200 OK`
+  ```json
+  {
+    "items": [
+      {
+        "claim_id": 1,
+        "supporter": {
+          "user_id": 15,
+          "full_name": "Nguyễn Văn Sinh Viên",
+          "avatar_url": "https://...",
+          "profile_path": "/users/15"
+        },
+        "claimed_amount_vnd": 50000,
+        "claimed_transferred_at": "2026-09-25T10:30:00Z",
+        "sender_account_name": "NGUYEN VAN A",
+        "wants_public": true,
+        "status": "PENDING",
+        "reviewed_by": null,
+        "reviewed_at": null,
+        "contribution_id": null,
+        "rejection_reason": null,
+        "created_at": "2026-09-25T10:32:00Z"
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false
+  }
+  ```
+
+#### 14.11.2. Xác thực khoản ủng hộ từ sao kê (Verify Support Claim)
+- **Method**: `POST`
+- **Path**: `/api/v1/admin/support-claims/{claim_id}/verify`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Quy tắc**:
+  - Khóa dòng claim (SELECT FOR UPDATE).
+  - Yêu cầu trạng thái PENDING. Nếu claim đã VERIFIED hoặc REJECTED, trả về `409 Conflict` (chống double-click/tranh chấp đồng thời).
+  - Tạo duy nhất một bản ghi có thẩm quyền tại `support_contributions`.
+  - Số tiền và thời gian thực nhận do Admin xác minh (có thể hiệu chỉnh nếu khác với khai báo).
+  - Gán `is_public = claim.wants_public` (tuân thủ quyền riêng tư của người ủng hộ).
+  - Cập nhật claim (`status = 'VERIFIED'`, `reviewed_by = current_admin`, `reviewed_at = NOW()`, `contribution_id`).
+  - `transaction_ref` và `admin_note` là tùy chọn (`nullable`). Giao diện Admin verify đã tinh giản, chỉ yêu cầu xác nhận số tiền và thời gian thực nhận; hai trường này được giữ lại ở backend cho mục đích tương thích/dự phòng.
+- **Request Body**:
+  ```json
+  {
+    "amount_vnd": 50000,
+    "received_at": "2026-09-25T10:31:00Z",
+    "transaction_ref": null,
+    "admin_note": null
+  }
+  ```
+- **Response**: `200 OK` (AdminSupportClaimItem)
+
+#### 14.11.3. Từ chối yêu cầu không khớp sao kê (Reject Support Claim)
+- **Method**: `POST`
+- **Path**: `/api/v1/admin/support-claims/{claim_id}/reject`
+- **Auth**: Bắt buộc (`ADMIN` role)
+- **Quy tắc**:
+  - Khóa dòng claim (SELECT FOR UPDATE).
+  - Yêu cầu trạng thái PENDING. Trả về `409 Conflict` nếu claim đã được xử lý trước đó.
+  - Cập nhật `status = 'REJECTED'`, `reviewed_by = current_admin`, `reviewed_at = NOW()`, lưu `rejection_reason` tùy chọn.
+  - Tuyệt đối KHÔNG tạo bản ghi trong `support_contributions`.
+  - Gửi thông báo hệ thống bền vững cho người ủng hộ và commit nguyên tử.
+- **Request Body**:
+  ```json
+  {
+    "rejection_reason": "Không tìm thấy giao dịch chuyển tiền phù hợp trên sao kê."
+  }
+  ```
+- **Response**: `200 OK` (AdminSupportClaimItem)
+
+---
+
 ## 15. Đếm lượt xem sản phẩm (Product View Counter)
 
 ### 15.1. Ghi nhận lượt xem sản phẩm (Register Product View)
@@ -3198,3 +3583,267 @@ Tính năng thu thập phản hồi, góp ý và báo lỗi của sinh viên cho
   }
   ```
 
+---
+
+## 32. Pre-Deployment Notification Coverage & Realtime Contract
+
+Hệ thống thông báo được mở rộng hoàn chỉnh cho cả hai luồng: Quản trị viên (Admin inbox fan-out) và Vòng đời người dùng (User lifecycle outcomes) mà không thay đổi cấu trúc bảng CSDL `notifications` (tái sử dụng `type = 'SYSTEM'`).
+
+### 1. Admin Actionable Work Inbox (Fan-out tới tất cả Active Admins)
+
+Mỗi khi người dùng gửi một yêu cầu/hành động cần duyệt, hệ thống tự động fan-out thông báo tới tất cả người dùng thỏa mãn `role = 'ADMIN'` và `status = 'ACTIVE'`:
+- Mỗi Admin đang hoạt động nhận chính xác 1 bản ghi `Notification` độc lập.
+- Thao tác tạo thông báo được gộp cùng transaction của nghiệp vụ người dùng (`flush()` -> snapshot DTO -> `commit()` -> phát tán realtime `NOTIFICATION_CREATED`).
+- Admin không tự nhận thông báo khi thực hiện hành động duyệt/từ chối/chế tài.
+
+| Sự kiện kích hoạt | `type` | `ref_type` | `ref_id` | Tiêu đề | Nội dung tóm tắt | Điều hướng Frontend |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Báo cáo mới** | `SYSTEM` | `ADMIN_REPORT` | `report_id` | `Có báo cáo vi phạm mới` | `Một báo cáo {target_type} mới đang chờ xử lý.` | `/admin/reports?queue_state=NEEDS_ACTION` |
+| **Ảnh cộng đồng mới** | `SYSTEM` | `ADMIN_COMMUNITY` | `moment_id` | `Có ảnh cộng đồng mới chờ duyệt` | `Một khoảnh khắc mới đang chờ quản trị viên duyệt.` | `/admin/community-moments` |
+| **Phản hồi mới** | `SYSTEM` | `ADMIN_FEEDBACK` | `feedback_id` | `Có phản hồi mới` | `Một phản hồi mới vừa được gửi tới Chợ PTITers.` | `/admin/feedback` |
+| **Ủng hộ chờ đối soát** | `SYSTEM` | `ADMIN_SUPPORT_CLAIM` | `claim_id` | `Có khoản ủng hộ chờ đối soát` | `Một yêu cầu xác nhận ủng hộ mới đang chờ đối soát.` | `/admin/support` |
+
+### 2. User Lifecycle Outcomes (Kết quả xử lý dành cho Người dùng)
+
+| Sự kiện kích hoạt | `type` | `ref_type` | `ref_id` | Tiêu đề | Quy tắc nội dung & Bảo mật | Điều hướng Frontend |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Xác nhận ủng hộ thành công** | `SYSTEM` | `SUPPORT_CLAIM` | `claim_id` | `Khoản ủng hộ đã được xác nhận` | Chứa số tiền thực nhận có thẩm quyền (`{amount_vnd:,}đ`). Không rò rỉ mã sao kê ngân hàng hay ghi chú nội bộ Admin. | `/feedback` |
+| **Từ chối yêu cầu ủng hộ** | `SYSTEM` | `SUPPORT_CLAIM` | `claim_id` | `Chưa xác nhận được khoản ủng hộ` | Thông điệp trung tính, lịch sự. Không làm lộ ghi chú nội bộ Admin. | `/feedback` |
+| **Ảnh cộng đồng được duyệt** | `SYSTEM` | `COMMUNITY_MOMENT` | `moment_id` | `Khoảnh khắc của bạn đã được duyệt` | Thông báo ảnh đã hiển thị trên trang chủ. Admin duyệt không nhận tự thông báo. | `/` |
+| **Ảnh cộng đồng bị từ chối** | `SYSTEM` | `COMMUNITY_REJECTED` | `moment_id` | `Khoảnh khắc chưa được duyệt` | Lưu thông báo trước khi hard delete bản ghi và ảnh Cloudinary. Không dẫn tới liên kết chi tiết đã xóa. | `/` |
+| **Báo cáo được xử lý (RESOLVED)** | `SYSTEM` | `REPORT` | `report_id` | `Báo cáo của bạn đã được xử lý` | Báo cáo của reporter được xử lý. Không làm lộ danh tính Admin hoặc nội dung chế tài người khác. | `/profile` |
+| **Báo cáo kết luận không vi phạm (REJECTED)** | `SYSTEM` | `REPORT` | `report_id` | `Báo cáo của bạn đã được xem xét` | Thông báo xem xét xong. Người bị báo cáo không nhận thông báo. | `/profile` |
+| **Giới hạn quyền tài khoản** | `SYSTEM` | `ACCOUNT_ACCESS` | `report_id` | `Quyền tài khoản của bạn đã được cập nhật` | Nêu rõ quyền bị hạn chế (mua hàng/bán hàng) và hạn đến ngày (DD/MM/YYYY). Không rò rỉ danh tính người tố cáo. Gộp trong 1 thông báo duy nhất nếu phạt nhiều quyền. | `/profile` |
+| **Khôi phục quyền tài khoản** | `SYSTEM` | `ACCOUNT_ACCESS` | `report_id` | `Quyền tài khoản của bạn đã được khôi phục` | Nêu rõ quyền được khôi phục. | `/profile` |
+
+### 3. Nguyên tắc Bất biến Giao dịch & Phân lập Lỗi Realtime (Invariants)
+1. **Canonical State**: Bảng `notifications` trong PostgreSQL là chân lý bền vững duy nhất.
+2. **Transaction Boundary**: Nghiệp vụ chính + tạo các bản ghi thông báo nằm trong **CÙNG 1 TRANSACTION CƠ SỞ DỮ LIỆU**. Nếu nghiệp vụ rollback, 0 thông báo được tạo.
+3. **Post-Commit Dispatch**: Sự kiện realtime `NOTIFICATION_CREATED` qua WebSocket private `/ws/me` chỉ được phát tán **SAU KHI COMMIT THÀNH CÔNG**.
+4. **Failure Isolation**: Lỗi Redis/WebSocket khi gửi tới người nhận A không được phép làm gián đoạn việc gửi tới người nhận B, và tuyệt đối KHÔNG làm rollback kết quả HTTP hay dữ liệu nghiệp vụ đã commit.
+5. **No Self-Notifications**: Tác nhân gây ra hành động đồng bộ (submit report, submit claim, upload moment, submit feedback) không nhận thông báo tự thân thừa thãi.
+
+---
+
+## 33. Tutorials (Quick-Help Video Overlay & Admin CMS)
+
+Hệ thống cung cấp danh mục video hướng dẫn sử dụng nhanh (Quick-Help Tutorial) định dạng dọc 9:16 nhằm hỗ trợ người dùng ngay trên màn hình hiện tại mà không phải rời trang qua modal overlay toàn cục. Dữ liệu video MP4 được lưu trữ trên Cloudinary (`student-marketplace/tutorials/videos`), metadata được quản trị bền vững qua bảng PostgreSQL `tutorials`. Ảnh thu nhỏ (thumbnail) được phân phối dẫn xuất (derived delivery transformation) tự động từ frame video trên Cloudinary mà không lưu trữ thêm tệp ảnh độc lập.
+
+### 1. Canonical Registries (Danh mục chuẩn hóa)
+
+Hệ thống kiểm soát tính hợp lệ của `feature_key` và `action_key` thông qua các registry chuẩn hoá ở tầng Backend validation và Frontend UI, đồng bộ chặt chẽ với cấu trúc menu điều hướng người dùng thực tế:
+
+- **Allowed Feature Keys (`ALLOWED_FEATURE_KEYS` - Vị trí Tutorial theo menu điều hướng)**:
+  - `HOME`: Trang chủ (Thuộc nhóm Trang chủ)
+  - `FAVORITES`: Tin đã lưu (Thuộc nhóm TIN ĐĂNG)
+  - `CREATE_PRODUCT`: Đăng tin bán (Thuộc nhóm TIN ĐĂNG)
+  - `MY_LISTINGS`: Quản lý tin đăng (Thuộc nhóm TIN ĐĂNG)
+  - `BUYER_ORDERS`: Đơn mua (Thuộc nhóm GIAO DỊCH)
+  - `SELLER_ORDERS`: Đơn bán (Thuộc nhóm GIAO DỊCH)
+  - `NOTIFICATIONS`: Thông báo (Thuộc nhóm LIÊN LẠC)
+  - `MESSAGES`: Tin nhắn (Thuộc nhóm LIÊN LẠC)
+  - `PROFILE`: Hồ sơ cá nhân (Thuộc nhóm TÀI KHOẢN)
+  - `FEEDBACK`: Feedback (Thuộc nhóm TÀI KHOẢN)
+- **Allowed Action Keys (`ALLOWED_ACTION_KEYS` - Hành động "Làm ngay")**:
+  - `HOME` (Mở trang chủ -> `/`)
+  - `CREATE_PRODUCT` (Mở đăng bán -> `/products/new`)
+  - `MY_LISTINGS` (Mở quản lý tin đăng -> `/my-products`)
+  - `FAVORITES` (Mở tin đã lưu -> `/favorites`)
+  - `BUYER_ORDERS` (Mở đơn mua -> `/orders/buying`)
+  - `SELLER_ORDERS` (Mở đơn bán -> `/orders/selling`)
+  - `MESSAGES` (Mở tin nhắn -> `/messages`)
+  - `NOTIFICATIONS` (Mở thông báo -> `/notifications`)
+  - `FEEDBACK` (Mở phản hồi & báo lỗi -> `/feedback`)
+  - `PROFILE` (Mở hồ sơ cá nhân -> `/profile`)
+
+---
+
+### 2. Public API
+
+#### 2.1. `GET /api/v1/tutorials` — Danh sách hướng dẫn công khai
+- **Authentication**: Không yêu cầu (Public).
+- **Quy tắc hiển thị**:
+  - Chỉ trả về các bản ghi có `is_published = TRUE`. Bản ghi nháp bị loại bỏ tuyệt đối.
+  - Sắp xếp tất định: `feature_key ASC, sort_order ASC, tutorial_id ASC` (Frontend gom nhóm và hiển thị theo đúng thứ tự menu điều hướng).
+  - Không phân trang (tập dữ liệu hướng dẫn nhỏ và được giám sát).
+  - Không làm rò rỉ: `video_storage_key`, `created_by`, `created_at`, `updated_at`, `is_published`.
+  - `thumbnail_url`: URL ảnh thu nhỏ phân phối dẫn xuất từ chính video trên Cloudinary (frame 1s hoặc 0.5s, f_auto, q_auto, w_360), không tải tệp poster riêng biệt.
+- **Response**: `200 OK`
+```json
+[
+  {
+    "tutorial_id": 1,
+    "feature_key": "MY_LISTINGS",
+    "title": "Quản lý tin đăng",
+    "description": "Hướng dẫn xem, chỉnh sửa và quản lý các tin bạn đã đăng.",
+    "video_url": "https://res.cloudinary.com/.../tutorials/videos/guid.mp4",
+    "thumbnail_url": "https://res.cloudinary.com/.../c_limit,f_auto,q_auto,so_1,w_360/v1/.../guid.jpg",
+    "duration_ms": 52000,
+    "action_key": "MY_LISTINGS",
+    "sort_order": 10
+  }
+]
+```
+
+---
+
+### 3. Admin API (Quản trị CMS)
+
+Tất cả các endpoint quản trị yêu cầu:
+- **Authentication**: Bắt buộc (`Bearer <Firebase ID Token>`).
+- **Authorization**: `role = 'ADMIN'`, `status = 'ACTIVE'`. Sinh viên (`STUDENT`) nhận HTTP `403 Forbidden`.
+
+#### 3.1. `GET /api/v1/admin/tutorials` — Danh sách toàn bộ hướng dẫn
+- Trả về toàn bộ bản ghi (bao gồm cả nháp `is_published = FALSE` và đã xuất bản `is_published = TRUE`).
+- Bổ sung các trường quản trị: `video_storage_key`, `video_mime_type`, `video_size_bytes`, `thumbnail_url`, `is_published`, `created_by`, `created_at`, `updated_at`.
+- Không chứa các trường poster tùy biến (đã loại bỏ hoàn toàn khỏi schema và API).
+- Sắp xếp: `feature_key ASC, sort_order ASC, tutorial_id ASC`.
+
+#### 3.2. `GET /api/v1/admin/tutorials/{tutorial_id}` — Chi tiết một hướng dẫn
+- Trả về chi tiết đầy đủ của bản ghi hướng dẫn. Trả về `404 Not Found` nếu không tồn tại.
+
+#### 3.3. `POST /api/v1/admin/tutorials` — Thêm hướng dẫn mới
+- **Content-Type**: `multipart/form-data`.
+- **Form Fields**:
+  - `feature_key`: Bắt buộc, thuộc `ALLOWED_FEATURE_KEYS`.
+  - `title`: Bắt buộc, 1..120 ký tự (được trim khoảng trắng).
+  - `description`: Tùy chọn, tối đa 500 ký tự.
+  - `action_key`: Tùy chọn, thuộc `ALLOWED_ACTION_KEYS` hoặc để trống.
+  - `is_published`: Tùy chọn, boolean (`true`/`false`, mặc định `false`).
+  - `video`: Bắt buộc, tệp MP4 (`video/mp4`), dung lượng tối đa 100MB, định dạng dọc (height > width).
+- **Không có trường poster**: Ảnh bìa/thumbnail được trích xuất tự động từ video Cloudinary, không yêu cầu người dùng upload ảnh bìa riêng.
+- **Xử lý sắp xếp**: Tự động gán `sort_order = max(sort_order) + 10` trong feature group tương ứng. Admin không cần nhập số thứ tự thủ công.
+- **Bù trừ lỗi media (Compensation)**: Nếu tải lên Cloudinary thành công nhưng lưu cơ sở dữ liệu thất bại, video vừa tải lên sẽ được xóa dọn dẹp theo cơ chế best-effort.
+
+#### 3.4. `PATCH /api/v1/admin/tutorials/{tutorial_id}` — Chỉnh sửa metadata
+- **Content-Type**: `application/json`.
+- **Body (`AdminTutorialUpdate`)**:
+  - `feature_key`: Tùy chọn. Nếu thay đổi nhóm tính năng, bản ghi tự động chuyển về cuối nhóm tính năng mới.
+  - `title`: Tùy chọn, 1..120 ký tự.
+  - `description`: Tùy chọn.
+  - `action_key`: Tùy chọn.
+  - `is_published`: Tùy chọn, boolean (bật/tắt xuất bản).
+- **Lưu ý**: Endpoint này không upload/thay thế video. Việc unpublish (`is_published = false`) không xóa media trên Cloudinary.
+
+#### 3.5. `POST /api/v1/admin/tutorials/{tutorial_id}/video` — Thay thế video MP4
+- **Content-Type**: `multipart/form-data`.
+- **Form Field**: `video` (Bắt buộc, MP4, tối đa 100MB, định dạng dọc).
+- **Vòng đời an toàn (Safe media replacement)**:
+  1. Upload video mới lên Cloudinary và kiểm tra metadata.
+  2. Khóa dòng bản ghi (`SELECT ... FOR UPDATE`), cập nhật thông tin video mới vào DB.
+  3. Commit transaction bền vững.
+  4. Sau khi commit thành công, xóa video cũ trên Cloudinary (post-commit cleanup).
+  - Nếu bước commit DB thất bại: xóa video mới vừa upload, dữ liệu DB và video cũ được giữ nguyên vẹn.
+
+#### 3.6. `PATCH /api/v1/admin/tutorials/reorder` — Sắp xếp thứ tự trong nhóm tính năng
+- **Content-Type**: `application/json`.
+- **Body (`AdminTutorialReorderRequest`)**:
+```json
+{
+  "feature_key": "MY_LISTINGS",
+  "tutorial_ids": [7, 3, 9]
+}
+```
+- **Kiểm định chặt chẽ**:
+  - Kiểm tra `feature_key` hợp lệ.
+  - Xác nhận tất cả ID tồn tại và đều thuộc nhóm tính năng chỉ định (không chấp nhận ID ngoài nhóm).
+  - Không cho phép trùng lặp ID trong mảng.
+  - Gán thứ tự ổn định cách đều (10, 20, 30...) trong một transaction cơ sở dữ liệu duy nhất.
+
+#### 3.7. `DELETE /api/v1/admin/tutorials/{tutorial_id}` — Xóa vĩnh viễn hướng dẫn
+- Xóa dòng khỏi cơ sở dữ liệu (hard delete) -> commit transaction -> dọn dẹp asset video trên Cloudinary theo cơ chế best-effort sau khi commit.
+- Phản hồi: `200 OK` (`{"message": "Tutorial deleted successfully"}`).
+
+---
+
+## 34. Pre-Publication Product Approvals (Kiểm duyệt tin đăng tiền xuất bản)
+
+Cơ chế kiểm duyệt bắt buộc trước khi tin đăng được xuất bản công khai trên nền tảng Chợ PTITers. Tách biệt hoàn toàn khỏi quy trình xử lý vi phạm báo cáo (Reports/Moderation).
+
+### 34.1. `GET /api/v1/admin/product-approvals` — Hàng đợi kiểm duyệt tin đăng
+- **Method**: `GET`
+- **Path**: `/api/v1/admin/product-approvals`
+- **Auth**: Bắt buộc (`role == 'ADMIN'`)
+- **Query Parameters**:
+  - `approval_status`: (`PENDING` | `APPROVED` | `REJECTED`, mặc định `PENDING`)
+  - `limit`: int (mặc định 20, min 1, max 50)
+  - `cursor`: string opaque (Keyset pagination dựa trên `submitted_for_review_at` và `product_id`)
+- **Sắp xếp**:
+  - Hàng đợi `PENDING`: sắp xếp `submitted_for_review_at ASC, product_id ASC` (ưu tiên xử lý tin gửi trước).
+  - Tab `APPROVED` / `REJECTED`: sắp xếp `reviewed_at DESC, product_id DESC` (xem quyết định gần nhất).
+- **Response**: `200 OK`
+```json
+{
+  "items": [
+    {
+      "product_id": 101,
+      "title": "Giáo trình Giải tích 1 PTIT",
+      "price": 45000,
+      "stock": 1,
+      "listing_type": "FIXED_PRICE",
+      "status": "AVAILABLE",
+      "approval_status": "PENDING",
+      "moderation_status": "CLEAR",
+      "thumbnail_url": "https://res.cloudinary.com/.../thumb.jpg",
+      "submitted_for_review_at": "2026-09-26T10:00:00Z",
+      "reviewed_at": null,
+      "review_note": null,
+      "category": {
+        "category_id": 1,
+        "name": "Giáo trình & Sách",
+        "slug": "giao-trinh-sach"
+      },
+      "seller": {
+        "user_id": 10,
+        "full_name": "Nguyen Van A",
+        "email": "vana@ptit.edu.vn",
+        "avatar_url": "https://res.cloudinary.com/.../avatar.jpg"
+      },
+      "created_at": "2026-09-26T09:50:00Z"
+    }
+  ],
+  "next_cursor": "eyJzdWJtaXR0ZWRfZm9yX3Jldmlld19hdCI...",
+  "has_more": false
+}
+```
+
+### 34.2. `GET /api/v1/admin/product-approvals/{product_id}` — Chi tiết thẩm định tin đăng
+- **Method**: `GET`
+- **Path**: `/api/v1/admin/product-approvals/{product_id}`
+- **Auth**: Bắt buộc (`role == 'ADMIN'`)
+- **Nội dung thẩm định**: Trả về toàn bộ danh sách hình ảnh đã crop 4:3, thông tin chi tiết mô tả sản phẩm, danh mục, giá, tồn kho và tóm tắt an toàn người bán (không lộ STK ngân hàng hay Firebase UID).
+- **Hỗ trợ tin không có ảnh**: Khi tin đăng có 0 ảnh, modal thẩm định hiển thị rõ ràng thông báo `Tin đăng này không có ảnh.` mà không bị lỗi render; quản trị viên vẫn có toàn quyền đưa ra quyết định Duyệt (`APPROVE`) hoặc Từ chối (`REJECT`).
+- **Response**: `200 OK` (`AdminProductApprovalDetailResponse`)
+
+### 34.3. `POST /api/v1/admin/product-approvals/{product_id}/decision` — Quyết định duyệt hoặc từ chối
+- **Method**: `POST`
+- **Path**: `/api/v1/admin/product-approvals/{product_id}/decision`
+- **Auth**: Bắt buộc (`role == 'ADMIN'`)
+- **Kiểm soát đồng thời (Concurrency Safety)**:
+  - Khóa dòng tin đăng với `SELECT ... FOR UPDATE`.
+  - Bắt buộc `approval_status == 'PENDING'`. Nếu hai admin cùng thao tác hoặc tin đã được xử lý bởi admin khác, trả về `409 Conflict` (không ghi đè last-write-wins).
+  - Nếu người bán đã chỉnh sửa tin trong khi đang chờ duyệt (`PENDING -> DRAFT`), tin không còn ở trạng thái `PENDING` và trả về `409 Conflict`.
+- **Request Body APPROVE**:
+```json
+{
+  "decision": "APPROVE"
+}
+```
+  - Cập nhật: `approval_status = 'APPROVED'`, `reviewed_by = admin.user_id`, `reviewed_at = NOW()`, xoá `review_note` cũ nếu có.
+  - Tin đăng lập tức có hiệu lực xuất bản công khai nếu `status == 'AVAILABLE'` và `moderation_status == 'CLEAR'`.
+  - Tạo thông báo persistent cho người bán: `ref_type='PRODUCT_APPROVAL'`, `title='Tin đăng đã được duyệt'`, điều hướng `/my-products`.
+- **Request Body REJECT**:
+```json
+{
+  "decision": "REJECT",
+  "note": "Thông tin sản phẩm chưa đủ rõ ràng. Vui lòng bổ sung tình trạng sách."
+}
+```
+  - `note`: Bắt buộc chuỗi từ 1 đến 500 ký tự (đã trim khoảng trắng).
+  - Cập nhật: `approval_status = 'REJECTED'`, `reviewed_by = admin.user_id`, `reviewed_at = NOW()`, `review_note = note`.
+  - Tin đăng không được xuất hiện công khai. Người bán có thể xem lý do từ chối trên giao diện Quản lý tin đăng, chỉnh sửa và gửi duyệt lại.
+  - Tạo thông báo persistent cho người bán: `ref_type='PRODUCT_APPROVAL'`, `title='Tin đăng cần được chỉnh sửa'`, điều hướng `/my-products`.
+- **Transaction & Realtime**:
+  - Bản ghi thông báo hệ thống được ghi trong cùng database transaction với quyết định phê duyệt.
+  - Sau commit thành công: phát sự kiện WebSocket realtime `NOTIFICATION_CREATED` (best-effort) tới người bán. Admin phê duyệt không nhận thông báo tự thân.
+- **Response**: `200 OK` (`SellerProductResponse`)

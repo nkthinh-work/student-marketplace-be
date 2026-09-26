@@ -23,10 +23,87 @@
 - **Đợt Bảo trì (Hygiene Pass)**: Rà soát toàn diện repository, chuẩn hoá quyền sở hữu đơn nhất giữa các tài liệu canonical, dọn dẹp cache/scratch cục bộ, chuẩn hoá rule quản trị (USER ACCEPTED).
 - **Phase 9C-B (PostgreSQL Backup & Restore Procedure)**: Quy trình sao lưu logical dump PostgreSQL native (`pg_dump -Fc`), xác thực SHA-256 và manifest, diễn tập phục hồi cô lập trên Docker container, khớp 100% 29 bảng nghiệp vụ và Alembic revision, bảo toàn CSDL nguồn, phân định rõ ranh giới phục hồi Redis / Cloudinary / Firebase (USER ACCEPTED).
 - **Phase 9C-C (Production Docker Build & Container Hardening)**: Dockerfile đa tầng (multi-stage) tối ưu `python:3.12-slim`, non-root user `appuser` (UID 10001), dùng chung image `student-marketplace-be:prod` cho API và Worker. Cấu hình `docker-compose.prod.yml` độc lập, loại bỏ source bind mounts và dev reload, giữ PostgreSQL/Redis trong mạng nội bộ, healthchecks chuẩn xác, migration Alembic tường minh, diễn tập production smoke stack cô lập thành công (USER ACCEPTED).
+- **Pre-Deployment Hardening — Complete User + Admin Notification Coverage & Support Claims Flow**: Hoàn thiện 100% độ phủ thông báo in-app và realtime cho Admin Inbox và User Lifecycle outcomes, hàng đợi đối soát ủng hộ `support_claims`, neo huy hiệu chuông thông báo Bell trên mobile drawer và header, 786/786 backend tests PASS, frontend build clean (USER ACCEPTED).
+- **Pre-Deployment UX Polish — Dynamic Tutorial Overlay & Admin CMS**: Thay thế trang tĩnh `/tutorials` bằng Global Tutorial Overlay modal chuẩn 9:16 portrait (~420px max-width) mở trực tiếp từ menu `Tutorial` (không đổi route, không reload). Trình phát video HTML5 native với tự động chuyển mã `vc_auto` (H.264 `avc1` hỗ trợ Chrome, Safari, mobile), seeking mượt mà, fallback báo lỗi thân thiện. Admin CMS quản lý video/poster trên Cloudinary với I/O non-blocking (offloaded qua `asyncio.to_thread`), API phản hồi tức thì < 0.15s trong lúc upload. 1 bảng nghiệp vụ `tutorials` (migration `1b009a1b9a9f`), 815/815 full backend tests PASS, 29/29 tutorial backend tests PASS, 10/10 tutorial frontend tests PASS, frontend build clean (USER ACCEPTED).
+- **Pre-Deployment Amendment — Navigation-Aligned Tutorial & Presentation Media UX**: Đồng bộ kiến trúc thông tin Tutorial với 10 mục điều hướng thực tế. Loại bỏ hoàn toàn lifecycle ảnh bìa (poster) tùy biến; sinh thumbnail tự động từ video Cloudinary qua transformation URL dẫn xuất. Tiện ích cắt ảnh dùng chung (4:3 cho Product Images, 16:9 cho Community Moments; không cắt minh chứng pháp lý). 31/31 backend tests PASS, 12/12 frontend tests PASS, frontend build clean (USER ACCEPTED).
+- **Pre-Deployment Acceptance Fix — Product Approval Completion & Inbox/Home UX**: Hoàn thiện toàn diện quy trình kiểm duyệt tin đăng tiền xuất bản (`Product Pre-Publication Approval Completion`), hỗ trợ tin đăng tùy chọn 0 ảnh; dọn dẹp hộp thư thông báo cá nhân bằng cử chỉ vuốt phải trực tiếp trên mobile (`Notification Direct Swipe-Right Delete`); 10 bản ghi nhật ký thật mới nhất kèm marquee hai chiều liên tục (`10 Most Recent Real Journals & Continuous Two-Way Marquee`). 841/841 backend tests PASS, 14/14 frontend acceptance tests PASS, frontend build clean (USER ACCEPTED).
 
 ---
 
 ## 2. Chi tiết lịch sử triển khai từng Phase
+
+### Pre-Deployment Acceptance Fix: Hoàn thiện Kiểm duyệt Tin đăng, Vuốt Xóa Thông báo & Marquee Nhật ký (Product Approval Completion & Inbox/Home UX) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - **A. Kiểm duyệt Tin đăng Tiền xuất bản & Ảnh tùy chọn (Product Pre-Publication Approval Completion & Optional Images)**:
+    - Admin Navigation & Routing: Đăng ký mục `Kiểm duyệt tin đăng` (`/admin/product-approvals`, icon `ClipboardCheck`) hiển thị đầy đủ, rõ ràng trong nhóm `QUẢN TRỊ` trên cả Header Desktop dropdown và Mobile Drawer.
+    - Hàng đợi thẩm định: Trang `AdminProductApprovalsPage` sắp xếp `submitted_for_review_at ASC, product_id ASC` (tin gửi trước duyệt trước), phân trang Keyset cursor mượt mà, hỗ trợ chuyển tab `Đã duyệt` và `Đã từ chối`.
+    - Modal thẩm định hiển thị chi tiết sản phẩm và tóm tắt an toàn người bán. Khi tin có 0 ảnh hiển thị `Tin đăng này không có ảnh.` không lỗi render. Khóa dòng `SELECT ... FOR UPDATE` chống xung đột đồng thời.
+    - Sửa thứ tự ưu tiên nhãn người bán: `moderation_status == 'BLOCKED'` -> `approval_status == 'DRAFT'` -> `approval_status == 'PENDING'` -> `approval_status == 'REJECTED'` -> `approval_status == 'APPROVED'`.
+    - Bước 2 đăng tin cho phép gửi duyệt không bắt buộc ảnh (`POST /api/v1/products/{id}/submit-review`), chuyển sang `PENDING` và thông báo Admin.
+    - Bảo vệ nội dung đã duyệt: Chỉnh sửa trường nhạy cảm hoặc thêm/xóa ảnh tự động thu hồi phê duyệt (`APPROVED -> DRAFT`). Reorder ảnh hoặc đổi thumbnail giữa các ảnh hiện có bảo lưu trạng thái phê duyệt. Khách mua không thể xem hoặc đặt mua tin chưa duyệt (404 Not Found).
+  - **B. Dọn dẹp Hộp thư Thông báo bằng Cử chỉ Vuốt Phải Trực tiếp (Notification Direct Swipe-Right Delete)**:
+    - Triển khai `DELETE /api/v1/notifications/{notification_id}` cho user ACTIVE. Xóa cứng bản ghi thông báo của user, trả về 204 No Content, không ảnh hưởng thực thể nghiệp vụ tham chiếu.
+    - Cử chỉ vuốt phải trực tiếp trên mobile: Vuốt ngang sang phải đạt ngưỡng (>= 38% chiều rộng và >= 90px) thả tay kích hoạt xóa ngay lập tức không cần chạm lần 2. Thả tay dưới ngưỡng tự động snap back. Cuộn dọc được bảo toàn.
+    - Tách lớp thị giác triệt tiêu tràn màu: Lớp nền đỏ z-0 `pointer-events-none` neo chặt bên trái; lớp tiền cảnh z-10 dùng nền 100% OPAQUE. Desktop có icon thùng rác tinh tế; TanStack Query optimistic update giảm `unread_count` tức thì.
+  - **C. 10 Bản ghi Nhật ký Thật Mới nhất & Marquee Hai chiều Liên tục (10 Most Recent Real Journals & Continuous Two-Way Marquee)**:
+    - Bổ sung `GET /api/v1/daily-needs/recent` (query param `limit` clamp 1..10, mặc định 10, public anonymous) lấy 10 bản ghi thật mới nhất theo `note_date DESC, updated_at DESC, daily_need_id DESC`. Backend tuyệt đối không sinh dữ liệu giả.
+    - Presentation pool 10 slots trên frontend: Khi có 1..9 bản ghi thật, tự động dùng round-robin tuần hoàn tạo 10 slots cho 2 hàng marquee chuyển động ngược hướng liên tục mà không sinh fake DB ID. Trạng thái 0 bản ghi hiển thị empty state thân thiện.
+  - **D. Kiểm thử & Cơ sở dữ liệu**:
+    - 32 bảng nghiệp vụ + 1 bảng `alembic_version` = 33 bảng vật lý. Alembic head `4414f46b5404`, 0 drift.
+    - Full Backend Suite: 841/841 PASS. Frontend Acceptance Suite: 14/14 PASS. Frontend Build: PASS.
+    - Nghiệm thu người dùng: Đã được người dùng xác nhận nghiệm thu chính thức (USER ACCEPTED).
+
+### Pre-Deployment Amendment: Đồng bộ Điều hướng Tutorial & Cắt ảnh Trình bày (Navigation-Aligned Tutorial & Presentation Media UX) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - Đồng bộ kiến trúc thông tin Tutorial với 10 mục điều hướng thực tế thuộc 5 nhóm điều hướng người dùng.
+  - Loại bỏ hoàn toàn vòng đời ảnh bìa (poster) tùy biến; sinh thumbnail tự động từ video Cloudinary qua transformation URL dẫn xuất.
+  - Tiện ích cắt ảnh dùng chung: 4:3 cho Product Images, 16:9 cho Community Moments; bảo toàn nguyên vẹn khung hình gốc cho minh chứng pháp lý (báo cáo, phản hồi, biên nhận chuyển khoản, đính kèm tin nhắn).
+  - 31/31 backend tests PASS, 12/12 frontend tests PASS.
+  - Nghiệm thu người dùng: Đã được người dùng xác nhận nghiệm thu chính thức (USER ACCEPTED).
+
+### Pre-Deployment UX Polish: Hệ thống Hướng dẫn Nhanh Toàn cục & Quản trị CMS (Dynamic Tutorial Overlay & Admin CMS) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - *Thay thế hoàn toàn phiên bản Tutorial v1 tĩnh*: Loại bỏ hoàn toàn các route `/tutorials` và `/tutorials/:slug` cùng dữ liệu mock tĩnh `tutorialsData.ts`.
+  - **Điều hướng & Global Tutorial Overlay**:
+    - Nhãn menu chuẩn `Tutorial`, đặt ở vị trí cao nhất trên thanh điều hướng (phía trên `Trang chủ`), click mở trực tiếp Global Overlay modal mà không thay đổi URL, không tải lại trang; tự động đóng Mobile Drawer khi kích hoạt.
+    - Modal toàn cục chuẩn 9:16 portrait (~420px max-width), nền mờ `backdrop-blur-sm bg-black/60`, hỗ trợ phím Escape, đóng bằng nút ✕ hoặc click backdrop, khóa cuộn trang nền.
+    - Chế độ **FEATURE LIST**: Accordion dọc theo 10 nhóm tính năng chuẩn hóa (Context-Aware Route Matching), tự động mở rộng theo ngữ cảnh trang hiện tại, hiển thị danh sách video con kèm ảnh thumbnail và thời lượng.
+    - Chế độ **VIDEO MODE**: Trình phát video HTML5 native chuẩn 9:16 portrait (`object-fit: contain`, `playsInline`, `preload="metadata"`, không autoplay, không loop, seeking mượt mà, tự động dừng khi đóng modal hoặc quay lại danh sách). Ràng buộc trực tiếp `src={videoUrl}`, reset lỗi tự động khi đổi URL, fallback báo lỗi thân thiện `Không thể phát video Tutorial này.` kèm nút thử lại.
+    - Nút CTA "Làm ngay" theo 10 hành động chuẩn hóa dẫn thẳng đến tính năng thật của hệ thống.
+  - **Quản trị CMS Admin (`/admin/tutorials`)**:
+    - Bổ sung mục điều hướng `Quản lý Tutorial` trong danh mục `QUẢN TRỊ` của Admin.
+    - Quản lý danh sách video theo Feature, nút sắp xếp `↑` `↓` tự động cập nhật bước số `sort_order` (10, 20, 30...) trong CSDL transaction.
+    - Modal Thêm mới, Chỉnh sửa, Thay thế video MP4 (tối đa 100 MB), Quản lý ảnh bìa poster (tối đa 10 MB), Bật/tắt xuất bản (`is_published`), Xem thử video (hỗ trợ cả bản nháp), và Xóa vĩnh viễn có xác nhận.
+    - Tiêu đề chức năng gọn (`Ảnh bìa`, `Thay thế Video`, `Chỉnh sửa Tutorial`, `Xem thử Video`) kèm phụ đề bọc dòng mềm (`break-words`), chống tràn giao diện cho tiêu đề tối đa 120 ký tự.
+    - Nhãn hành động trong dropdown hiển thị tên thân thiện (ví dụ `Mở hồ sơ cá nhân` thay vì kèm route `/profile`).
+    - Xem trước video và poster bằng `URL.createObjectURL` với `preload="metadata"`, tự động thu hồi bộ nhớ bằng `URL.revokeObjectURL` khi đổi tệp hoặc unmount/đóng modal.
+    - Cập nhật dữ liệu tức thì qua React Query cache invalidation, triệt tiêu 100% reload toàn trang (`location.reload` = 0) và không kích hoạt bootstrap `Đang khởi tạo...`.
+  - **Khắc phục Triệt để Acceptance Blockers — Non-blocking Cloudinary I/O & Universal Video Delivery**:
+    - **Triệt tiêu nghẽn Event Loop FastAPI (Event-Loop Starvation Fix)**: Đưa toàn bộ các lời gọi đồng bộ I/O của Cloudinary SDK (`upload`, `upload_large`, `destroy`) ra worker thread thông qua `asyncio.to_thread` trong module tích hợp trung tâm `app/integrations/cloudinary.py`. Tách bạch tuyệt đối: DB transaction, validation chạy trên async event loop; Cloudinary network I/O chạy trên worker thread. Các request song song (`GET /api/v1/users/me`, `GET /health`, reload...) phản hồi tức thì (< 0.15s) ngay cả khi đang tải lên video lớn.
+    - **Chuẩn hóa Video Delivery Đa nền tảng (Universal Transcoding)**: Bổ sung bộ lọc chuyển mã tự động `vc_auto` vào đường dẫn Cloudinary video URL (`.../video/upload/vc_auto/...mp4`). Khắc phục triệt để lỗi không phát được trên Google Chrome do video quay từ thiết bị iOS/iPhone mặc định lưu codec HEVC (`hvc1`), tự động chuyển mã về chuẩn H.264 (`avc1`) có `Accept-Ranges: bytes` hỗ trợ seeking mượt mà.
+    - **Linh hoạt Phương thức Tải lên (Threshold Policy)**: Tệp video <= 20 MB sử dụng API upload video thông thường; tệp > 20 MB sử dụng `upload_large` với chunk size 20 MB. Cả 2 luồng đều chỉ định tường minh `resource_type="video"`.
+    - **Cơ chế Bù trừ Vẹn toàn**: Giữ nguyên cơ chế xóa asset mới trên Cloudinary nếu DB transaction thất bại; xóa asset cũ trên Cloudinary sau khi DB transaction commit thành công.
+  - **Cơ sở dữ liệu & Migration**:
+    - Bổ sung duy nhất 1 bảng nghiệp vụ `tutorials` trong PostgreSQL qua Alembic migration `1b009a1b9a9f_add_tutorials_table.py`.
+    - Toàn bộ ràng buộc: `video_size_bytes > 0`, `duration_ms > 0`, `sort_order >= 0`, `poster_all_or_none`, trigger tự cập nhật `updated_at`, composite index `ix_tutorials_pub_feature_sort` trên `(is_published, feature_key, sort_order, tutorial_id)`.
+    - Tổng số bảng: 32 bảng nghiệp vụ + 1 bảng `alembic_version` = 33 bảng vật lý. 0 schema drift (`alembic check` clean).
+  - **Hệ thống Kiểm thử & Xác thực**:
+    - Backend: 29/29 tests PASS trong `tests/test_tutorials.py` bao gồm kiểm thử event loop ticker, kiểm thử gọi API đồng thời trong lúc upload, kiểm thử `resource_type="video"`, kiểm thử định dạng URL delivery `vc_auto`, và từ chối phản hồi provider không hợp lệ.
+    - Full Backend: **815/815 PASS** (`pytest tests/ -q` in 145.42s).
+    - Frontend: **10/10 PASS** (`node src/features/tutorials/__tests__/tutorials.test.mjs`).
+    - Frontend Build: `tsc -b && vite build` PASS (0 errors, 8.82s).
+    - Nghiệm thu người dùng: Đã được người dùng xác nhận nghiệm thu chính thức (USER ACCEPTED).
+
+### Pre-Deployment Hardening: Hoàn thiện Độ phủ Thông báo User + Admin & Hàng đợi Đối soát Ủng hộ (Complete User + Admin Notification Coverage & Support Claims Flow) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - Kiểm toán và hoàn thiện 100% độ phủ thông báo in-app và realtime cho Admin Inbox và User Lifecycle outcomes.
+  - Tái sử dụng bảng `notifications` hiện hữu với `type = 'SYSTEM'` và polymorphic `ref_type`, không sửa đổi DB schema, 0 Alembic migration drift.
+  - Admin inbox fan-out cho 4 sự kiện hành động mới: Báo cáo vi phạm (`ADMIN_REPORT`), Ảnh cộng đồng (`ADMIN_COMMUNITY`), Phản hồi (`ADMIN_FEEDBACK`), Ủng hộ đối soát (`ADMIN_SUPPORT_CLAIM`) tới toàn bộ active admin (`role = ADMIN` và `status = ACTIVE`).
+  - User lifecycle outcomes: Xác nhận ủng hộ với số tiền thực nhận có thẩm quyền (`SUPPORT_CLAIM`), Từ chối ủng hộ trung tính (`SUPPORT_CLAIM`), Duyệt ảnh cộng đồng (`COMMUNITY_MOMENT`), Từ chối ảnh cộng đồng với snapshot trước khi hard delete (`COMMUNITY_REJECTED`), Kết quả báo cáo vi phạm (`REPORT` cho terminal RESOLVED/REJECTED, 0 cho REVIEWING), Giới hạn & khôi phục quyền tài khoản (`ACCOUNT_ACCESS`).
+  - Bảo toàn tính nguyên tử giao dịch: Tạo bản ghi thông báo trong cùng DB transaction, phát tán realtime `NOTIFICATION_CREATED` post-commit qua `/ws/me`, lỗi Redis/WebSocket được cô lập hoàn toàn (không rollback dữ liệu nghiệp vụ).
+  - Tái cấu trúc neo huy hiệu chuông thông báo (Notification Badge Anchoring): Đưa `Bell` và badge chưa đọc vào wrapper cục bộ `relative inline-flex shrink-0`, badge `absolute` tại góc trên phải icon với `pointer-events: none`, triệt tiêu hoàn toàn lỗi che icon hoặc thế chỗ icon ở Mobile Drawer (`Thông báo`), đồng bộ căn chỉnh hoàn hảo với các mục điều hướng lân cận, không gây dịch chuyển giao diện khi số lượng chưa đọc thay đổi (0, 1..99, 99+).
+  - Đơn giản hóa luồng ủng hộ (Support Claims Simplification): Triệt tiêu mã chuyển khoản `PTITERS-{user_id}` khỏi frontend và backend, thu gọn biểu mẫu người dùng thành `claimed_amount_vnd`, `claimed_transferred_at`, `sender_account_name` và `wants_public`, phân tách rành mạch giữa hàng đợi khai báo `support_claims` và sổ cái tài chính chính thức `support_contributions`.
+  - Nghiệm thu người dùng: Đã được người dùng xác nhận nghiệm thu chính thức (USER ACCEPTED).
 
 ### Phase 9C-C: Đóng gói Container Sản xuất & Tăng cường Bảo mật (Production Docker Build & Container Hardening) [COMPLETED & VERIFIED / USER ACCEPTED]
 - **Mục tiêu & Thực chứng**:

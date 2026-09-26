@@ -101,6 +101,7 @@ async def order_ab(
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )
@@ -190,6 +191,7 @@ async def test_subject_report_history_attribution(
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
         moderation_status=ProductModerationStatus.CLEAR.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
         is_deleted=False,
     )

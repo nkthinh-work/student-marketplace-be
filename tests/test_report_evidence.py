@@ -486,6 +486,7 @@ async def test_evidence_on_product_and_order_reports(
         price=500000,
         stock=1,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE.value,
     )
     db_session.add(prod)

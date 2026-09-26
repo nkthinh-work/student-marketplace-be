@@ -119,6 +119,7 @@ async def test_product(
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         view_count=0,
     )
     db_session.add(prod)

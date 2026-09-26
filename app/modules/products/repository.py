@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auctions.models import Auction, AuctionStatus
-from app.modules.products.models import Product, ProductImage, ProductModerationStatus
+from app.modules.products.models import Product, ProductImage, ProductModerationStatus, ProductApprovalStatus
 from app.modules.users.models import User, UserStatus
 from app.modules.users.capability_models import UserCapabilityRestriction, CapabilityType
 
@@ -131,6 +131,7 @@ class ProductRepository:
                 Product.is_deleted.is_(False),
                 Product.status == "AVAILABLE",
                 Product.moderation_status == ProductModerationStatus.CLEAR.value,
+                Product.approval_status == ProductApprovalStatus.APPROVED.value,
                 User.status == UserStatus.ACTIVE,
                 ~sell_restricted_exists,
             )
@@ -215,6 +216,7 @@ class ProductRepository:
         self,
         seller_id: int,
         status: Optional[str] = None,
+        approval_status: Optional[str] = None,
         limit: int = 20,
         cursor: Optional[tuple[datetime, int]] = None,
     ) -> tuple[list[Product], bool, Optional[tuple[datetime, int]]]:
@@ -225,6 +227,9 @@ class ProductRepository:
 
         if status is not None:
             stmt = stmt.where(Product.status == status)
+
+        if approval_status is not None:
+            stmt = stmt.where(Product.approval_status == approval_status)
 
         if cursor is not None:
             cursor_time, cursor_id = cursor
@@ -250,6 +255,74 @@ class ProductRepository:
         if has_more:
             items = items[:limit]
             next_cursor = (items[-1].created_at, items[-1].product_id)
+        else:
+            next_cursor = None
+
+        return items, has_more, next_cursor
+
+    async def list_admin_queue(
+        self,
+        approval_status: str = "PENDING",
+        limit: int = 20,
+        cursor: Optional[tuple[datetime, int]] = None,
+    ) -> tuple[list[Product], bool, Optional[tuple[datetime, int]]]:
+        stmt = (
+            select(Product)
+            .where(
+                Product.is_deleted.is_(False),
+                Product.approval_status == approval_status,
+            )
+        )
+
+        if approval_status == "PENDING":
+            if cursor is not None:
+                c_time, c_id = cursor
+                if c_time.tzinfo is None:
+                    c_time = c_time.replace(tzinfo=timezone.utc)
+                stmt = stmt.where(
+                    or_(
+                        Product.submitted_for_review_at > c_time,
+                        and_(
+                            Product.submitted_for_review_at == c_time,
+                            Product.product_id > c_id,
+                        ),
+                    )
+                )
+            stmt = stmt.order_by(
+                Product.submitted_for_review_at.asc().nulls_last(),
+                Product.product_id.asc(),
+            )
+        else:
+            if cursor is not None:
+                c_time, c_id = cursor
+                if c_time.tzinfo is None:
+                    c_time = c_time.replace(tzinfo=timezone.utc)
+                stmt = stmt.where(
+                    or_(
+                        Product.reviewed_at < c_time,
+                        and_(
+                            Product.reviewed_at == c_time,
+                            Product.product_id < c_id,
+                        ),
+                    )
+                )
+            stmt = stmt.order_by(
+                Product.reviewed_at.desc().nulls_last(),
+                Product.product_id.desc(),
+            )
+
+        stmt = stmt.limit(limit + 1)
+        result = await self.db.execute(stmt)
+        items = list(result.scalars().all())
+
+        has_more = len(items) > limit
+        if has_more:
+            items = items[:limit]
+            if approval_status == "PENDING":
+                last_time = items[-1].submitted_for_review_at or items[-1].created_at
+            else:
+                last_time = items[-1].reviewed_at or items[-1].created_at
+            next_cursor = (last_time, items[-1].product_id)
         else:
             next_cursor = None
 

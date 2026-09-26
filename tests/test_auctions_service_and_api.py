@@ -98,6 +98,7 @@ async def product(db_session: AsyncSession, seller: User, sample_category: Categ
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=False,
     )
@@ -273,6 +274,7 @@ async def test_social_bidder_display_and_privacy_rules(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -528,6 +530,7 @@ async def test_enable_auction_scheduled_start_and_validation(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -557,6 +560,7 @@ async def test_enable_auction_scheduled_start_and_validation(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod2)
     await db_session.flush()
@@ -603,6 +607,7 @@ async def test_enable_auction_pubsub_failure_resilience(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()
@@ -641,6 +646,7 @@ async def test_enable_auction_immediate_start_with_duration_minutes(
         reserved_stock=0,
         listing_type=ListingType.FIXED_PRICE.value,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()

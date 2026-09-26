@@ -49,7 +49,7 @@ async def get_unread_count(
     return await service.get_unread_count(current_user.user_id)
 
 
-# Static route MUST be registered BEFORE parameterized /{notification_id}/read
+# Route tĩnh phải đăng ký trước route có tham số /{notification_id}/read để tránh nuốt route
 @router.patch(
     "/read-all",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -76,6 +76,26 @@ async def mark_read(
 ) -> None:
     service = NotificationService(db)
     found = await service.mark_read(notification_id, current_user.user_id)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy thông báo.",
+        )
+    return None
+
+
+@router.delete(
+    "/{notification_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Xóa một thông báo của người dùng",
+)
+async def delete_notification(
+    notification_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    service = NotificationService(db)
+    found = await service.delete_notification(notification_id, current_user.user_id)
     if not found:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -94,6 +94,7 @@ async def product_one(
         description="Sách còn mới 95%, không rách",
         price=Decimal("45000"),
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE,
     )
     db_session.add(prod)
@@ -112,6 +113,7 @@ async def product_two(
         description="Máy tính dùng tốt môn Toán rời rạc",
         price=Decimal("350000"),
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE,
     )
     db_session.add(prod)
@@ -130,6 +132,7 @@ async def third_party_product(
         description="Chuột chính hãng",
         price=Decimal("150000"),
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE,
     )
     db_session.add(prod)

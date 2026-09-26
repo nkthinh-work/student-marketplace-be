@@ -75,6 +75,7 @@ async def product(db_session: AsyncSession, seller: User, sample_category: Categ
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE.value,
+        approval_status="APPROVED",
         view_count=0,
         is_deleted=False,
     )

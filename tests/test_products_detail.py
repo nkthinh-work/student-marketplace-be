@@ -49,6 +49,7 @@ async def detail_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
     # Hidden product
@@ -62,6 +63,7 @@ async def detail_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="HIDDEN",
+        approval_status="APPROVED",
         is_deleted=False,
     )
     # Soft-deleted product
@@ -75,6 +77,7 @@ async def detail_data(db_session: AsyncSession):
         stock=1,
         reserved_stock=0,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=True,
     )
     db_session.add_all([p_avail, p_hidden, p_deleted])

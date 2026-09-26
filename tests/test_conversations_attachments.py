@@ -91,6 +91,7 @@ async def product(db_session: AsyncSession, seller_user: User, category: Categor
         description="Sách mới 99%",
         price=Decimal("45000.00"),
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
         listing_type=ListingType.FIXED_PRICE,
     )
     db_session.add(prod)

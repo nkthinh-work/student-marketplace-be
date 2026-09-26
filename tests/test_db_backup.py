@@ -105,15 +105,18 @@ def test_compute_sha256(tmp_path: pathlib.Path):
 
 def test_get_compose_cmd_with_compose_file():
     """Kiểm tra get_compose_cmd gắn thêm -f <compose_file> khi được cung cấp."""
+    from unittest.mock import MagicMock, patch
     from scripts.db_backup import get_compose_cmd
 
-    cmd_default = get_compose_cmd()
-    assert len(cmd_default) >= 1
-    assert "compose" in cmd_default[-1] or "docker-compose" in cmd_default[0]
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        cmd_default = get_compose_cmd()
+        assert len(cmd_default) >= 1
+        assert "compose" in cmd_default[-1] or "docker-compose" in cmd_default[0]
 
-    cmd_custom = get_compose_cmd("docker-compose.prod.yml")
-    assert "-f" in cmd_custom
-    assert "docker-compose.prod.yml" in cmd_custom
-    # Thứ tự: [docker, compose, -f, docker-compose.prod.yml]
-    idx_f = cmd_custom.index("-f")
-    assert cmd_custom[idx_f + 1] == "docker-compose.prod.yml"
+        cmd_custom = get_compose_cmd("docker-compose.prod.yml")
+        assert "-f" in cmd_custom
+        assert "docker-compose.prod.yml" in cmd_custom
+        # Thứ tự: [docker, compose, -f, docker-compose.prod.yml]
+        idx_f = cmd_custom.index("-f")
+        assert cmd_custom[idx_f + 1] == "docker-compose.prod.yml"

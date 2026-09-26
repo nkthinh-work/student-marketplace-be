@@ -32,7 +32,13 @@ from app.modules.notifications.schemas import NotificationResponse
 from app.modules.orders.models import Order
 from app.modules.orders.service import OrderService
 from app.modules.orders.websocket import publish_user_event
-from app.modules.products.models import ListingType, Product, ProductStatus, ProductModerationStatus
+from app.modules.products.models import (
+    ListingType,
+    Product,
+    ProductStatus,
+    ProductModerationStatus,
+    ProductApprovalStatus,
+)
 from app.modules.users.capability_service import CapabilityService
 from app.modules.users.models import User, UserStatus
 from app.workers.retry import SweepResult, execute_with_retry
@@ -192,6 +198,12 @@ class AuctionService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Chỉ có thể bật đấu giá cho sản phẩm đang ở trạng thái AVAILABLE.",
+            )
+
+        if product.approval_status != ProductApprovalStatus.APPROVED.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sản phẩm chưa được quản trị viên duyệt để bán.",
             )
 
         if product.moderation_status == ProductModerationStatus.BLOCKED.value:
@@ -389,10 +401,19 @@ class AuctionService:
             )
 
         # Fresh product moderation check to close race with concurrent PRODUCT_HIDE
-        stmt_p = select(Product.moderation_status, Product.is_deleted).where(Product.product_id == auction.product_id)
+        stmt_p = select(
+            Product.moderation_status,
+            Product.is_deleted,
+            Product.approval_status,
+        ).where(Product.product_id == auction.product_id)
         res_p = await self.db.execute(stmt_p)
         prod_row = res_p.one_or_none()
-        if not prod_row or prod_row.is_deleted or prod_row.moderation_status == ProductModerationStatus.BLOCKED.value:
+        if (
+            not prod_row
+            or prod_row.is_deleted
+            or prod_row.moderation_status == ProductModerationStatus.BLOCKED.value
+            or prod_row.approval_status != ProductApprovalStatus.APPROVED.value
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Sản phẩm đấu giá đã bị ẩn hoặc không còn khả dụng.",
@@ -1018,7 +1039,10 @@ class AuctionService:
                 detail="Sản phẩm không tồn tại.",
             )
 
-        if product.moderation_status == ProductModerationStatus.BLOCKED.value:
+        if (
+            product.moderation_status == ProductModerationStatus.BLOCKED.value
+            or product.approval_status != ProductApprovalStatus.APPROVED.value
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Sản phẩm đã bị quản trị viên ẩn hoặc không còn khả dụng.",

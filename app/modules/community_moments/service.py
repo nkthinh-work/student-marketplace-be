@@ -35,6 +35,13 @@ from app.modules.community_moments.schemas import (
     PublicCommunityMomentItem,
     PublicHeroResponse,
 )
+from app.modules.notifications.models import NotificationType
+from app.modules.notifications.service import (
+    NotificationService,
+    format_notification,
+    safe_publish_user_notification,
+    dispatch_notification_snapshots,
+)
 from app.modules.users.models import User, UserStatus
 
 logger = logging.getLogger("app")
@@ -145,8 +152,22 @@ class CommunityMomentService:
 
         try:
             created = await self.repo.create(new_moment)
+
+            # Notify active admins of new pending community moment
+            notif_service = NotificationService(self.db)
+            admin_snapshots = await notif_service.notify_admins(
+                title="Có ảnh cộng đồng mới chờ duyệt",
+                body="Một khoảnh khắc mới đang chờ quản trị viên duyệt.",
+                ref_type="ADMIN_COMMUNITY",
+                ref_id=created.moment_id,
+            )
+
             await self.db.commit()
             await self.db.refresh(created)
+
+            # Post-commit best-effort realtime dispatch
+            await dispatch_notification_snapshots(admin_snapshots)
+
             return CommunityMomentSubmissionResponse(
                 moment_id=created.moment_id,
                 status=created.status,
@@ -326,6 +347,21 @@ class CommunityMomentService:
         moment.reviewed_by = current_admin.user_id
         moment.reviewed_at = now_utc
 
+        uploader_id = moment.uploader_id
+        moment_id_val = moment.moment_id
+
+        # Notify uploader that moment is approved
+        notif_service = NotificationService(self.db)
+        notif = await notif_service.create_notification(
+            user_id=uploader_id,
+            type=NotificationType.SYSTEM.value,
+            title="Khoảnh khắc của bạn đã được duyệt",
+            body="Khoảnh khắc của bạn đã được duyệt và đang hiển thị trên trang chủ.",
+            ref_type="COMMUNITY_MOMENT",
+            ref_id=moment_id_val,
+        )
+        uploader_snapshot = format_notification(notif)
+
         await self.db.flush()
 
         # Prune oldest approved moments beyond 5 globally
@@ -339,6 +375,9 @@ class CommunityMomentService:
 
         await self.db.commit()
         await self.db.refresh(moment)
+
+        # Post-commit best-effort realtime dispatch to uploader
+        await safe_publish_user_notification(uploader_id, uploader_snapshot)
 
         # Post-commit best-effort Cloudinary cleanup for pruned excess moments
         for ex_id, ex_key in pruned_assets:
@@ -374,11 +413,28 @@ class CommunityMomentService:
                 detail="Khoảnh khắc này đã được xử lý trước đó và không còn ở trạng thái chờ duyệt.",
             )
 
+        uploader_id = moment.uploader_id
+        moment_id_val = moment.moment_id
         storage_key = moment.storage_key
+
+        # Notify uploader of rejection before deleting row
+        notif_service = NotificationService(self.db)
+        notif = await notif_service.create_notification(
+            user_id=uploader_id,
+            type=NotificationType.SYSTEM.value,
+            title="Khoảnh khắc chưa được duyệt",
+            body="Khoảnh khắc bạn gửi chưa phù hợp với tiêu chuẩn cộng đồng Chợ PTITers.",
+            ref_type="COMMUNITY_REJECTED",
+            ref_id=moment_id_val,
+        )
+        uploader_snapshot = format_notification(notif)
 
         # Hard delete from DB
         await self.repo.delete(moment)
         await self.db.commit()
+
+        # Post-commit best-effort realtime dispatch
+        await safe_publish_user_notification(uploader_id, uploader_snapshot)
 
         # Post-commit best-effort Cloudinary cleanup
         try:

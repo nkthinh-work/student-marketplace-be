@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -795,3 +796,135 @@ async def test_public_user_today_journal_does_not_return_yesterdays_post(
     assert res.status_code == 200
     assert res.json() is None
 
+
+@pytest.mark.asyncio
+async def test_recent_daily_needs_empty(test_client: AsyncClient, db_session: AsyncSession):
+    await db_session.execute(text("DELETE FROM daily_needs"))
+    await db_session.flush()
+    res = await test_client.get("/api/v1/daily-needs/recent")
+    assert res.status_code == 200
+    data = res.json()
+    assert "items" in data
+    assert data["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_recent_daily_needs_returns_historical_across_dates(
+    test_client: AsyncClient, db_session: AsyncSession, user_a: User
+):
+    await db_session.execute(text("DELETE FROM daily_needs"))
+    await db_session.flush()
+    yesterday = get_vietnam_today() - timedelta(days=1)
+    old_note = DailyNeed(
+        user_id=user_a.user_id,
+        note_date=yesterday,
+        content="Nhật ký hôm qua rất vui",
+        created_at=datetime.now(VN_TZ) - timedelta(days=1),
+        updated_at=datetime.now(VN_TZ) - timedelta(days=1),
+    )
+    db_session.add(old_note)
+    await db_session.flush()
+
+    # /today returns empty because there is 0 note today
+    today_res = await test_client.get("/api/v1/daily-needs/today")
+    assert today_res.status_code == 200
+    assert today_res.json()["items"] == []
+
+    # /recent returns the yesterday note across dates!
+    recent_res = await test_client.get("/api/v1/daily-needs/recent")
+    assert recent_res.status_code == 200
+    items = recent_res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["daily_need_id"] == old_note.daily_need_id
+    assert items[0]["content"] == "Nhật ký hôm qua rất vui"
+    assert items[0]["author"]["user_id"] == user_a.user_id
+
+
+@pytest.mark.asyncio
+async def test_recent_daily_needs_caps_at_10_and_ordered_deterministically(
+    test_client: AsyncClient, db_session: AsyncSession
+):
+    await db_session.execute(text("DELETE FROM daily_needs"))
+    await db_session.flush()
+    # Create 12 users with 12 journals across dates
+    users = []
+    for i in range(12):
+        u = User(
+            email=f"user_recent_{i}@ptit.edu.vn",
+            full_name=f"User Recent {i}",
+            role=UserRole.STUDENT.value,
+            status=UserStatus.ACTIVE,
+        )
+        users.append(u)
+    db_session.add_all(users)
+    await db_session.flush()
+
+    today = get_vietnam_today()
+    notes = []
+    for i, u in enumerate(users):
+        n_date = today - timedelta(days=i)
+        note = DailyNeed(
+            user_id=u.user_id,
+            note_date=n_date,
+            content=f"Journal day {i}",
+            created_at=datetime.now(VN_TZ) - timedelta(days=i),
+            updated_at=datetime.now(VN_TZ) - timedelta(days=i),
+        )
+        notes.append(note)
+    db_session.add_all(notes)
+    await db_session.flush()
+
+    res = await test_client.get("/api/v1/daily-needs/recent")
+    assert res.status_code == 200
+    data = res.json()
+    items = data["items"]
+    assert len(items) == 10
+    dates = [item["note_date"] for item in items]
+    assert dates == sorted(dates, reverse=True)
+    returned_ids = [item["daily_need_id"] for item in items]
+    assert len(returned_ids) == len(set(returned_ids))
+
+
+@pytest.mark.asyncio
+async def test_delete_today_journal_preserves_streak_and_recent_feed_falls_back(
+    test_client: AsyncClient, db_session: AsyncSession, user_a: User
+):
+    await db_session.execute(text("DELETE FROM daily_needs"))
+    await db_session.flush()
+    yesterday = get_vietnam_today() - timedelta(days=1)
+    hist_note = DailyNeed(
+        user_id=user_a.user_id,
+        note_date=yesterday,
+        content="Hôm qua chăm chỉ",
+        created_at=datetime.now(VN_TZ) - timedelta(days=1),
+        updated_at=datetime.now(VN_TZ) - timedelta(days=1),
+    )
+    db_session.add(hist_note)
+    await db_session.flush()
+
+    with auth_patch(user_a):
+        put_res = await test_client.put(
+            "/api/v1/daily-needs/me/today",
+            json={"content": "Hôm nay vui vẻ"},
+        )
+        assert put_res.status_code == 200
+
+        summary_res = await test_client.get("/api/v1/daily-needs/me/summary")
+        assert summary_res.status_code == 200
+        streak_before_delete = summary_res.json()["streak_count"]
+        assert streak_before_delete >= 1
+
+        del_res = await test_client.delete("/api/v1/daily-needs/me/today")
+        assert del_res.status_code == 204
+
+        summary_after = await test_client.get("/api/v1/daily-needs/me/summary")
+        assert summary_after.status_code == 200
+        assert summary_after.json()["streak_count"] == streak_before_delete
+        assert summary_after.json()["has_checked_in_today"] is True
+
+        recent_res = await test_client.get("/api/v1/daily-needs/recent")
+        assert recent_res.status_code == 200
+        items = recent_res.json()["items"]
+        assert len(items) == 1
+        assert items[0]["daily_need_id"] == hist_note.daily_need_id
+        assert items[0]["content"] == "Hôm qua chăm chỉ"

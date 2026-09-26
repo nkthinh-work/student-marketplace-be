@@ -16,7 +16,7 @@ from app.integrations.firebase import verify_firebase_token
 from app.modules.auth.dependencies import security, get_current_active_user
 from app.modules.auth.service import AuthService
 from app.modules.users.models import User
-from app.modules.products.models import ListingType, ProductStatus
+from app.modules.products.models import ListingType, ProductStatus, ProductApprovalStatus
 from app.modules.products.service import ProductService
 from app.modules.products.schemas import (
     ProductCreate,
@@ -26,6 +26,7 @@ from app.modules.products.schemas import (
     ProductViewRequest,
     ProductViewResponse,
     ProductImageResponse,
+    SellerProductResponse,
     SellerProductListResponse,
     ImageReorderRequest,
 )
@@ -89,6 +90,9 @@ async def list_my_products(
     status_filter: Optional[ProductStatus] = Query(
         None, alias="status", description="Filter by status (AVAILABLE, HIDDEN, SOLD_OUT)"
     ),
+    approval_status_filter: Optional[ProductApprovalStatus] = Query(
+        None, alias="approval_status", description="Filter by approval status (DRAFT, PENDING, APPROVED, REJECTED)"
+    ),
     limit: int = Query(20, ge=1, le=50, description="Page size (1-50)"),
     cursor: Optional[str] = Query(None, description="Opaque pagination cursor"),
     current_user: User = Depends(get_current_active_user),
@@ -98,9 +102,25 @@ async def list_my_products(
     return await service.list_seller_products(
         seller=current_user,
         status_filter=status_filter.value if status_filter else None,
+        approval_status_filter=approval_status_filter.value if approval_status_filter else None,
         limit=limit,
         cursor=cursor,
     )
+
+
+@router.post(
+    "/{product_id}/submit-review",
+    response_model=SellerProductResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Submit product listing for admin review",
+)
+async def submit_product_review(
+    product_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> SellerProductResponse:
+    service = ProductService(db)
+    return await service.submit_for_review(product_id=product_id, seller=current_user)
 
 
 @router.get(

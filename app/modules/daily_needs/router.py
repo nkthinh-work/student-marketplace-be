@@ -19,6 +19,19 @@ router = APIRouter(prefix="/daily-needs", tags=["daily-needs"])
 
 
 @router.get(
+    "/recent",
+    response_model=DailyNeedListResponse,
+    summary="Danh sách nhật ký gần nhất trên toàn hệ thống (tối đa 10)",
+)
+async def get_recent_daily_needs(
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+) -> DailyNeedListResponse:
+    service = DailyNeedService(db)
+    return await service.get_recent_public_notes(limit=limit)
+
+
+@router.get(
     "/today",
     response_model=DailyNeedListResponse,
     summary="Danh sách nhu cầu hôm nay (tối đa 10)",

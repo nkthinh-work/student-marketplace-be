@@ -47,6 +47,7 @@ async def search_seed_data(db_session: AsyncSession):
         price=45000,
         stock=1,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
 
@@ -60,6 +61,7 @@ async def search_seed_data(db_session: AsyncSession):
         price=60000,
         stock=1,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
 
@@ -73,6 +75,7 @@ async def search_seed_data(db_session: AsyncSession):
         price=15000000,
         stock=1,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=False,
     )
 
@@ -86,6 +89,7 @@ async def search_seed_data(db_session: AsyncSession):
         price=50000,
         stock=1,
         status="HIDDEN",
+        approval_status="APPROVED",
         is_deleted=False,
     )
 
@@ -99,6 +103,7 @@ async def search_seed_data(db_session: AsyncSession):
         price=30000,
         stock=1,
         status="AVAILABLE",
+        approval_status="APPROVED",
         is_deleted=True,
     )
 

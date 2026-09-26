@@ -92,6 +92,7 @@ async def sample_product(db_session: AsyncSession, sample_user: User) -> Product
         stock=1,
         reserved_stock=0,
         status=ProductStatus.AVAILABLE,
+        approval_status="APPROVED",
     )
     db_session.add(prod)
     await db_session.flush()

@@ -42,6 +42,13 @@ class ProductModerationStatus(str, enum.Enum):
     BLOCKED = "BLOCKED"
 
 
+class ProductApprovalStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
@@ -62,6 +69,16 @@ class Product(Base):
         CheckConstraint(
             "moderation_status IN ('CLEAR', 'BLOCKED')",
             name="chk_products_moderation_status",
+        ),
+        CheckConstraint(
+            "approval_status IN ('DRAFT', 'PENDING', 'APPROVED', 'REJECTED')",
+            name="chk_products_approval_status",
+        ),
+        Index(
+            "ix_products_approval_queue",
+            "submitted_for_review_at",
+            "product_id",
+            postgresql_where=text("approval_status = 'PENDING' AND is_deleted = FALSE"),
         ),
         Index(
             "ix_products_category_status",
@@ -147,6 +164,29 @@ class Product(Base):
         default=ProductModerationStatus.CLEAR.value,
         server_default="CLEAR",
     )
+    approval_status: Mapped[str] = mapped_column(
+        String(12),
+        nullable=False,
+        default=ProductApprovalStatus.DRAFT.value,
+        server_default="DRAFT",
+    )
+    submitted_for_review_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    reviewed_by: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    review_note: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+    )
     view_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -174,6 +214,12 @@ class Product(Base):
     # Relationships
     seller: Mapped["User"] = relationship(
         "User",
+        foreign_keys=[seller_id],
+        lazy="selectin",
+    )
+    reviewer: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys=[reviewed_by],
         lazy="selectin",
     )
     category: Mapped["Category"] = relationship(
