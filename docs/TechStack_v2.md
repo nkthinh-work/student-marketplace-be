@@ -547,9 +547,13 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
   - Thiết lập cơ chế kiểm tra sức khỏe (Healthchecks) và dừng mượt mà (Graceful SIGTERM handling); migration CSDL được thực thi tường minh qua lệnh của người vận hành, không chạy tự động khi khởi động API.
 - **Phase 9C-D — CI / Deployment**:
   - **CI Provider**: Sử dụng GitHub Actions độc lập cho từng repository (`student-marketplace-be` và `student-marketplace-fe`), tuân thủ nguyên tắc least-privilege (`contents: read`), hủy job cũ khi có commit mới (`cancel-in-progress: true`), không sử dụng secrets sản xuất trong kiểm thử thông thường.
-  - **Backend CI Gates**: Python 3.12, container dịch vụ PostgreSQL 15 & Redis 7 cô lập tạm thời, migration Alembic (`alembic upgrade head`), kiểm toán drift (`alembic check`), toàn bộ test suite (`pytest tests/ -q`), kiểm tra cú pháp Production Compose, build image Production Docker, xác thực non-root runtime (`appuser`), kiểm tra toàn vẹn dependencies (`pip check`) và kiểm toán ranh giới tệp tin.
-  - **Frontend CI Gates**: Node.js 22, cài đặt khóa sạch (`npm ci`), kiểm tra kiểu tĩnh TypeScript và đóng gói tối ưu (`tsc -b && vite build`), xác thực artifact `dist/index.html`.
-  - **Cổng Triển khai Từ xa (Remote Deployment Preflight)**: Môi trường triển khai từ xa (Remote target), tên miền sản xuất, chứng chỉ TLS và container registry chưa được cấu hình. Việc triển khai từ xa được giữ nguyên ở trạng thái sẵn sàng (Deployment Ready) và chờ quyết định hạ tầng chính thức từ người dùng.
+  - **Backend CI Gates**: Python 3.12, container dịch vụ PostgreSQL 15 & Redis 7 cô lập tạm thời, migration Alembic (`alembic upgrade head`), kiểm toán drift (`alembic check`), toàn bộ test suite (`pytest tests/ -q`), kiểm tra cú pháp Production Compose, build image Production Docker, xác thực non-root runtime (`appuser`), kiểm tra toàn vẹn dependencies (`pip check`) và kiểm toán ranh giới tệp tin. Toàn bộ release gates trên GitHub Actions đã đạt `SUCCESS`.
+  - **Frontend CI Gates**: Node.js 22, cài đặt khóa sạch (`npm ci`), kiểm tra kiểu tĩnh TypeScript và đóng gói tối ưu (`tsc -b && vite build`), xác thực artifact `dist/index.html`. Toàn bộ build gates trên GitHub Actions đã đạt `SUCCESS`.
+  - **Kiến trúc Triển khai Khái niệm (Conceptual Deployment Architecture)**:
+    - Frontend: Triển khai trên Vercel kết nối repository `student-marketplace-fe`.
+    - Backend: Ban đầu triển khai trên một máy chủ VPS sản xuất (one production VPS initially). Các dịch vụ vận hành trên VPS bao gồm: Reverse proxy / HTTPS termination, FastAPI API (`student-marketplace-be:prod`), Background Worker (`order_auto_cancel`), PostgreSQL, Redis. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
+    - Nhà cung cấp bên ngoài (External Providers): Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
+    - Trạng thái triển khai: `READY FOR INFRASTRUCTURE PROVISIONING`. Tuyệt đối không tự tiện bịa đặt VPS IP, domain, chứng chỉ TLS, production secrets hay deployed URLs khi chưa có thông số hạ tầng thực tế từ người dùng.
 
 Phase 5 được phép dùng worker cho **domain requirement bắt buộc** là đóng auction đúng hạn. Phase 9 dành cho hardening/optimization toàn hệ thống, không trì hoãn correctness của đấu giá.
 

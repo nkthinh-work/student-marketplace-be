@@ -27,10 +27,60 @@
 - **Pre-Deployment UX Polish — Dynamic Tutorial Overlay & Admin CMS**: Thay thế trang tĩnh `/tutorials` bằng Global Tutorial Overlay modal chuẩn 9:16 portrait (~420px max-width) mở trực tiếp từ menu `Tutorial` (không đổi route, không reload). Trình phát video HTML5 native với tự động chuyển mã `vc_auto` (H.264 `avc1` hỗ trợ Chrome, Safari, mobile), seeking mượt mà, fallback báo lỗi thân thiện. Admin CMS quản lý video/poster trên Cloudinary với I/O non-blocking (offloaded qua `asyncio.to_thread`), API phản hồi tức thì < 0.15s trong lúc upload. 1 bảng nghiệp vụ `tutorials` (migration `1b009a1b9a9f`), 815/815 full backend tests PASS, 29/29 tutorial backend tests PASS, 10/10 tutorial frontend tests PASS, frontend build clean (USER ACCEPTED).
 - **Pre-Deployment Amendment — Navigation-Aligned Tutorial & Presentation Media UX**: Đồng bộ kiến trúc thông tin Tutorial với 10 mục điều hướng thực tế. Loại bỏ hoàn toàn lifecycle ảnh bìa (poster) tùy biến; sinh thumbnail tự động từ video Cloudinary qua transformation URL dẫn xuất. Tiện ích cắt ảnh dùng chung (4:3 cho Product Images, 16:9 cho Community Moments; không cắt minh chứng pháp lý). 31/31 backend tests PASS, 12/12 frontend tests PASS, frontend build clean (USER ACCEPTED).
 - **Pre-Deployment Acceptance Fix — Product Approval Completion & Inbox/Home UX**: Hoàn thiện toàn diện quy trình kiểm duyệt tin đăng tiền xuất bản (`Product Pre-Publication Approval Completion`), hỗ trợ tin đăng tùy chọn 0 ảnh; dọn dẹp hộp thư thông báo cá nhân bằng cử chỉ vuốt phải trực tiếp trên mobile (`Notification Direct Swipe-Right Delete`); 10 bản ghi nhật ký thật mới nhất kèm marquee hai chiều liên tục (`10 Most Recent Real Journals & Continuous Two-Way Marquee`). 841/841 backend tests PASS, 14/14 frontend acceptance tests PASS, frontend build clean (USER ACCEPTED).
+- **Phase 9C-D (Release Candidate Hygiene & Production Data Preparation)**: Vệ sinh toàn diện mã nguồn BE/FE, loại bỏ debug code, chuẩn hóa tiếng Việt giải thích WHY, zero secrets, .gitignore cập nhật `*.dump`. Phân định không gian lưu trữ Cloudinary theo môi trường (`student-marketplace/dev` vs `student-marketplace/prod`) giữ nguyên 100% tài nguyên legacy. Chiến lược CSDL production sạch qua `alembic upgrade head` + nạp 10 danh mục chuẩn tắc `seed_production_reference.py` + CLI bootstrap admin an toàn `promote_admin.py`. Kiểm toán CSDL dev đọc-chỉ (1.375 bản ghi bảo toàn trên 32 bảng ứng dụng, 0 biến đổi dữ liệu). Hoàn tất dọn dẹp Cloudinary sau rà soát thủ công: 50 legacy referenced assets retained, 4 orphan assets deleted, 0 orphan remaining, 0 unknown remaining. 842/842 tests backend PASS, Alembic head `4414f46b5404`, 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý (USER ACCEPTED / COMPLETED & VERIFIED).
+- **Phase 9C-D (GitHub Release & CI Verification)**: Đẩy toàn bộ commit Release Candidate lên nhánh `main` của cả hai repo `student-marketplace-be` và `student-marketplace-fe`. Kiểm chứng thực tế thành công trên giao diện GitHub Actions: Backend CI & Release Gate SUCCESS, Backend Test Suite & Alembic Verification SUCCESS, Production Docker Build & Artifact Hardening Gate SUCCESS; Frontend CI & Build Gate SUCCESS, Frontend Typecheck & Production Build SUCCESS. Cảnh báo Node.js 20 deprecation / GitHub runner chỉ là warning, không làm gián đoạn workflow (COMPLETED & VERIFIED / USER ACCEPTED).
 
 ---
 
 ## 2. Chi tiết lịch sử triển khai từng Phase
+
+### Phase 9C-D: Xác thực CI & Phát hành GitHub (GitHub Release & CI Verification) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - **A. Phát hành Nhánh Main (GitHub Release Gate)**:
+    - Toàn bộ các thay đổi của gói Release Candidate đã được người dùng commit và đẩy lên nhánh `main` cho cả hai repository: `student-marketplace-be` và `student-marketplace-fe`.
+  - **B. Kiểm chứng Hệ thống CI Backend (Backend GitHub Actions CI)**:
+    - Xác nhận thực tế thành công từ giao diện người dùng GitHub Actions:
+      - `Backend CI & Release Gate`: **SUCCESS**.
+      - `Backend Test Suite & Alembic Verification`: **SUCCESS** (Toàn bộ 842 tests backend vượt qua, migration Alembic khớp head `4414f46b5404`, 0 schema drift).
+      - `Production Docker Build & Artifact Hardening Gate`: **SUCCESS** (Image `student-marketplace-be:prod` build thành công, non-root user `appuser` UID 10001, compose prod config hợp lệ).
+  - **C. Kiểm chứng Hệ thống CI Frontend (Frontend GitHub Actions CI)**:
+    - Xác nhận thực tế thành công từ giao diện người dùng GitHub Actions:
+      - `Frontend CI & Build Gate`: **SUCCESS**.
+      - `Frontend Typecheck & Production Build`: **SUCCESS** (Kiểm tra kiểu tĩnh TypeScript và đóng gói Vite sạch, 0 errors, sinh đầy đủ artifact `dist/index.html`).
+    - Các thông báo deprecation liên quan đến Node.js 20 hoặc runner từ GitHub Actions chỉ mang tính chất warning, hoàn toàn không làm gián đoạn hoặc thất bại bất kỳ bước nào trong quy trình CI.
+  - **D. Nghiệm thu & Chuyển giao**:
+    - Trạng thái nghiệm thu: **COMPLETED & VERIFIED / USER ACCEPTED**.
+    - Cổng Release Candidate và CI chính thức đóng lại thành công; mở ra nhiệm vụ tiếp theo: **Phase 9C-D Slice 2 — Remote Deployment**.
+
+### Phase 9C-D: Vệ sinh Mã nguồn Phát hành & Chuẩn bị Dữ liệu Sản xuất (Release Candidate Hygiene & Production Data Preparation) [COMPLETED & VERIFIED / USER ACCEPTED]
+- **Mục tiêu & Thực chứng**:
+  - **A. Vệ sinh Toàn diện Repository (BE & FE Code & File Hygiene)**:
+    - Triệt tiêu code debug, `console.debug`, chuẩn hóa thông báo lỗi tải ảnh tự nhiên tiếng Việt (`Tải ảnh lên thất bại. Vui lòng thử lại.`).
+    - Chuẩn hóa chú thích mã nguồn giải thích lý do/bất biến kỹ thuật bằng tiếng Việt súc tích (giữ nguyên định danh kỹ thuật, không sửa chuỗi hợp đồng runtime API/DB/Enums).
+    - Rà soát .gitignore: Bổ sung `*.dump`, `*.dump.part` ngăn chặn rò rỉ bản sao lưu CSDL vào Git; 0 tệp lớn > 500KB được theo dõi; 0 secret rò rỉ trong cả hai repository.
+    - Xử lý triệt để các lỗi whitespace cuối file (`git --no-pager diff --check` đạt 0 lỗi `new blank line at EOF` trên cả hai repo).
+  - **B. Phân định Không gian Lưu trữ Cloudinary theo Môi trường (dev vs prod)**:
+    - Bộ giải quyết tập trung duy nhất qua `get_cloudinary_root_folder()`: `student-marketplace/dev/...` cho môi trường phát triển và `student-marketplace/prod/...` cho môi trường sản xuất.
+    - Bảo toàn 100% các tài nguyên legacy hiện có của các bản ghi CSDL cũ (không rename, không di dời).
+    - Cấu hình biến môi trường `ENVIRONMENT=development` trong cấu hình và `.env.example`.
+  - **C. Kiểm toán và Dọn dẹp Tài nguyên Cloudinary (Cloudinary Cleanup Completion)**:
+    - Công cụ `scripts/audit_cloudinary_media.py` quét toàn diện 8 bảng CSDL (`product_images`, `message_attachments`, `report_attachments`, `community_moments`, `site_feedback_attachments`, `tutorials`, `orders`, `users`) trên cả 3 loại tài nguyên (`image`, `video`, `raw`).
+    - Kết quả dọn dẹp hoàn tất sau khi rà soát thủ công:
+      - 50 tài nguyên legacy đang được CSDL tham chiếu được giữ lại nguyên vẹn (50 legacy referenced assets retained).
+      - 4 tài nguyên mồ côi đã được xóa an toàn sau khi rà soát thủ công (4 orphan assets deleted after manual review).
+      - 0 tài nguyên mồ côi còn lại (0 orphan remaining).
+      - 0 tài nguyên không xác định (0 unknown remaining).
+  - **D. Chiến lược Dữ liệu & Công cụ Vận hành CSDL Production**:
+    - Cơ chế CSDL Production sạch từ đầu: Khởi tạo schema bằng `alembic upgrade head`; tuyệt đối không sao chép CSDL dev chứa dữ liệu kiểm thử.
+    - Idempotent Production Seed Script (`scripts/seed_production_reference.py`): Nạp chính xác 10 danh mục chuẩn tắc, an toàn khi chạy lại nhiều lần, tuyệt đối không nạp dữ liệu giao dịch giả.
+    - Quy trình Bootstrap Admin An toàn (`scripts/promote_admin.py`): Thăng cấp tài khoản quản trị viên đầu tiên sau khi đăng nhập qua Firebase Auth, không hardcode mật khẩu, không tạo backdoor.
+    - Công cụ Kiểm toán CSDL Dev Đọc-chỉ (`scripts/audit_dev_db.py`): Báo cáo 1.375 bản ghi trên toàn bộ 32 bảng ứng dụng, bảo toàn nguyên vẹn dữ liệu thử nghiệm tại máy dev.
+  - **E. Kiểm thử & Cơ sở Dữ liệu**:
+    - Toàn bộ **842/842 tests backend** PASS (`pytest tests/ -q` in 115.23s).
+    - Frontend Acceptance tests (18 assertions) và Tutorial tests (12 tests) PASS 100%; Frontend build sạch (`tsc -b && vite build` hoàn tất trong 8.31s).
+    - Alembic Head: `4414f46b5404`, 0 schema drift (`alembic check` clean, No new upgrade operations detected).
+    - CSDL vật lý: 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
+    - Trạng thái nghiệm thu: **COMPLETED & VERIFIED / USER ACCEPTED**.
 
 ### Pre-Deployment Acceptance Fix: Hoàn thiện Kiểm duyệt Tin đăng, Vuốt Xóa Thông báo & Marquee Nhật ký (Product Approval Completion & Inbox/Home UX) [COMPLETED & VERIFIED / USER ACCEPTED]
 - **Mục tiêu & Thực chứng**:

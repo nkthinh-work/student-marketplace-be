@@ -10,44 +10,49 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9C-D — Release Candidate Hygiene & Production Data Preparation**
+**Phase 9C-D Slice 2 — Remote Deployment**
 *Parent Task*: Phase 9C-D — CI / Deployment
-*Deployment State*: NOT STARTED — RELEASE CANDIDATE PREPARATION
+*Deployment State*: READY FOR INFRASTRUCTURE PROVISIONING
 
 ---
 
 ## 3. Status (Trạng thái)
-**IMPLEMENTED — AWAITING USER ACCEPTANCE**
+**READY FOR INFRASTRUCTURE PROVISIONING**
 
 ---
 
 ## 4. Recently Completed (Các công việc vừa hoàn thành)
 
-- **Phase 9C-D — Release Candidate Hygiene & Production Data Preparation** (IMPLEMENTED — AWAITING USER ACCEPTANCE):
-  - **Vệ sinh Toàn diện Repository (BE & FE Code & File Hygiene)**:
-    - Triệt tiêu code debug, `console.debug`, chuẩn hóa thông báo lỗi tải ảnh tự nhiên tiếng Việt (`Tải ảnh lên thất bại. Vui lòng thử lại.`).
-    - Chuẩn hóa comment giải thích bằng tiếng Việt súc tích (giải thích TẠI SAO/invariant), giữ nguyên định danh kỹ thuật chuẩn tiếng Anh; không sửa đổi chuỗi hợp đồng runtime API/DB/Enums.
-    - Rà soát .gitignore: bổ sung `*.dump`, `*.dump.part` ngăn chặn rò rỉ bản sao lưu CSDL vào Git; 0 tệp lớn > 500KB được theo dõi; 0 secret rò rỉ trong cả hai repo.
-  - **Phân định Không gian Lưu trữ Cloudinary theo Môi trường (dev vs prod)**:
-    - Bộ giải quyết tập trung duy nhất qua `get_cloudinary_root_folder()`: `student-marketplace/dev/...` cho môi trường phát triển và `student-marketplace/prod/...` cho môi trường sản xuất; bảo toàn nguyên vẹn 100% các tài nguyên legacy hiện có.
-    - Cấu hình biến môi trường `ENVIRONMENT=development` trong config và `.env.example`.
-  - **Công cụ Kiểm toán Cloudinary An toàn (Safe Media Audit Tool — DRY RUN Default)**:
-    - Triển khai `scripts/audit_cloudinary_media.py`: kiểm toán toàn diện 8 bảng CSDL (`product_images`, `message_attachments`, `report_attachments`, `community_moments`, `site_feedback_attachments`, `tutorials`, `orders`, `users`) trên cả 3 loại tài nguyên (`image`, `video`, `raw`).
-    - Mặc định DRY RUN; xóa tài nguyên bắt buộc đồng thời 2 cờ `--execute` VÀ `--confirm`. Kết quả quét thực tế 54 assets: 50 legacy referenced, 4 orphan candidates, 0 deleted.
-  - **Chiến lược Chuẩn bị Dữ liệu CSDL Production**:
-    - Cơ chế chuẩn: CSDL Production mới tinh từ đầu qua `alembic upgrade head`; tuyệt đối không sao chép CSDL development chứa dữ liệu kiểm thử.
-    - Idempotent Production Seed Script (`scripts/seed_production_reference.py`): nạp chính xác 10 danh mục chuẩn tắc, an toàn khi chạy lại nhiều lần, tuyệt đối không nạp dữ liệu giao dịch giả.
-    - Quy trình Bootstrap Admin An toàn (`scripts/promote_admin.py`): thăng cấp tài khoản quản trị viên đầu tiên sau khi đăng nhập qua Firebase Auth, không hardcode mật khẩu, không tạo backdoor.
-    - Công cụ Kiểm toán CSDL Dev Đọc-chỉ (`scripts/audit_dev_db.py`): báo cáo chi tiết 1.375 bản ghi trên toàn bộ 32 bảng ứng dụng, 0 biến đổi dữ liệu.
+- **Phase 9C-D — GitHub Release & CI Verification** (COMPLETED & VERIFIED / USER ACCEPTED):
+  - Nhánh `main` của cả hai kho mã nguồn `student-marketplace-be` và `student-marketplace-fe` đã được đẩy bản Release Candidate mới nhất.
+  - Xác nhận trực tiếp từ giao diện GitHub Actions UI:
+    - Backend: `Backend CI & Release Gate` (SUCCESS), `Backend Test Suite & Alembic Verification` (SUCCESS), `Production Docker Build & Artifact Hardening Gate` (SUCCESS).
+    - Frontend: `Frontend CI & Build Gate` (SUCCESS), `Frontend Typecheck & Production Build` (SUCCESS).
+    - Các thông báo runner / Node.js 20 deprecation từ GitHub chỉ là warning, không ảnh hưởng kết quả thành công của workflow.
+- **Phase 9C-D — Release Candidate Hygiene & Production Data Preparation** (USER ACCEPTED / COMPLETED & VERIFIED):
+  - Vệ sinh toàn diện repository: Triệt tiêu code debug, chuẩn hóa tiếng Việt giải thích invariant, zero secrets, cập nhật `.gitignore` (`*.dump`).
+  - Phân định không gian lưu trữ Cloudinary theo môi trường (`student-marketplace/dev/...` vs `student-marketplace/prod/...`), bảo toàn 100% tài nguyên legacy.
+  - Hoàn tất dọn dẹp Cloudinary sau rà soát thủ công: 50 tài nguyên legacy đang được CSDL tham chiếu được giữ lại nguyên vẹn (50 legacy referenced assets retained), 4 tài nguyên mồ côi đã được xóa an toàn (4 orphan assets deleted after manual review), 0 tài nguyên mồ côi còn lại (0 orphan remaining), 0 tài nguyên không xác định (0 unknown remaining).
+  - Chiến lược CSDL Production sạch: Khởi tạo schema chuẩn từ đầu qua `alembic upgrade head`, nạp 10 danh mục chuẩn tắc bằng `scripts/seed_production_reference.py`, công cụ CLI bootstrap Admin an toàn qua Firebase Auth `scripts/promote_admin.py`.
+  - Công cụ kiểm toán đọc-chỉ `scripts/audit_dev_db.py`: Báo cáo 1.375 bản ghi trên toàn bộ 32 bảng ứng dụng, bảo toàn nguyên vẹn dữ liệu thử nghiệm.
 - **Pre-Deployment Acceptance Fix — Product Approval Completion & Inbox/Home UX** (USER ACCEPTED)
 - **Pre-Deployment Amendment — Navigation-Aligned Tutorial & Presentation Media UX** (USER ACCEPTED)
 - **Pre-Deployment UX Polish — Dynamic Tutorial Overlay & Admin CMS** (USER ACCEPTED)
-- **Pre-Deployment Hardening — Complete User + Admin Notification Coverage** (USER ACCEPTED)
 
 ---
 
 ## 5. Active Decisions (Quyết định kiến trúc đang hiệu lực)
 
+- **Kiến trúc Triển khai Khái niệm (Conceptual Deployment Architecture)**:
+  - **Frontend**: Triển khai trên **Vercel** kết nối repository `student-marketplace-fe`, tự động build & deploy khi có commit mới.
+  - **Backend**: Ban đầu triển khai trên **một máy chủ VPS sản xuất (one production VPS initially)**. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
+  - **Các dịch vụ vận hành trên VPS**:
+    1. Reverse Proxy / HTTPS termination
+    2. FastAPI API (`student-marketplace-be:prod`)
+    3. Background Worker (`order_auto_cancel`)
+    4. PostgreSQL
+    5. Redis
+  - **Dịch vụ Đám mây Bên ngoài (External Providers)**: Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
 - **Phân định Không gian Lưu trữ Cloudinary (Cloudinary Environment Separation)**:
   - Tách bạch `student-marketplace/dev/...` và `student-marketplace/prod/...` qua `get_cloudinary_root_folder()`.
   - Giữ nguyên các đường dẫn legacy cho các bản ghi CSDL hiện hữu; không tự động đổi tên hay di dời asset trên đám mây.
@@ -67,16 +72,23 @@
 
 ## 6. Known Issues (Vấn đề đã biết)
 
-- **Chờ Người dùng Nghiệm thu Gói Vệ sinh Phát hành (Awaiting User Acceptance)**:
-  - Gói `Phase 9C-D — Release Candidate Hygiene & Production Data Preparation` đã hoàn tất kiểm chứng cục bộ và đang chờ người dùng kiểm tra báo cáo vệ sinh trước khi đẩy lên GitHub.
-- **Môi trường Triển khai Từ xa Chưa được Cấu hình (Remote Deployment Target Pending)**: Dự án chưa có cấu hình cụ thể về máy chủ VPS, nền tảng PaaS, container registry hoặc domain/TLS thực tế. Việc triển khai từ xa tạm dừng cho đến khi người dùng sẵn sàng hạ tầng.
-- **Hệ thống Cục bộ Đạt Trạng thái Tối ưu**: Toàn bộ **842/842 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
+- **Chờ Cung cấp Thông số Hạ tầng Triển khai (Awaiting Infrastructure Provisioning)**:
+  - Toàn bộ quy trình kiểm thử cục bộ, kiểm tra vệ sinh phát hành và kiểm chứng CI trên GitHub Actions đã hoàn tất thành công 100%.
+  - Hệ thống đang ở trạng thái sẵn sàng triển khai (`READY FOR INFRASTRUCTURE PROVISIONING`). Chờ người dùng/vận hành cung cấp thông số hạ tầng máy chủ thực tế (VPS IP, domain DNS, TLS certificate, production secrets).
+  - Tuyệt đối không tự tiện bịa đặt VPS IP, domain, chứng chỉ TLS, production secrets hay deployed URLs khi chưa có thông số thực tế.
+- **Hệ thống Đạt Trạng thái Tối ưu**: Toàn bộ **842/842 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
 
 ---
 
 ## 7. Verification Baseline (Đường cơ sở kiểm thử)
 
 - **Backend Full Suite**: **842/842 PASS** (`pytest tests/ -q` in 115.23s).
+- **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).
+- **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
+- **Cloudinary Cleanup**: **HOÀN TẤT** (50 legacy referenced assets retained, 4 orphan assets deleted after manual review, 0 orphan remaining, 0 unknown remaining).
+- **Alembic State**: Head `4414f46b5404`, 0 schema drift (`alembic check` clean, No new upgrade operations detected).
+- **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
+- **Production Reference Seed**: 10 danh mục chuẩn tắc được nạp lũy đẳng (`scripts/seed_production_reference.py`).
 - **Cloudinary Tests**: 15/15 PASS (`tests/test_cloudinary.py`).
 - **Tutorial Backend Suite**: 31/31 PASS (`tests/test_tutorials.py`).
 - **Product Approval Suite**: 15/15 PASS (`tests/test_product_approval.py`).
@@ -84,18 +96,17 @@
 - **Notifications Suite**: 14/14 PASS (`tests/test_notifications.py`).
 - **Frontend Acceptance Suite**: **14/14 PASS** (`node src/__tests__/pre_deployment_acceptance_fixes.test.mjs`).
 - **Frontend Tutorial Suite**: 12/12 PASS (`src/features/tutorials/__tests__/tutorials.test.mjs`).
-- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, 6.19s).
-- **Alembic State**: Head `4414f46b5404`, 0 schema drift (`alembic check` clean, No new upgrade operations detected).
-- **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
-- **Cloudinary Media Audit**: 54 assets quét (50 legacy referenced, 4 orphan candidates, 0 deleted).
-- **Production Reference Seed**: 10 danh mục chuẩn tắc được nạp lũy đẳng (`scripts/seed_production_reference.py`).
+- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, 6.19s / 8.31s).
 - **Dịch vụ môi trường phát triển**: Backend port 8000 hoạt động, Frontend port 3000 hoạt động, Dev PostgreSQL/Redis container hoạt động, Dev Tunnel hoạt động.
 
 ---
 
 ## 8. Next Exact Task (Công việc chính xác tiếp theo)
 
-- **Phase 9C-D — GitHub Release & CI Verification**:
-  - Người dùng rà soát báo cáo vệ sinh mã nguồn, thực hiện commit và push Git lên repository chính thức.
-  - Kích hoạt và kiểm chứng hệ thống GitHub Actions CI cho cả Backend (Alembic check, pytest, Docker prod build, security boundaries) và Frontend (Node 22, npm ci, build verification).
-  - Chuẩn bị tiếp nhận thông số hạ tầng từ xa để tiến hành **Phase 9C-D Slice 2 — Remote Deployment**.
+- **Phase 9C-D Slice 2 — Remote Deployment**:
+  - Tiếp nhận thông số máy chủ VPS sản xuất (IP, SSH access, OS user) và tên miền từ người dùng.
+  - Cấu hình hạ tầng trên VPS: Reverse proxy (Nginx/Caddy) với HTTPS tự động, mạng Docker nội bộ, khởi chạy Production Docker Compose (`api`, `worker`, `postgres`, `redis`).
+  - Thiết lập triển khai Frontend trên Vercel: Cấu hình biến môi trường kết nối API domain backend và Firebase.
+  - Thực thi di trú cơ sở dữ liệu sản xuất sạch (`alembic upgrade head`) và nạp danh mục tham chiếu (`python -m scripts.seed_production_reference`).
+  - Hướng dẫn bootstrap tài khoản Quản trị viên đầu tiên (`python -m scripts.promote_admin --email <admin_email>`).
+  - Diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường sản xuất từ xa.
