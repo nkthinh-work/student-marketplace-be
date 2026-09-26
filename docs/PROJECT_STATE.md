@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9C-D Slice 2 — Remote Deployment**
+**Phase 9C-D Slice 2 — Urgent Public-Beta Rollout (Railway + Vercel)**
 *Parent Task*: Phase 9C-D — CI / Deployment
-*Deployment State*: READY FOR INFRASTRUCTURE PROVISIONING
+*Deployment State*: INFRASTRUCTURE PROVISIONING IN PROGRESS
 
 ---
 
 ## 3. Status (Trạng thái)
-**READY FOR INFRASTRUCTURE PROVISIONING**
+**IN PROGRESS — INFRASTRUCTURE PROVISIONING (RAILWAY PUBLIC-BETA)**
 
 ---
 
@@ -43,21 +43,23 @@
 
 ## 5. Active Decisions (Quyết định kiến trúc đang hiệu lực)
 
-- **Kiến trúc Triển khai Khái niệm (Conceptual Deployment Architecture)**:
-  - **Frontend**: Triển khai trên **Vercel** kết nối repository `student-marketplace-fe`, tự động build & deploy khi có commit mới.
-  - **Backend**: Ban đầu triển khai trên **một máy chủ VPS sản xuất (one production VPS initially)**. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
-  - **Các dịch vụ vận hành trên VPS**:
-    1. Reverse Proxy / HTTPS termination
-    2. FastAPI API (`student-marketplace-be:prod`)
-    3. Background Worker (`order_auto_cancel`)
-    4. PostgreSQL
-    5. Redis
-  - **Dịch vụ Đám mây Bên ngoài (External Providers)**: Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
-- **Phân định Không gian Lưu trữ Cloudinary (Cloudinary Environment Separation)**:
-  - Tách bạch `student-marketplace/dev/...` và `student-marketplace/prod/...` qua `get_cloudinary_root_folder()`.
-  - Giữ nguyên các đường dẫn legacy cho các bản ghi CSDL hiện hữu; không tự động đổi tên hay di dời asset trên đám mây.
-- **Chiến lược Khởi tạo Cơ sở Dữ liệu Production (Production Clean DB Strategy)**:
-  - CSDL Production khởi tạo hoàn toàn sạch: `alembic upgrade head` -> chạy `scripts/seed_production_reference.py` nạp 10 danh mục chuẩn tắc. Tuyệt đối không import dump dev chứa dữ liệu test.
+- **Mục tiêu Triển khai Khẩn cấp Thử nghiệm Công khai (Urgent Public-Beta Target: Railway + Vercel)**:
+  - **Mục tiêu vận hành**: Đáp ứng yêu cầu phát hành thử nghiệm công khai khẩn cấp trên nền tảng đám mây quản lý (PaaS).
+  - **Phân bổ hạ tầng**:
+    - **Frontend**: Triển khai trên **Vercel** kết nối repository `student-marketplace-fe` (Edge CDN, tối ưu static delivery).
+    - **Backend trên Railway (Project "choptiters")**: Duy trì độc lập 4 dịch vụ cốt lõi:
+      1. `FastAPI API`: Cung cấp HTTP REST và WebSocket.
+      2. `Background Worker`: Chạy tiến trình `app.workers.order_auto_cancel` độc lập.
+      3. `Railway PostgreSQL`: Dịch vụ CSDL quan hệ độc lập.
+      4. `Railway Redis`: Dịch vụ lưu trữ bộ nhớ đệm, view counter và pub/sub realtime độc lập.
+    - **External Providers**: Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
+- **Bảo toàn Lộ trình Triển khai Chuẩn (VPS Architecture Preservation)**:
+  - Lựa chọn Railway là mục tiêu vận hành tạm thời (operational target), không phải là sự thay đổi thiết kế kiến trúc nghiệp vụ (business-architecture redesign).
+  - Tuyệt đối không xóa bỏ hay vô hiệu hóa đường lối triển khai VPS. Tệp `docker-compose.prod.yml` và cấu hình container hardening được giữ nguyên vẹn để sẵn sàng di trú sang VPS độc lập về sau.
+- **Chiến lược Khởi tạo Cơ sở Dữ liệu Production & Di trú Tường minh**:
+  - CSDL Production khởi tạo hoàn toàn sạch: Tuyệt đối không sao chép dữ liệu test từ dev sang Railway PostgreSQL.
+  - Di trú tường minh (Explicit Migration): Không kích hoạt auto-migration tự động khi container API khởi động. Schema được nâng cấp có chủ đích qua lệnh `alembic upgrade head`.
+  - Nạp dữ liệu tham chiếu: Chạy script lũy đẳng `scripts/seed_production_reference.py` nạp 10 danh mục chuẩn tắc, tuyệt đối không tạo dữ liệu giao dịch giả.
 - **Quy trình Khởi tạo Quản trị viên Đầu tiên (First Admin Bootstrap)**:
   - Người vận hành đăng nhập lần đầu qua Google/Firebase Auth để tạo bản ghi tài khoản `ACTIVE`.
   - Thực thi CLI `python scripts/promote_admin.py --email <admin_email>` để thăng cấp `role = 'ADMIN'`. Không lưu mật khẩu hoặc thông tin đăng nhập trong mã nguồn.
@@ -70,13 +72,19 @@
 
 ---
 
-## 6. Known Issues (Vấn đề đã biết)
+## 6. Known Issues (Vấn đề đã biết & Hiện trạng Triển khai Thực tế)
 
-- **Chờ Cung cấp Thông số Hạ tầng Triển khai (Awaiting Infrastructure Provisioning)**:
-  - Toàn bộ quy trình kiểm thử cục bộ, kiểm tra vệ sinh phát hành và kiểm chứng CI trên GitHub Actions đã hoàn tất thành công 100%.
-  - Hệ thống đang ở trạng thái sẵn sàng triển khai (`READY FOR INFRASTRUCTURE PROVISIONING`). Chờ người dùng/vận hành cung cấp thông số hạ tầng máy chủ thực tế (VPS IP, domain DNS, TLS certificate, production secrets).
-  - Tuyệt đối không tự tiện bịa đặt VPS IP, domain, chứng chỉ TLS, production secrets hay deployed URLs khi chưa có thông số thực tế.
-- **Hệ thống Đạt Trạng thái Tối ưu**: Toàn bộ **842/842 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
+- **Hiện trạng Cấp phát Hạ tầng Public-Beta (Railway + Vercel Status)**:
+  - Project Railway "choptiters" đã được tạo thành công.
+  - Railway PostgreSQL đã được cấp phát và đang trực tuyến (online).
+  - Railway Redis đã được cấp phát.
+  - Dịch vụ Backend GitHub đã được tạo trên Railway nhưng **CHƯA ĐƯỢC DEPLOY** (has not been deployed yet).
+  - **Chưa có tên miền API sản xuất** (No production API domain exists yet).
+  - **Dịch vụ Background Worker chưa được deploy** (No worker service has been deployed yet).
+  - **Chưa chạy migration Alembic hoặc seed dữ liệu trên Railway** (No migration/seed has been run on Railway yet).
+  - **Frontend chưa được triển khai lên Vercel** cho đợt public-beta rollout này (Frontend has not yet been deployed to Vercel).
+  - Tuyệt đối không tự tiện bịa đặt API domain, TLS certificate, production secrets hay deployed URLs khi chưa thực sự diễn ra.
+- **Hệ thống Cục bộ & CI Đạt Trạng thái Tối ưu**: Toàn bộ **842/842 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
 
 ---
 
@@ -103,10 +111,14 @@
 
 ## 8. Next Exact Task (Công việc chính xác tiếp theo)
 
-- **Phase 9C-D Slice 2 — Remote Deployment**:
-  - Tiếp nhận thông số máy chủ VPS sản xuất (IP, SSH access, OS user) và tên miền từ người dùng.
-  - Cấu hình hạ tầng trên VPS: Reverse proxy (Nginx/Caddy) với HTTPS tự động, mạng Docker nội bộ, khởi chạy Production Docker Compose (`api`, `worker`, `postgres`, `redis`).
-  - Thiết lập triển khai Frontend trên Vercel: Cấu hình biến môi trường kết nối API domain backend và Firebase.
-  - Thực thi di trú cơ sở dữ liệu sản xuất sạch (`alembic upgrade head`) và nạp danh mục tham chiếu (`python -m scripts.seed_production_reference`).
-  - Hướng dẫn bootstrap tài khoản Quản trị viên đầu tiên (`python -m scripts.promote_admin --email <admin_email>`).
-  - Diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường sản xuất từ xa.
+- **Phase 9C-D Slice 2 — Urgent Public-Beta Rollout Execution**:
+  1. Cấu hình biến môi trường kết nối Railway PostgreSQL và Redis (`DATABASE_URL`, `REDIS_URL` hoặc các biến tương ứng).
+  2. Cấu hình các production secrets an toàn trên Railway (`FIREBASE_CREDENTIALS_PATH` / service account, Cloudinary API keys, v.v.).
+  3. Triển khai dịch vụ API (`FastAPI API` service) trên Railway và thiết lập public networking domain.
+  4. Thực thi di trú cơ sở dữ liệu sản xuất sạch (`alembic upgrade head`) trên CSDL Railway PostgreSQL.
+  5. Chạy script nạp 10 danh mục tham chiếu chuẩn tắc (`python -m scripts.seed_production_reference`).
+  6. Triển khai dịch vụ Background Worker (`python -m app.workers.order_auto_cancel`) độc lập trên Railway.
+  7. Thiết lập dự án Frontend trên Vercel: Kết nối repository `student-marketplace-fe`, cấu hình `VITE_API_URL` trỏ về domain API Railway.
+  8. Cấu hình CORS (`BACKEND_CORS_ORIGINS`) trên Backend khớp domain Vercel và bổ sung domain Vercel vào Firebase Authorized Domains.
+  9. Thực hiện diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường public-beta.
+  10. Xác thực quy trình sao lưu CSDL (Backup verification) trên môi trường Railway PostgreSQL.

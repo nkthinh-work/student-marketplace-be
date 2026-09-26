@@ -549,11 +549,26 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
   - **CI Provider**: Sử dụng GitHub Actions độc lập cho từng repository (`student-marketplace-be` và `student-marketplace-fe`), tuân thủ nguyên tắc least-privilege (`contents: read`), hủy job cũ khi có commit mới (`cancel-in-progress: true`), không sử dụng secrets sản xuất trong kiểm thử thông thường.
   - **Backend CI Gates**: Python 3.12, container dịch vụ PostgreSQL 15 & Redis 7 cô lập tạm thời, migration Alembic (`alembic upgrade head`), kiểm toán drift (`alembic check`), toàn bộ test suite (`pytest tests/ -q`), kiểm tra cú pháp Production Compose, build image Production Docker, xác thực non-root runtime (`appuser`), kiểm tra toàn vẹn dependencies (`pip check`) và kiểm toán ranh giới tệp tin. Toàn bộ release gates trên GitHub Actions đã đạt `SUCCESS`.
   - **Frontend CI Gates**: Node.js 22, cài đặt khóa sạch (`npm ci`), kiểm tra kiểu tĩnh TypeScript và đóng gói tối ưu (`tsc -b && vite build`), xác thực artifact `dist/index.html`. Toàn bộ build gates trên GitHub Actions đã đạt `SUCCESS`.
-  - **Kiến trúc Triển khai Khái niệm (Conceptual Deployment Architecture)**:
+  - **Kiến trúc Triển khai Chuẩn (Canonical Target: VPS Architecture)**:
     - Frontend: Triển khai trên Vercel kết nối repository `student-marketplace-fe`.
-    - Backend: Ban đầu triển khai trên một máy chủ VPS sản xuất (one production VPS initially). Các dịch vụ vận hành trên VPS bao gồm: Reverse proxy / HTTPS termination, FastAPI API (`student-marketplace-be:prod`), Background Worker (`order_auto_cancel`), PostgreSQL, Redis. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
+    - Backend: Máy chủ VPS sản xuất độc lập. Các dịch vụ vận hành trên VPS bao gồm: Reverse proxy / HTTPS termination, FastAPI API (`student-marketplace-be:prod`), Background Worker (`order_auto_cancel`), PostgreSQL, Redis được đóng gói chuẩn hóa qua `docker-compose.prod.yml`. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
     - Nhà cung cấp bên ngoài (External Providers): Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
-    - Trạng thái triển khai: `READY FOR INFRASTRUCTURE PROVISIONING`. Tuyệt đối không tự tiện bịa đặt VPS IP, domain, chứng chỉ TLS, production secrets hay deployed URLs khi chưa có thông số hạ tầng thực tế từ người dùng.
+    - Trạng thái triển khai: Sẵn sàng phục vụ di trú dài hạn.
+  - **Mục tiêu Triển khai Khẩn cấp Thử nghiệm Công khai (Temporary Public-Beta Deployment: Railway + Vercel)**:
+    - **Bối cảnh & Tính chất Vận hành**: Nhằm phục vụ đợt phát hành thử nghiệm công khai khẩn cấp (urgent public-beta rollout), hệ thống bổ sung mục tiêu vận hành đám mây quản lý (PaaS) trên nền tảng Railway (dự án "choptiters") kết hợp Frontend trên Vercel.
+    - **Tính tương thích & Khả chuyển (Additive & Portable)**: Lựa chọn Railway là giải pháp vận hành tạm thời (operational target), tuyệt đối không làm thay đổi thiết kế nghiệp vụ hay cấu trúc backend. Cấu trúc `docker-compose.prod.yml` và kiến trúc VPS gốc được giữ nguyên vẹn để phục vụ di trú sang VPS độc lập về sau mà không cần viết lại mã nguồn.
+    - **Ranh giới Dịch vụ Hạ tầng (Infrastructure Boundaries)**:
+      - *Frontend*: Vercel (Edge CDN, kết nối repo `student-marketplace-fe`).
+      - *Backend trên Railway*: Duy trì phân tách độc lập 4 thành phần thiết yếu:
+        1. `FastAPI API`: Cung cấp REST endpoints và WebSocket kết nối client.
+        2. `Background Worker`: Chạy tiến trình độc lập `python -m app.workers.order_auto_cancel` tự động hủy đơn quá hạn.
+        3. `Railway PostgreSQL`: Dịch vụ CSDL quan hệ độc lập.
+        4. `Railway Redis`: Dịch vụ lưu trữ bộ nhớ đệm, view counter và pub/sub realtime độc lập.
+      - *External Providers*: Firebase Authentication (xác thực danh tính) và Cloudinary (`student-marketplace/prod/` cho media nhị phân).
+    - **Bảo toàn Nguyên tắc CSDL & Di trú**:
+      - *Cơ sở dữ liệu mới sạch (Fresh Production DB Strategy)*: Tuyệt đối không sao chép dữ liệu test từ môi trường dev. CSDL Railway PostgreSQL được khởi tạo sạch hoàn toàn.
+      - *Di trú tường minh (Explicit Migration)*: Không bật tự động migration khi container API khởi động. Việc di trú schema được thực thi tường minh qua lệnh `alembic upgrade head` (đạt head `4414f46b5404`).
+      - *Nạp dữ liệu tham chiếu (Reference Seed)*: Thực thi script `python -m scripts.seed_production_reference` để nạp 10 danh mục chuẩn tắc, không nạp dữ liệu giao dịch giả.
 
 Phase 5 được phép dùng worker cho **domain requirement bắt buộc** là đóng auction đúng hạn. Phase 9 dành cho hardening/optimization toàn hệ thống, không trì hoãn correctness của đấu giá.
 
