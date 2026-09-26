@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any
 import firebase_admin
@@ -21,17 +22,40 @@ def init_firebase() -> None:
     if firebase_admin._apps:
         return
 
+    # Ưu tiên 1: FIREBASE_CREDENTIALS_JSON (phù hợp cho Railway / cloud environment)
+    if settings.FIREBASE_CREDENTIALS_JSON and settings.FIREBASE_CREDENTIALS_JSON.strip():
+        try:
+            cred_data = json.loads(settings.FIREBASE_CREDENTIALS_JSON)
+            if not isinstance(cred_data, dict):
+                logger.error("FIREBASE_CREDENTIALS_JSON is not a valid JSON object.")
+                return
+            cred = credentials.Certificate(cred_data)
+            firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK successfully initialized from JSON.")
+            return
+        except json.JSONDecodeError:
+            logger.error("Failed to parse FIREBASE_CREDENTIALS_JSON: Invalid JSON syntax.")
+            return
+        except Exception as e:
+            # Tuyệt đối không log nội dung của credential JSON hay private key
+            logger.error(f"Error initializing Firebase Admin SDK from JSON: {type(e).__name__}")
+            return
+
+    # Ưu tiên 2: FIREBASE_CREDENTIALS_PATH (phù hợp cho môi trường local/file-based)
     if settings.FIREBASE_CREDENTIALS_PATH:
         try:
             cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
             firebase_admin.initialize_app(cred)
-            logger.info("Firebase Admin SDK successfully initialized.")
+            logger.info("Firebase Admin SDK successfully initialized from path.")
         except Exception as e:
-            logger.error(f"Error initializing Firebase Admin SDK: {e}")
-    else:
-        logger.warning(
-            "FIREBASE_CREDENTIALS_PATH not set. Firebase integration will not be available in live mode."
-        )
+            logger.error(f"Error initializing Firebase Admin SDK from path: {e}")
+        return
+
+    # Nếu cả hai đều không được cấu hình
+    logger.warning(
+        "Firebase credentials not configured (neither FIREBASE_CREDENTIALS_JSON nor FIREBASE_CREDENTIALS_PATH). "
+        "Firebase integration will not be available in live mode."
+    )
 
 
 def verify_firebase_token(token: str) -> dict[str, Any]:
@@ -42,8 +66,8 @@ def verify_firebase_token(token: str) -> dict[str, Any]:
     Raises FirebaseVerificationError if token is invalid or expired.
     """
     if not firebase_admin._apps:
-        # Khởi tạo muộn nếu có cấu hình credentials
-        if settings.FIREBASE_CREDENTIALS_PATH:
+        # Khởi tạo muộn nếu có cấu hình credentials (JSON hoặc PATH)
+        if (settings.FIREBASE_CREDENTIALS_JSON and settings.FIREBASE_CREDENTIALS_JSON.strip()) or settings.FIREBASE_CREDENTIALS_PATH:
             init_firebase()
         
         if not firebase_admin._apps:

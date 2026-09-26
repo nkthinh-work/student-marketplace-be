@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
+    FIREBASE_CREDENTIALS_JSON: Optional[str] = None
 
     # Community & Feedback Creator (stable server-side identity, not environment-local user_id)
     COMMUNITY_CREATOR_PROVIDER_UID: Optional[str] = None

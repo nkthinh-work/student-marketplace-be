@@ -84,19 +84,20 @@
   - **Chưa chạy migration Alembic hoặc seed dữ liệu trên Railway** (No migration/seed has been run on Railway yet).
   - **Frontend chưa được triển khai lên Vercel** cho đợt public-beta rollout này (Frontend has not yet been deployed to Vercel).
   - Tuyệt đối không tự tiện bịa đặt API domain, TLS certificate, production secrets hay deployed URLs khi chưa thực sự diễn ra.
-- **Hệ thống Cục bộ & CI Đạt Trạng thái Tối ưu**: Toàn bộ **842/842 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
+- **Hệ thống Cục bộ & CI Đạt Trạng thái Tối ưu**: Toàn bộ **849/849 tests backend** vượt qua, frontend build thành công không lỗi (0 errors), Alembic 0 schema drift ở head `4414f46b5404`, CSDL duy trì 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý.
 
 ---
 
 ## 7. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **842/842 PASS** (`pytest tests/ -q` in 115.23s).
+- **Backend Full Suite**: **849/849 PASS** (`pytest tests/ -q` in 165.85s).
 - **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).
 - **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
 - **Cloudinary Cleanup**: **HOÀN TẤT** (50 legacy referenced assets retained, 4 orphan assets deleted after manual review, 0 orphan remaining, 0 unknown remaining).
 - **Alembic State**: Head `4414f46b5404`, 0 schema drift (`alembic check` clean, No new upgrade operations detected).
 - **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
 - **Production Reference Seed**: 10 danh mục chuẩn tắc được nạp lũy đẳng (`scripts/seed_production_reference.py`).
+- **Firebase Credentials Tests**: 7/7 PASS (`tests/test_firebase.py`).
 - **Cloudinary Tests**: 15/15 PASS (`tests/test_cloudinary.py`).
 - **Tutorial Backend Suite**: 31/31 PASS (`tests/test_tutorials.py`).
 - **Product Approval Suite**: 15/15 PASS (`tests/test_product_approval.py`).
@@ -113,7 +114,7 @@
 
 - **Phase 9C-D Slice 2 — Urgent Public-Beta Rollout Execution**:
   1. Cấu hình biến môi trường kết nối Railway PostgreSQL và Redis (`DATABASE_URL`, `REDIS_URL` hoặc các biến tương ứng).
-  2. Cấu hình các production secrets an toàn trên Railway (`FIREBASE_CREDENTIALS_PATH` / service account, Cloudinary API keys, v.v.).
+  2. Cấu hình các production secrets an toàn trên Railway (`FIREBASE_CREDENTIALS_JSON` / service account JSON, Cloudinary API keys, v.v.).
   3. Triển khai dịch vụ API (`FastAPI API` service) trên Railway và thiết lập public networking domain.
   4. Thực thi di trú cơ sở dữ liệu sản xuất sạch (`alembic upgrade head`) trên CSDL Railway PostgreSQL.
   5. Chạy script nạp 10 danh mục tham chiếu chuẩn tắc (`python -m scripts.seed_production_reference`).
