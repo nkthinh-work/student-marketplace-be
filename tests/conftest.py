@@ -6,10 +6,19 @@ from unittest.mock import AsyncMock
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
+import cloudinary
 from app.main import app
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.redis import get_redis
+from app.integrations.cloudinary import init_cloudinary
+
+# Khởi tạo cấu hình Cloudinary cho test suite (mô phỏng lifespan khi chạy tests không qua ASGI server)
+if not cloudinary.config().cloud_name:
+    if settings.CLOUDINARY_CLOUD_NAME:
+        init_cloudinary()
+    else:
+        cloudinary.config(cloud_name="test", secure=True)
 
 # Dùng NullPool để tránh lỗi tái sử dụng connection giữa các event loop trên Windows
 test_engine = create_async_engine(

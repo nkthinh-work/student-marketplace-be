@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import logging
 from typing import Optional
 from sqlalchemy import func, select, or_, exists
@@ -7,8 +8,15 @@ from fastapi import HTTPException, status
 from app.core.banks import get_bank_by_bin, resolve_bank_bin
 from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.orders.models import Order, OrderItem, OrderStatus
-from app.modules.products.models import Product, ProductStatus, ListingType
+from app.modules.products.models import (
+    Product,
+    ProductStatus,
+    ListingType,
+    ProductApprovalStatus,
+    ProductModerationStatus,
+)
 from app.modules.reviews.models import Review
+from app.modules.users.capability_models import UserCapabilityRestriction
 from app.modules.users.models import User, UserStatus
 from app.modules.users.repository import UserRepository
 from app.modules.users.schemas import (
@@ -74,6 +82,19 @@ class UserService:
                 detail="Không tìm thấy người dùng.",
             )
 
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        sell_restricted_exists = exists(
+            select(1).select_from(UserCapabilityRestriction).where(
+                UserCapabilityRestriction.user_id == user.user_id,
+                UserCapabilityRestriction.capability == "SELL",
+                UserCapabilityRestriction.revoked_at.is_(None),
+                UserCapabilityRestriction.starts_at <= now_utc,
+                or_(
+                    UserCapabilityRestriction.expires_at.is_(None),
+                    UserCapabilityRestriction.expires_at > now_utc,
+                ),
+            )
+        )
         active_auction_exists = exists(
             select(1).select_from(Auction).where(
                 Auction.product_id == Product.product_id,
@@ -85,6 +106,9 @@ class UserService:
                 Product.seller_id == user.user_id,
                 Product.is_deleted.is_(False),
                 Product.status == ProductStatus.AVAILABLE.value,
+                Product.approval_status == ProductApprovalStatus.APPROVED.value,
+                Product.moderation_status == ProductModerationStatus.CLEAR.value,
+                ~sell_restricted_exists,
                 or_(
                     Product.listing_type == ListingType.FIXED_PRICE.value,
                     active_auction_exists,

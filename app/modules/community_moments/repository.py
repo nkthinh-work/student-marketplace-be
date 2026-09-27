@@ -102,7 +102,11 @@ class CommunityMomentRepository:
             .limit(limit)
         )
         result = await self.db.execute(stmt)
-        return list(result.scalars().all())
+        rows = list(result.scalars().all())
+        # Return retained latest approved moments chronologically (oldest -> newest)
+        # so newly approved moments append to the right/end.
+        rows.reverse()
+        return rows
 
     async def get_all_approved(self, for_update: bool = False) -> list[CommunityMoment]:
         stmt = (

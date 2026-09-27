@@ -564,12 +564,12 @@ async def test_public_hero_bounded_and_privacy(test_client: AsyncClient, db_sess
     # Must be capped at 5
     assert len(hero_items) == 5
 
-    # Newest is legacy_m (reviewed_at 10:06), note is None
-    assert "hero_legacy.jpg" in hero_items[0]["image_url"]
-    assert hero_items[0]["note"] is None
+    # Newest is legacy_m (reviewed_at 10:06), note is None, appended to the right (last index)
+    assert "hero_legacy.jpg" in hero_items[-1]["image_url"]
+    assert hero_items[-1]["note"] is None
 
-    # Other items have their respective notes
-    assert hero_items[1]["note"] == "Khoảnh khắc 5 cùng bạn bè"
+    # First item is the oldest retained (Moment 2)
+    assert hero_items[0]["note"] == "Khoảnh khắc 2 cùng bạn bè"
 
     # Pending and rejected excluded
     for item in hero_items:

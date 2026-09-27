@@ -1,13 +1,24 @@
+from datetime import datetime, timezone, timedelta
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.auth.dependencies import get_current_active_user, get_current_user
+from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.categories.models import Category
-from app.modules.products.models import ListingType, Product, ProductStatus
+from app.modules.products.models import (
+    ListingType,
+    Product,
+    ProductApprovalStatus,
+    ProductModerationStatus,
+    ProductStatus,
+)
+from app.modules.reports.models import Report, ReportReason, ReportStatus, ReportTargetType
+from app.modules.users.capability_models import CapabilityType, UserCapabilityRestriction
 from app.modules.users.models import User, UserRole, UserStatus
 from app.main import app
+
 
 
 def auth_patch(user: User):
@@ -157,6 +168,196 @@ async def test_get_public_user_profile_banned_or_inactive_404(test_client: Async
 async def test_get_public_user_profile_nonexistent_404(test_client: AsyncClient):
     res = await test_client.get("/api/v1/users/999999")
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_public_profile_active_listing_count_invariants(
+    test_client: AsyncClient,
+    sample_user: User,
+    other_user: User,
+    db_session: AsyncSession,
+):
+    """
+    Tests Bug #2 canonical public selling count invariants:
+    - PENDING + AVAILABLE => active_listing_count == 0 (absent from public product listing)
+    - APPROVED + AVAILABLE + CLEAR => active_listing_count == 1
+    - REJECTED => 0
+    - DRAFT => 0
+    - HIDDEN => 0
+    - BLOCKED => 0
+    - is_deleted == True => 0
+    - Active SELL capability restriction => 0 (revoked restriction restores count)
+    - AUCTION listing requires active auction to count publicly
+    - Private /api/v1/products/me maintains private seller management semantics
+    """
+    cat = Category(name="Giáo trình IT", slug="giao-trinh-it")
+    db_session.add(cat)
+    await db_session.flush()
+
+    # 1. Product created: PENDING + AVAILABLE
+    prod = Product(
+        seller_id=sample_user.user_id,
+        category_id=cat.category_id,
+        title="Sách Cấu trúc dữ liệu",
+        description="Còn mới 99%",
+        listing_type=ListingType.FIXED_PRICE.value,
+        price=60000,
+        stock=1,
+        reserved_stock=0,
+        status=ProductStatus.AVAILABLE.value,
+        approval_status=ProductApprovalStatus.PENDING.value,
+        moderation_status=ProductModerationStatus.CLEAR.value,
+    )
+    db_session.add(prod)
+    await db_session.commit()
+
+    # Public profile must show active_listing_count == 0
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.status_code == 200
+    assert res.json()["active_listing_count"] == 0
+
+    # Public products query for seller must return 0 items
+    pub_res = await test_client.get(f"/api/v1/products?seller_id={sample_user.user_id}")
+    assert pub_res.status_code == 200
+    assert len(pub_res.json()["items"]) == 0
+
+    # Private seller management /products/me must still return the pending product
+    with auth_patch(sample_user):
+        priv_res = await test_client.get("/api/v1/products/me")
+        assert priv_res.status_code == 200
+        assert len(priv_res.json()["items"]) == 1
+
+    # 2. Product APPROVED: count becomes 1
+    prod.approval_status = ProductApprovalStatus.APPROVED.value
+    await db_session.commit()
+
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.status_code == 200
+    assert res.json()["active_listing_count"] == 1
+
+    pub_res = await test_client.get(f"/api/v1/products?seller_id={sample_user.user_id}")
+    assert pub_res.status_code == 200
+    assert len(pub_res.json()["items"]) == 1
+
+    # 3. Product REJECTED: count becomes 0
+    prod.approval_status = ProductApprovalStatus.REJECTED.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # 4. Product DRAFT: count becomes 0
+    prod.approval_status = ProductApprovalStatus.DRAFT.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # 5. Product HIDDEN: count becomes 0
+    prod.approval_status = ProductApprovalStatus.APPROVED.value
+    prod.status = ProductStatus.HIDDEN.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # 6. Product BLOCKED by moderation: count becomes 0
+    prod.status = ProductStatus.AVAILABLE.value
+    prod.moderation_status = ProductModerationStatus.BLOCKED.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # Also SOLD_OUT: count becomes 0
+    prod.moderation_status = ProductModerationStatus.CLEAR.value
+    prod.status = ProductStatus.SOLD_OUT.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+
+    # 7. Product is_deleted == True: count becomes 0
+    prod.status = ProductStatus.AVAILABLE.value
+    prod.is_deleted = True
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # Restore product to fully eligible state (count is 1)
+    prod.is_deleted = False
+    prod.status = ProductStatus.AVAILABLE.value
+    prod.approval_status = ProductApprovalStatus.APPROVED.value
+    prod.moderation_status = ProductModerationStatus.CLEAR.value
+    await db_session.commit()
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 1
+
+    # 8. Active SELL capability restriction => count becomes 0
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    report = Report(
+        reporter_id=other_user.user_id,
+        target_type=ReportTargetType.USER.value,
+        target_id=sample_user.user_id,
+        reason=ReportReason.SCAM.value,
+        status=ReportStatus.RESOLVED.value,
+    )
+    db_session.add(report)
+    await db_session.flush()
+
+    sell_restr = UserCapabilityRestriction(
+        user_id=sample_user.user_id,
+        source_report_id=report.report_id,
+        imposed_by=other_user.user_id,
+        capability=CapabilityType.SELL.value,
+        starts_at=now_utc - timedelta(hours=1),
+        expires_at=None,
+    )
+    db_session.add(sell_restr)
+    await db_session.commit()
+
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 0
+
+    # Revoking restriction restores count to 1
+    sell_restr.revoked_at = now_utc
+    await db_session.commit()
+
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 1
+
+    # 9. Auction product: requires active auction to count publicly
+    auction_prod = Product(
+        seller_id=sample_user.user_id,
+        category_id=cat.category_id,
+        title="Laptop cũ đấu giá",
+        description="Đấu giá gây quỹ",
+        listing_type=ListingType.AUCTION.value,
+        price=100000,
+        stock=1,
+        reserved_stock=0,
+        status=ProductStatus.AVAILABLE.value,
+        approval_status=ProductApprovalStatus.APPROVED.value,
+        moderation_status=ProductModerationStatus.CLEAR.value,
+    )
+    db_session.add(auction_prod)
+    await db_session.commit()
+
+    # Without active auction, auction product does not increment count
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 1
+
+    # With active auction, count becomes 2
+    act_auction = Auction(
+        product_id=auction_prod.product_id,
+        starting_price=100000,
+        bid_step=10000,
+        starts_at=now_utc.replace(tzinfo=None) - timedelta(hours=1),
+        ends_at=now_utc.replace(tzinfo=None) + timedelta(hours=24),
+        status=AuctionStatus.ACTIVE.value,
+    )
+    db_session.add(act_auction)
+    await db_session.commit()
+
+    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    assert res.json()["active_listing_count"] == 2
+
 
 
 # =====================================================================

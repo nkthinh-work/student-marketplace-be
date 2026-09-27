@@ -541,6 +541,15 @@ async def test_support_info_endpoint_resolved_by_email_fallback(
     assert data["creator"]["user_id"] == creator.user_id
     assert data["profile_path"] == f"/users/{creator.user_id}"
 
+    # Verify case-insensitive fallback resolution (e.g. UPPERCASE config)
+    monkeypatch.setattr(settings, "COMMUNITY_CREATOR_EMAIL", creator.email.upper())
+    res_upper = await test_client.get("/api/v1/feedback/support")
+    assert res_upper.status_code == 200
+    data_upper = res_upper.json()
+    assert data_upper["creator"] is not None
+    assert data_upper["creator"]["user_id"] == creator.user_id
+    assert data_upper["profile_path"] == f"/users/{creator.user_id}"
+
 
 @pytest.mark.asyncio
 async def test_support_info_endpoint_unconfigured_produces_safe_controlled_response(

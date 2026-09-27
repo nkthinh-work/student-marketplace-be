@@ -6,7 +6,7 @@ import urllib.parse
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -572,7 +572,7 @@ async def get_support_info(session: AsyncSession) -> SupportResponse:
                 "Configured COMMUNITY_CREATOR_PROVIDER_UID could not be resolved to any local user"
             )
     elif creator_email:
-        stmt = select(User).where(User.email == creator_email)
+        stmt = select(User).where(func.lower(User.email) == creator_email.lower())
         res = await session.execute(stmt)
         creator_user = res.scalar_one_or_none()
         if not creator_user:

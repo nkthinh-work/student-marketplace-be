@@ -2860,7 +2860,7 @@ Phân hệ đăng tải ảnh khoảnh khắc sinh viên di động (Mobile-firs
 - **Authentication**: Không (Public Endpoint).
 - **Quy tắc Nghiệp vụ**:
   - Trả về tối đa **5 ảnh** có trạng thái `APPROVED`.
-  - Thứ tự: Sắp xếp theo `reviewed_at DESC, moment_id DESC` (ảnh vừa được duyệt mới nhất đứng đầu).
+  - Thứ tự: Sắp xếp theo `reviewed_at ASC, moment_id ASC` (ảnh cũ nhất đứng đầu, ảnh vừa được duyệt mới nhất xuất hiện ở cuối/bên phải slide).
   - Bảo mật danh tính: Tuyệt đối không để lộ `uploader_id`, `storage_key`, `reviewed_by`.
   - URL ảnh: Đã qua bộ chuyển đổi responsive của Cloudinary chuẩn Hero (`f_auto,q_auto,w_1600`).
   - Khi hệ thống có 0 ảnh duyệt: Trả về danh sách rỗng `{"items": []}`. Frontend hiển thị banner CSS thương hiệu thuần 16:9 (không dùng ảnh tĩnh fallback).

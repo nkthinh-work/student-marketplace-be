@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.datetime import ensure_utc_aware
 from app.core.realtime.presence import get_users_presence
 from app.core.redis import get_redis_client, get_or_reconnect_redis
 from app.integrations.cloudinary import (
@@ -2196,7 +2197,11 @@ class ConversationService:
                 detail="Tệp đính kèm không tồn tại.",
             )
 
-        if conv.type == "GROUP" and member and att.created_at < member.joined_at:
+        if (
+            conv.type == "GROUP"
+            and member
+            and ensure_utc_aware(att.created_at) < ensure_utc_aware(member.joined_at)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tệp đính kèm không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2336,7 +2341,11 @@ class ConversationService:
                 detail="Tệp đính kèm không tồn tại.",
             )
 
-        if conv.type == "GROUP" and member and att.created_at < member.joined_at:
+        if (
+            conv.type == "GROUP"
+            and member
+            and ensure_utc_aware(att.created_at) < ensure_utc_aware(member.joined_at)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tệp đính kèm không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2410,7 +2419,11 @@ class ConversationService:
                 detail="Tin nhắn không tồn tại.",
             )
 
-        if conv.type == "GROUP" and joined_at_filter and msg.sent_at < joined_at_filter:
+        if (
+            conv.type == "GROUP"
+            and joined_at_filter
+            and ensure_utc_aware(msg.sent_at) < ensure_utc_aware(joined_at_filter)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tin nhắn không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2453,11 +2466,12 @@ class ConversationService:
 
         # Build response before commit so post-commit query failure risk is eliminated
         summary = await self.repo.get_reaction_summary(message_id, current_user.user_id)
+        # Pre-resolve recipient IDs before commit to avoid accessing expired model attributes post-commit
+        recipient_uids = await self._get_conversation_recipient_uids(conv)
         await self.db.commit()
 
         # Post-commit best-effort realtime fanout via existing /ws/me
         try:
-            recipient_uids = await self._get_conversation_recipient_uids(conv)
             event_payload = {
                 "type": "MESSAGE_REACTIONS_UPDATED",
                 "conversation_id": conversation_id,
@@ -2489,11 +2503,12 @@ class ConversationService:
         await self.db.flush()
 
         summary = await self.repo.get_reaction_summary(message_id, current_user.user_id)
+        # Pre-resolve recipient IDs before commit to avoid accessing expired model attributes post-commit
+        recipient_uids = await self._get_conversation_recipient_uids(conv)
         await self.db.commit()
 
         # Post-commit best-effort realtime fanout via existing /ws/me
         try:
-            recipient_uids = await self._get_conversation_recipient_uids(conv)
             event_payload = {
                 "type": "MESSAGE_REACTIONS_UPDATED",
                 "conversation_id": conversation_id,

@@ -250,7 +250,7 @@ async def test_group_reaction_active_member_succeeds(
     group_msg: Message,
     user_b: User,
 ):
-    """Active group member can react."""
+    """Active group member can react and subsequent message history fetch canonically retains the reaction."""
     with auth_patch(user_b):
         res = await test_client.put(
             f"/api/v1/conversations/{group_conv.conversation_id}/messages/{group_msg.message_id}/reaction",
@@ -261,6 +261,19 @@ async def test_group_reaction_active_member_succeeds(
         assert data["my_reaction"] == "HAHA"
         assert data["reactions"][0]["reaction_key"] == "HAHA"
         assert data["reactions"][0]["count"] == 1
+
+        # Canonical message history fetch retains the reaction and my_reaction
+        get_res = await test_client.get(
+            f"/api/v1/conversations/{group_conv.conversation_id}/messages"
+        )
+        assert get_res.status_code == 200
+        history_items = get_res.json()["items"]
+        target = next((m for m in history_items if m["message_id"] == group_msg.message_id), None)
+        assert target is not None
+        assert target["my_reaction"] == "HAHA"
+        assert len(target["reactions"]) == 1
+        assert target["reactions"][0]["reaction_key"] == "HAHA"
+        assert target["reactions"][0]["count"] == 1
 
 
 @pytest.mark.asyncio

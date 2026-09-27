@@ -554,11 +554,11 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
     - Backend: Máy chủ VPS sản xuất độc lập. Các dịch vụ vận hành trên VPS bao gồm: Reverse proxy / HTTPS termination, FastAPI API (`student-marketplace-be:prod`), Background Worker (`order_auto_cancel`), PostgreSQL, Redis được đóng gói chuẩn hóa qua `docker-compose.prod.yml`. Không gắn cứng nhà cung cấp VPS cụ thể trong kiến trúc chuẩn (lựa chọn nhà cung cấp thuộc phạm vi vận hành).
     - Nhà cung cấp bên ngoài (External Providers): Firebase Authentication (xác thực người dùng), Cloudinary (lưu trữ media nhị phân theo namespace `student-marketplace/prod/`).
     - Trạng thái triển khai: Sẵn sàng phục vụ di trú dài hạn.
-  - **Mục tiêu Triển khai Khẩn cấp Thử nghiệm Công khai (Temporary Public-Beta Deployment: Railway + Vercel)**:
-    - **Bối cảnh & Tính chất Vận hành**: Nhằm phục vụ đợt phát hành thử nghiệm công khai khẩn cấp (urgent public-beta rollout), hệ thống bổ sung mục tiêu vận hành đám mây quản lý (PaaS) trên nền tảng Railway (dự án "choptiters") kết hợp Frontend trên Vercel.
+  - **Mục tiêu Triển khai Khẩn cấp Thử nghiệm Công khai (Temporary Public-Beta Deployment: Railway)**:
+    - **Bối cảnh & Tính chất Vận hành**: Nhằm phục vụ đợt phát hành thử nghiệm công khai khẩn cấp (urgent public-beta rollout), hệ thống vận hành trực tiếp trên nền tảng đám mây quản lý (PaaS) Railway (dự án "choptiters") cho cả Frontend, Backend, PostgreSQL và Redis. Vercel là tùy chọn lưu trữ frontend thay thế/khả chuyển (portable alternative) trong tương lai khi cần tối ưu Edge CDN.
     - **Tính tương thích & Khả chuyển (Additive & Portable)**: Lựa chọn Railway là giải pháp vận hành tạm thời (operational target), tuyệt đối không làm thay đổi thiết kế nghiệp vụ hay cấu trúc backend. Cấu trúc `docker-compose.prod.yml` và kiến trúc VPS gốc được giữ nguyên vẹn để phục vụ di trú sang VPS độc lập về sau mà không cần viết lại mã nguồn.
     - **Ranh giới Dịch vụ Hạ tầng (Infrastructure Boundaries)**:
-      - *Frontend*: Vercel (Edge CDN, kết nối repo `student-marketplace-fe`).
+      - *Frontend*: Railway (`student-marketplace-fe` — Vercel là tùy chọn hosting dự phòng/khả chuyển).
       - *Backend trên Railway*: Duy trì phân tách độc lập 4 thành phần thiết yếu:
         1. `FastAPI API`: Cung cấp REST endpoints và WebSocket kết nối client.
         2. `Background Worker`: Chạy tiến trình độc lập `python -m app.workers.order_auto_cancel` tự động hủy đơn quá hạn.
