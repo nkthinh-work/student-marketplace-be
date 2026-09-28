@@ -356,48 +356,27 @@ class ConversationRepository:
         """
         Fetches bounded page of active conversations using keyset cursor pagination with ZERO N+1 queries.
         """
-        # Base query: user is active member (or official support group for discovery)
-        if conv_type == "GROUP" and settings.OFFICIAL_SUPPORT_GROUP_ID:
-            stmt = (
-                select(Conversation, ConversationMember)
-                .outerjoin(
-                    ConversationMember,
-                    and_(
-                        ConversationMember.conversation_id == Conversation.conversation_id,
-                        ConversationMember.user_id == user_id,
-                        ConversationMember.left_at.is_(None),
-                    ),
-                )
-                .where(
-                    Conversation.deleted_at.is_(None),
+        # Base query: user is active member
+        stmt = (
+            select(Conversation, ConversationMember)
+            .join(
+                ConversationMember,
+                and_(
+                    ConversationMember.conversation_id == Conversation.conversation_id,
+                    ConversationMember.user_id == user_id,
+                    ConversationMember.left_at.is_(None),
+                ),
+            )
+            .where(
+                Conversation.deleted_at.is_(None),
+                or_(
+                    Conversation.last_message_at.is_not(None),
                     Conversation.type == "GROUP",
-                    or_(
-                        ConversationMember.user_id == user_id,
-                        Conversation.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID,
-                    ),
-                )
+                ),
             )
-        else:
-            stmt = (
-                select(Conversation, ConversationMember)
-                .join(
-                    ConversationMember,
-                    and_(
-                        ConversationMember.conversation_id == Conversation.conversation_id,
-                        ConversationMember.user_id == user_id,
-                        ConversationMember.left_at.is_(None),
-                    ),
-                )
-                .where(
-                    Conversation.deleted_at.is_(None),
-                    or_(
-                        Conversation.last_message_at.is_not(None),
-                        Conversation.type == "GROUP",
-                    ),
-                )
-            )
-            if conv_type:
-                stmt = stmt.where(Conversation.type == conv_type)
+        )
+        if conv_type:
+            stmt = stmt.where(Conversation.type == conv_type)
 
         # Apply Keyset Cursor: (COALESCE(last_message_at, created_at), conversation_id)
         if cursor:
@@ -411,18 +390,11 @@ class ConversationRepository:
                 )
                 < (cursor_dt, cursor_id)
             )
-            if conv_type == "GROUP" and settings.OFFICIAL_SUPPORT_GROUP_ID:
-                stmt = stmt.where(Conversation.conversation_id != settings.OFFICIAL_SUPPORT_GROUP_ID)
 
-
-        order_clauses = []
-        if conv_type == "GROUP" and settings.OFFICIAL_SUPPORT_GROUP_ID:
-            order_clauses.append(case((Conversation.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID, 1), else_=0).desc())
-        order_clauses.extend([
+        stmt = stmt.order_by(
             func.coalesce(Conversation.last_message_at, Conversation.created_at).desc(),
             Conversation.conversation_id.desc(),
-        ])
-        stmt = stmt.order_by(*order_clauses).limit(limit + 1)
+        ).limit(limit + 1)
 
         rows = (await self.db.execute(stmt)).all()
         has_more = len(rows) > limit
@@ -562,10 +534,6 @@ class ConversationRepository:
                     listing_type=prod.listing_type.value if hasattr(prod.listing_type, "value") else str(prod.listing_type),
                 )
 
-            is_official = bool(
-                settings.OFFICIAL_SUPPORT_GROUP_ID
-                and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID
-            )
             summaries.append(
                 ConversationSummaryResponse(
                     conversation_id=conv.conversation_id,
@@ -581,7 +549,6 @@ class ConversationRepository:
                     last_message_at=conv.last_message_at,
                     unread_count=unread_map.get(conv.conversation_id, 0),
                     created_at=conv.created_at,
-                    is_official_support=is_official,
                 )
             )
 

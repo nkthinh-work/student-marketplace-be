@@ -308,7 +308,6 @@ class ConversationSummaryResponse(BaseModel):
     last_message_at: Optional[datetime] = None
     unread_count: int = 0
     created_at: datetime
-    is_official_support: bool = False
 
     @field_serializer("last_message_at", when_used="json")
     def serialize_last_message_at(self, dt: Optional[datetime]) -> Optional[str]:
@@ -353,7 +352,28 @@ class ConversationDetailResponse(BaseModel):
     product_context: Optional[ProductContextSummary] = None
     created_at: datetime
     requires_approval: bool = False
-    is_official_support: bool = False
+
+
+class OfficialSupportGroupResponse(BaseModel):
+    """
+    Dedicated DTO for rendering the system-level official support entry.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    conversation_id: int
+    title: str
+    description: Optional[str] = None
+    is_member: bool
+    last_message_preview: Optional[str] = None
+    last_message_at: Optional[datetime] = None
+    unread_count: int = 0
+
+    @field_serializer("last_message_at", when_used="json")
+    def serialize_last_message_at(self, dt: Optional[datetime]) -> Optional[str]:
+        if dt is None:
+            return None
+        aware = ensure_utc_aware(dt)
+        return aware.isoformat().replace("+00:00", "Z")
 
 
 

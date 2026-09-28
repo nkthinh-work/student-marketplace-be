@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9E — Corrective Follow-Up: Home Community CTA Pure Navigation & Structural Official Group Pinning / Branded Avatar Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+**Phase 9E — Dedicated Official Support Special Entry Redesign Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
 *Parent Task*: Post-Deployment Hardening & UX Refinements
 *Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT CORRECTIVE PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**CORRECTIVE OFFICIAL GROUP UX VERIFIED — PURE HOME NAVIGATION & STRUCTURAL DND PINNING SECURED — READY FOR OPERATOR REVIEW (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — DEDICATED OFFICIAL SUPPORT ENTRY SYSTEM ARCHITECTURE COMPLETED & VERIFIED (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -138,7 +138,8 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
 - **Backend Full Suite**: **865/865 PASS** (`pytest tests/ -q` in 314.23s, 0 failures, 9 warnings).
-- **Backend Hardening Suite**: **12/12 PASS** (`tests/test_official_support_and_profile_validation.py`).
+- **Backend Hardening Suite**: **11/11 PASS** (`tests/test_official_support_and_profile_validation.py`).
+- **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
 - **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).
 - **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
 - **Production Endpoint Health**: `/health` endpoint trên Railway trả về HTTP 200 `{"status": "healthy", "database": "up", "redis": "up", "service": "up"}`.

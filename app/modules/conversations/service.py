@@ -50,6 +50,7 @@ from app.modules.conversations.schemas import (
     MessageReactionSetRequest,
     MessageReactionSummaryResponse,
     MessageResponse,
+    OfficialSupportGroupResponse,
     OwnedGroupSummaryResponse,
     ParticipantSummary,
     PendingApprovalActionRequest,
@@ -429,10 +430,6 @@ class ConversationService:
             is_joined=member is not None,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval) if conv.type == "GROUP" else False,
-            is_official_support=bool(
-                settings.OFFICIAL_SUPPORT_GROUP_ID
-                and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID
-            ),
         )
 
 
@@ -1053,7 +1050,6 @@ class ConversationService:
             is_joined=True,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval),
-            is_official_support=False,
         )
 
     async def invite_members_to_group(
@@ -1837,10 +1833,6 @@ class ConversationService:
             is_joined=True,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval),
-            is_official_support=bool(
-                settings.OFFICIAL_SUPPORT_GROUP_ID
-                and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID
-            ),
         )
 
     async def list_pending_approvals(
@@ -2029,6 +2021,81 @@ class ConversationService:
     # =========================================================================
     # Official Support Group Methods
     # =========================================================================
+
+    async def get_official_support_group(
+        self, current_user: User
+    ) -> OfficialSupportGroupResponse:
+        """
+        Resolves the configured official support GROUP and returns its metadata for the special entry.
+        Read-only, never mutates membership.
+        """
+        support_id = settings.OFFICIAL_SUPPORT_GROUP_ID
+        if not support_id or support_id <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Nhóm hỗ trợ chính thức chưa được cấu hình.",
+            )
+
+        conv = await self.repo.get_conversation_by_id(support_id)
+        if not conv or conv.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Nhóm hỗ trợ chính thức không tồn tại.",
+            )
+
+        if conv.type != "GROUP":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Nhóm hỗ trợ chính thức có loại không hợp lệ.",
+            )
+
+        member = await self.repo.get_active_group_member(conv.conversation_id, current_user.user_id)
+        is_member = member is not None
+
+        last_preview = conv.description
+        last_dt = conv.last_message_at
+        unread = 0
+
+        stmt_last_msg = (
+            select(Message.content, Message.sent_at)
+            .where(
+                Message.conversation_id == conv.conversation_id,
+                Message.is_deleted.is_(False),
+            )
+            .order_by(Message.sent_at.desc(), Message.message_id.desc())
+            .limit(1)
+        )
+        last_msg_row = (await self.db.execute(stmt_last_msg)).first()
+        if last_msg_row:
+            last_preview = last_msg_row[0]
+            last_dt = last_msg_row[1]
+
+        if is_member and member:
+            if member.last_read_message_id:
+                stmt_unread = select(func.count(Message.message_id)).where(
+                    Message.conversation_id == conv.conversation_id,
+                    Message.message_id > member.last_read_message_id,
+                    Message.sender_id != current_user.user_id,
+                    Message.is_deleted.is_(False),
+                )
+                unread = (await self.db.scalar(stmt_unread)) or 0
+            elif conv.last_message_at:
+                stmt_unread = select(func.count(Message.message_id)).where(
+                    Message.conversation_id == conv.conversation_id,
+                    Message.sender_id != current_user.user_id,
+                    Message.is_deleted.is_(False),
+                )
+                unread = (await self.db.scalar(stmt_unread)) or 0
+
+        return OfficialSupportGroupResponse(
+            conversation_id=conv.conversation_id,
+            title=conv.title or "Cộng đồng Chợ PTITers",
+            description=conv.description,
+            is_member=is_member,
+            last_message_preview=last_preview,
+            last_message_at=last_dt,
+            unread_count=unread,
+        )
 
     async def join_official_support_group(self, current_user: User) -> dict:
         """

@@ -1168,8 +1168,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
       "thumbnail_url": "https://res.cloudinary.com/...",
       "listing_type": "FIXED_PRICE"
     },
-    "created_at": "2026-09-02T10:00:00Z",
-    "is_official_support": false
+    "created_at": "2026-09-02T10:00:00Z"
   }
   ```
 
@@ -1183,11 +1182,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - `type`: `DIRECT` | `GROUP` (tùy chọn)
   - `limit`: 1..50 (mặc định 20)
   - `cursor`: Chuỗi Base64 keyset pagination `(last_message_at DESC, conversation_id DESC)`.
-- **Inbox Invariant**: Chỉ trả về các cuộc trò chuyện đã có ít nhất 1 tin nhắn (`last_message_at IS NOT NULL`).
-- **Quy tắc ghim Nhóm Hỗ Trợ Chính Thức (`is_official_support`)**:
-  - `is_official_support: boolean`: Trường định danh an toàn từ server được xác định theo `conversation_id == OFFICIAL_SUPPORT_GROUP_ID` (tuyệt đối không dựa vào tiêu đề nhóm).
-  - Khi lọc theo nhóm (`type=GROUP`), nhóm hỗ trợ chính thức được ghim cố định ở vị trí đầu tiên (trang 1).
-  - Khi phân trang keyset bằng `cursor` (từ trang 2 trở đi), nhóm chính thức được loại trừ khỏi điều kiện lọc cursor (`conversation_id != OFFICIAL_SUPPORT_GROUP_ID`) để triệt tiêu hoàn toàn nguy cơ trùng lặp bản ghi trên nhiều trang, đồng thời bảo toàn tính xác định (determinism) và thứ tự cập nhật tin nhắn của các nhóm thường còn lại.
+- **Inbox Invariant**: Chỉ trả về các cuộc trò chuyện của người dùng theo phân trang keyset chuẩn mực, xác định (deterministic recency ordering). Nhóm hỗ trợ hệ thống được tách bạch hoàn toàn sang endpoint chuyên biệt.
 - **Zero N+1 Query Guarantee**: Batch loading người tham gia, tin nhắn mới nhất, unread counts, và contextual products trong đúng 4 câu truy vấn cố định.
 - **Response**: `200 OK`
   ```json
@@ -1195,7 +1190,6 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
     "items": [
       {
         "conversation_id": 1,
-        "is_official_support": false,
         "other_participant": {
           "user_id": 2,
           "full_name": "Nguyễn Văn Bán",
@@ -1227,7 +1221,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 - **Path**: `/api/v1/conversations/{conversation_id}`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
 - **Authorization**: Chỉ người tham gia mới được truy cập; người ngoài nhận `404 Not Found` (không lộ sự tồn tại).
-- **Response**: `200 OK` (`ConversationDetailResponse` bao gồm trường `is_official_support: boolean`).
+- **Response**: `200 OK` (`ConversationDetailResponse`).
 
 ---
 
@@ -1403,7 +1397,36 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - Chống SSRF: Upstream URL bắt buộc thuộc domain Cloudinary tin cậy (`res.cloudinary.com`).
 ---
 
-### 9.11. Tham gia / Mở nhóm hỗ trợ chính thức (Join Official Support Group)
+### 9.11. Lấy thông tin Nhóm Hỗ Trợ Chính Thức (Get Official Support Group Metadata)
+- **Method**: `GET`
+- **Path**: `/api/v1/conversations/official-support`
+- **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
+- **Status Requirement**: `ACTIVE`
+- **Quy tắc**:
+  - Phân giải ID nhóm từ biến cấu hình an toàn phía server (`OFFICIAL_SUPPORT_GROUP_ID`).
+  - Kiểm tra nhóm tồn tại, có loại là `GROUP`, và chưa bị soft-delete (`deleted_at IS NULL`). Nếu chưa cấu hình, không tìm thấy hoặc sai loại -> trả về HTTP `503 Service Unavailable`.
+  - **Read-only**: Endpoint chỉ đọc, tuyệt đối KHÔNG tự động thêm người dùng vào nhóm hoặc làm thay đổi quan hệ thành viên.
+  - Trả về cờ `is_member: boolean` xác thực chính xác liệu người dùng hiện tại có đang là thành viên hoạt động (`left_at IS NULL`) hay không.
+- **Response**: `200 OK` (`OfficialSupportGroupResponse`)
+  ```json
+  {
+    "conversation_id": 42,
+    "title": "Cộng đồng Chợ PTITers",
+    "description": "Mọi người cần giao lưu, hỏi đáp hay hỗ trợ thì nhắn ở đây nhé",
+    "is_member": true,
+    "last_message_preview": "Chào mọi người...",
+    "last_message_at": "2026-09-28T12:03:00Z",
+    "unread_count": 0
+  }
+  ```
+- **Error Responses**:
+  - `401 Unauthorized`: Chưa xác thực.
+  - `403 Forbidden`: Tài khoản không `ACTIVE`.
+  - `503 Service Unavailable`: Nhóm hỗ trợ chưa cấu hình, không tồn tại hoặc sai loại.
+
+---
+
+### 9.12. Tham gia / Mở nhóm hỗ trợ chính thức (Join Official Support Group)
 - **Method**: `POST`
 - **Path**: `/api/v1/conversations/official-support/join`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)

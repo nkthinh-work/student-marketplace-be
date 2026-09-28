@@ -37,6 +37,7 @@ from app.modules.conversations.schemas import (
     MessageReactionSummaryResponse,
     MessageResponse,
     OfficialSupportGroupJoinResponse,
+    OfficialSupportGroupResponse,
     OwnedGroupSummaryResponse,
     PendingApprovalActionRequest,
     PendingApprovalListResponse,
@@ -185,6 +186,20 @@ async def respond_to_group_invite(
 ):
     service = ConversationService(db)
     return await service.respond_to_invite(current_user, invite_id, payload.action)
+
+
+@router.get(
+    "/official-support",
+    response_model=OfficialSupportGroupResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Lấy thông tin nhóm Hỗ trợ / Cộng đồng chính thức",
+)
+async def get_official_support_group(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = ConversationService(db)
+    return await service.get_official_support_group(current_user)
 
 
 @router.post(
