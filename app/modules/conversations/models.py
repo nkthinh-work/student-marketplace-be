@@ -23,7 +23,7 @@ from app.db.base import Base
 
 class Conversation(Base):
     """
-    Conversations supporting DIRECT (1-to-1), GROUP, and official COMMUNITY.
+    Conversations supporting DIRECT (1-to-1) and GROUP.
     Authorization is derived from conversation_members.
     """
     __tablename__ = "conversations"
@@ -110,18 +110,12 @@ class Conversation(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "type IN ('DIRECT', 'GROUP', 'COMMUNITY')",
+            "type IN ('DIRECT', 'GROUP')",
             name="chk_conversations_type",
         ),
         UniqueConstraint(
             "direct_pair_key",
             name="uq_conversations_direct_pair_key",
-        ),
-        Index(
-            "ux_conversations_single_community",
-            "type",
-            unique=True,
-            postgresql_where=text("type = 'COMMUNITY'"),
         ),
         Index(
             "ix_conversations_user_one_last_msg",

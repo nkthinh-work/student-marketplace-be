@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.core.datetime import ensure_utc_aware
 
-ConversationType = Literal["DIRECT", "GROUP", "COMMUNITY"]
+ConversationType = Literal["DIRECT", "GROUP"]
 MemberRole = Literal["OWNER", "ADMIN", "MEMBER"]
 InviteStatus = Literal["PENDING", "PENDING_APPROVAL", "ACCEPTED", "DECLINED", "CANCELLED"]
 MessageType = Literal["TEXT", "IMAGE", "FILE", "PRODUCT_CARD", "ORDER_CARD", "SYSTEM"]
@@ -291,12 +291,12 @@ class MessageResponse(BaseModel):
 
 class ConversationSummaryResponse(BaseModel):
     """
-    Inbox row item representing a conversation (Direct, Group, or Community).
+    Inbox row item representing a conversation (Direct or Group).
     """
     model_config = ConfigDict(from_attributes=True)
 
     conversation_id: int
-    type: str = "DIRECT"  # 'DIRECT' | 'GROUP' | 'COMMUNITY'
+    type: str = "DIRECT"  # 'DIRECT' | 'GROUP'
     title: Optional[str] = None
     avatar_url: Optional[str] = None
     other_participant: Optional[ParticipantSummary] = None
@@ -471,3 +471,8 @@ class AttachmentDownloadTicketResponse(BaseModel):
     expires_in_seconds: int = 60
 
 
+class OfficialSupportGroupJoinResponse(BaseModel):
+    """
+    Response returned when resolving/joining the configured official support group.
+    """
+    conversation_id: int

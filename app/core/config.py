@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     COMMUNITY_CREATOR_PROVIDER_UID: Optional[str] = None
     COMMUNITY_CREATOR_EMAIL: Optional[str] = None
 
+    # Official Support Group (stable conversation_id for official support GROUP)
+    OFFICIAL_SUPPORT_GROUP_ID: Optional[int] = None
+
     @property
     def database_url_async(self) -> str:
         if self.DATABASE_URL:

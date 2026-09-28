@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.integrations.firebase import verify_firebase_token, FirebaseVerificationError
-from app.modules.auth.dependencies import get_current_user, security
+from app.modules.auth.dependencies import get_current_active_user, get_current_user, security
 from app.modules.auth.service import AuthService
 from app.modules.conversations.schemas import (
     AttachmentDownloadTicketResponse,
@@ -36,6 +36,7 @@ from app.modules.conversations.schemas import (
     MessageReactionSetRequest,
     MessageReactionSummaryResponse,
     MessageResponse,
+    OfficialSupportGroupJoinResponse,
     OwnedGroupSummaryResponse,
     PendingApprovalActionRequest,
     PendingApprovalListResponse,
@@ -186,46 +187,19 @@ async def respond_to_group_invite(
     return await service.respond_to_invite(current_user, invite_id, payload.action)
 
 
-@router.get(
-    "/community",
-    response_model=ConversationDetailResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Lấy thông tin nhóm Cộng đồng chính thức",
-)
-async def get_official_community(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    service = ConversationService(db)
-    return await service.get_or_bootstrap_community(current_user)
-
-
 @router.post(
-    "/community/{conversation_id}/join",
+    "/official-support/join",
+    response_model=OfficialSupportGroupJoinResponse,
     status_code=status.HTTP_200_OK,
-    summary="Tham gia nhóm Cộng đồng chính thức",
+    summary="Tham gia hoặc mở nhóm Hỗ trợ / Cộng đồng chính thức",
 )
-async def join_official_community(
-    conversation_id: int,
-    current_user: User = Depends(get_current_user),
+async def join_official_support_group(
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
     service = ConversationService(db)
-    return await service.join_community(current_user, conversation_id)
+    return await service.join_official_support_group(current_user)
 
-
-@router.post(
-    "/community/{conversation_id}/leave",
-    status_code=status.HTTP_200_OK,
-    summary="Rời khỏi nhóm Cộng đồng chính thức",
-)
-async def leave_official_community(
-    conversation_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    service = ConversationService(db)
-    return await service.leave_community(current_user, conversation_id)
 
 
 @router.get(

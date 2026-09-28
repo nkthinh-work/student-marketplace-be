@@ -248,9 +248,9 @@ Luồng mua:
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
 | `conversation_id` | BIGINT IDENTITY | NO | auto | PK |
-| `type` | VARCHAR(20) | NO | `DIRECT` | `DIRECT` / `GROUP` / `COMMUNITY` |
-| `title` | VARCHAR(255) | YES | - | Tiêu đề nhóm / cộng đồng |
-| `description` | TEXT | YES | - | Mô tả nhóm / cộng đồng |
+| `type` | VARCHAR(20) | NO | `DIRECT` | `DIRECT` / `GROUP` (chk_conversations_type) |
+| `title` | VARCHAR(255) | YES | - | Tiêu đề nhóm |
+| `description` | TEXT | YES | - | Mô tả nhóm |
 | `avatar_url` | VARCHAR(500) | YES | - | Avatar nhóm |
 | `user_one_id` | BIGINT | YES | - | FK -> users; cho DIRECT chat (luôn < user_two_id) |
 | `user_two_id` | BIGINT | YES | - | FK -> users; cho DIRECT chat (luôn > user_one_id) |
@@ -262,7 +262,7 @@ Luồng mua:
 
 ### 2.9.1. conversation_members
 
-Quản lý thành viên tham gia nhóm / cộng đồng / hội thoại. Thành viên hợp lệ/đang hoạt động được xác định bằng điều kiện `left_at IS NULL`.
+Quản lý thành viên tham gia nhóm / hội thoại. Thành viên hợp lệ/đang hoạt động được xác định bằng điều kiện `left_at IS NULL`.
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
@@ -321,7 +321,7 @@ Quản lý lời mời tham gia nhóm và hàng đợi phê duyệt.
 
 ### 2.11.1. message_mentions
 
-Lưu trữ thông tin gắn thẻ người dùng (@mention) có cấu trúc trong tin nhắn nhóm/cộng đồng. Đảm bảo hiển thị ổn định không phụ thuộc vào việc đổi tên hiển thị của người dùng sau này.
+Lưu trữ thông tin gắn thẻ người dùng (@mention) có cấu trúc trong tin nhắn nhóm (`GROUP`). Đảm bảo hiển thị ổn định không phụ thuộc vào việc đổi tên hiển thị của người dùng sau này.
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
@@ -335,7 +335,7 @@ Lưu trữ thông tin gắn thẻ người dùng (@mention) có cấu trúc tron
 
 ### 2.11.2. message_reactions
 
-Lưu trữ biểu cảm cảm xúc (reaction) của người dùng đối với tin nhắn. Mỗi người dùng chỉ được bày tỏ tối đa 1 biểu cảm trên mỗi tin nhắn.
+Lưu trữ biểu cảm cảm xúc (reaction) của người dùng đối với tin nhắn trong `DIRECT` hoặc `GROUP`. Mỗi người dùng chỉ được bày tỏ tối đa 1 biểu cảm trên mỗi tin nhắn.
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|

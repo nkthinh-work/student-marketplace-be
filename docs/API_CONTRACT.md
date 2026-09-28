@@ -1276,7 +1276,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - `product_id`: Tùy chọn, ID sản phẩm ngữ cảnh (chỉ dùng cho `DIRECT`).
   - `voice_duration_ms`: Tùy chọn, thời lượng voice note (ms) khi gửi audio.
   - `mentions`: Tùy chọn, chuỗi JSON serialize của mảng `MessageMentionCreate` (ví dụ: `[{"mentioned_user_id": 2, "display_text": "@Trần Thị B", "start_offset": 0, "end_offset": 11}]`).
-    - Hỗ trợ trong các hội thoại `GROUP` và `COMMUNITY`. Bị từ chối với `400 Bad Request` nếu gửi trong `DIRECT`.
+    - Hỗ trợ trong các hội thoại `GROUP`. Bị từ chối với `400 Bad Request` nếu gửi trong `DIRECT`.
     - Tất cả `mentioned_user_id` bắt buộc phải là thành viên đang hoạt động trong nhóm (`left_at IS NULL`). Nếu chứa người dùng không phải thành viên hoạt động -> từ chối với `422 Unprocessable Entity`.
     - Tọa độ `start_offset` và `end_offset` bắt buộc phải thỏa mãn: `0 <= start < end <= len(content)` và `content[start:end] == display_text`. Nếu không khớp -> từ chối với `422 Unprocessable Entity`.
   - `files`: Tùy chọn, từ 0 đến 4 files (hỗ trợ `IMAGE`, `VIDEO`, `PDF`, `AUDIO`, `DOCUMENT`).
@@ -1299,7 +1299,9 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 - **Method**: `POST`
 - **Path**: `/api/v1/conversations/{conversation_id}/read`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
-- **Invariant**: Chỉ cập nhật các tin nhắn được gửi bởi người kia (`sender_id != current_user_id AND read_at IS NULL`).
+- **Invariant**:
+  - Cập nhật các tin nhắn được gửi bởi người kia (`sender_id != current_user_id AND read_at IS NULL`).
+  - Gộp giao dịch: tự động chuyển thông báo chat chưa đọc tương ứng trong chuông (`type = 'NEW_MESSAGE'`, `ref_type = 'CONVERSATION'`, `ref_id = conversation_id`, `is_read = FALSE`) sang đã đọc (`is_read = TRUE`), đảm bảo huy hiệu chuông đồng bộ tức thời.
 - **Response**: `200 OK`
   ```json
   {
@@ -1386,7 +1388,27 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - Tiêu thụ ticket nguyên tử (atomic GETDEL). Ticket chỉ dùng đúng 1 lần.
   - Tái thẩm định tư cách thành viên active của cuộc trò chuyện (`left_at IS NULL`) lúc tải tệp. Thành viên đã bị xóa khỏi nhóm không thể tải tệp kể cả khi đã lấy ticket trước đó.
   - Chống SSRF: Upstream URL bắt buộc thuộc domain Cloudinary tin cậy (`res.cloudinary.com`).
-  - Streaming phân đoạn (chunked 64KB) giới hạn bộ nhớ RAM server.
+---
+
+### 9.11. Tham gia / Mở nhóm hỗ trợ chính thức (Join Official Support Group)
+- **Method**: `POST`
+- **Path**: `/api/v1/conversations/official-support/join`
+- **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
+- **Status Requirement**: `ACTIVE`
+- **Quy tắc**:
+  - Phân giải ID nhóm từ cấu hình an toàn phía server (`OFFICIAL_SUPPORT_GROUP_ID`).
+  - Kiểm tra nhóm tồn tại, có loại là `GROUP`, và chưa bị soft-delete (`deleted_at IS NULL`). Nếu chưa cấu hình hoặc không tìm thấy -> trả về `503 Service Unavailable`.
+  - Tự động thêm người dùng vào nhóm (`role = 'MEMBER'`, `joined_at = NOW()`) nếu chưa tham gia, hoặc khôi phục nếu trước đó đã rời (`left_at = NULL`).
+  - Lũy đẳng (Idempotent): nếu đã là thành viên hoạt động, bảo lưu trạng thái và không sinh dòng trùng lặp.
+  - Không sinh thông báo Bell hay unread spam.
+- **Response**: `200 OK` (`OfficialSupportGroupJoinResponse`)
+  ```json
+  {
+    "conversation_id": 42,
+    "title": "Cộng đồng Chợ PTITers",
+    "is_joined": true
+  }
+  ```
 
 ---
 
@@ -1802,10 +1824,10 @@ Thông báo được phát sinh tự động khi người dùng trong một nhó
    - **Trạng thái đọc ban đầu**: `is_read = false`.
 
 2. **Quy tắc Nghiệp vụ và Loại trừ (Guards)**:
-   - **Phạm vi nhóm (Group Scope)**: Chỉ áp dụng cho cuộc trò chuyện loại `GROUP`.
-   - **DIRECT Chat**: Gửi kèm `mentions` payload bị từ chối `400 Bad Request` ("Tính năng gắn thẻ chỉ khả dụng trong nhóm và cộng đồng."). Không sinh thông báo.
-   - **COMMUNITY Chat**: Gửi kèm `mentions` được chấp nhận và lưu `message_mentions`, nhưng KHÔNG phát sinh thông báo (nhằm tránh notification storm/spam trong nhóm cộng đồng toàn trường).
-   - **Tin nhắn thường (No Mentions)**: Tin nhắn gửi trong nhóm không kèm structured mentions -> tạo 0 thông báo.
+   - **Phạm vi nhóm (Group Scope)**: Chỉ áp dụng cho cuộc trò chuyện loại `GROUP` (kể cả nhóm hỗ trợ chính thức).
+   - **DIRECT Chat**: Gửi kèm `mentions` payload bị từ chối `400 Bad Request` ("Tính năng gắn thẻ chỉ khả dụng trong nhóm trò chuyện."). Không sinh thông báo.
+   - **Tin nhắn thường trong nhóm (No Mentions)**: Tin nhắn gửi trong nhóm không kèm structured mentions -> tạo 0 thông báo Bell.
+   - **Coalescing**: Tối đa 1 thông báo chưa đọc loại `NEW_MESSAGE` cho mỗi cặp `(user_id, conversation_id)` tại một thời điểm. Tin nhắn mới trong hội thoại chưa đọc sẽ cập nhật nội dung/thời gian mà không làm tràn chuông.
    - **Tin nhắn hệ thống (SYSTEM)**: Tin nhắn hệ thống tạo trong nhóm (đổi tên nhóm, thêm thành viên, v.v.) -> tạo 0 thông báo.
    - **Self-mention**: Người gửi tự tag chính mình (`@sender`) -> bị loại trừ khỏi danh sách nhận thông báo (tạo 0 thông báo cho sender).
    - **Khử trùng lặp người nhận (Deduplication)**: Nếu một thành viên được tag nhiều lần trong cùng 1 tin nhắn (hoặc trùng display text), người đó chỉ nhận duy nhất 1 thông báo. Khử trùng lặp dựa trên `user_id` định danh duy nhất trong CSDL, tuyệt đối không dựa trên chuỗi tên hiển thị.
@@ -2004,7 +2026,7 @@ Cho phép người dùng bày tỏ cảm xúc trên tin nhắn bằng bộ react
 - **Path**: `/api/v1/conversations/{conversation_id}/messages/{message_id}/reaction`
 - **Authentication**: Bắt buộc (`Bearer <Firebase ID Token>`)
 - **Status Requirement**: `ACTIVE`
-- **Phạm vi áp dụng**: `DIRECT` và `GROUP` (từ chối `COMMUNITY` với `400 Bad Request`).
+- **Phạm vi áp dụng**: `DIRECT` và `GROUP`.
 
 #### Quyền truy cập:
 - **DIRECT**: Người dùng phải là một trong 2 người tham gia canonical (`user_one_id` hoặc `user_two_id`). Không yêu cầu dòng `conversation_members`.

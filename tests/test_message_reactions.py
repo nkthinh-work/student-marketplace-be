@@ -112,17 +112,21 @@ async def group_conv(db_session: AsyncSession, user_a: User, user_b: User) -> Co
 
 
 @pytest_asyncio.fixture
-async def community_conv(db_session: AsyncSession) -> Conversation:
-    conv = await db_session.scalar(
-        select(Conversation).where(Conversation.type == "COMMUNITY")
+async def support_group_conv(db_session: AsyncSession, user_a: User) -> Conversation:
+    conv = Conversation(
+        type="GROUP",
+        title="Cộng đồng Chợ PTITers",
     )
-    if not conv:
-        conv = Conversation(
-            type="COMMUNITY",
-            title="Cộng đồng Chợ PTITers",
-        )
-        db_session.add(conv)
-        await db_session.commit()
+    db_session.add(conv)
+    await db_session.flush()
+    member = ConversationMember(
+        conversation_id=conv.conversation_id,
+        user_id=user_a.user_id,
+        role="MEMBER",
+        joined_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1),
+    )
+    db_session.add(member)
+    await db_session.commit()
     return conv
 
 
@@ -338,22 +342,22 @@ async def test_group_reaction_pre_join_message_rejected_404(
 
 
 # =====================================================================
-# 3. COMMUNITY EXCLUSION TEST (Instruction 15)
+# 3. OFFICIAL SUPPORT GROUP REACTION TEST
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_community_conversation_rejected_400(
+async def test_official_support_group_reaction_persists(
     test_client: AsyncClient,
-    community_conv: Conversation,
+    support_group_conv: Conversation,
     user_a: User,
     db_session: AsyncSession,
 ):
-    """Community conversations reject reactions with 400 Bad Request."""
+    """The official support group behaves as GROUP: reactions succeed and persist."""
     msg = Message(
-        conversation_id=community_conv.conversation_id,
+        conversation_id=support_group_conv.conversation_id,
         sender_id=user_a.user_id,
         type="TEXT",
-        content="Tin cộng đồng",
+        content="Tin trong nhóm hỗ trợ",
         sent_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db_session.add(msg)
@@ -361,10 +365,24 @@ async def test_community_conversation_rejected_400(
 
     with auth_patch(user_a):
         res = await test_client.put(
-            f"/api/v1/conversations/{community_conv.conversation_id}/messages/{msg.message_id}/reaction",
+            f"/api/v1/conversations/{support_group_conv.conversation_id}/messages/{msg.message_id}/reaction",
             json={"reaction_key": "THICH"},
         )
-        assert res.status_code == 400
+        assert res.status_code == 200
+        data = res.json()
+        assert data["my_reaction"] == "THICH"
+        assert any(r["reaction_key"] == "THICH" and r["count"] == 1 for r in data["reactions"])
+
+    # Refetch via GET messages endpoint to verify persistence
+    with auth_patch(user_a):
+        get_res = await test_client.get(
+            f"/api/v1/conversations/{support_group_conv.conversation_id}/messages"
+        )
+        assert get_res.status_code == 200
+        items = get_res.json()["items"]
+        target = next((m for m in items if m["message_id"] == msg.message_id), None)
+        assert target is not None
+        assert target["my_reaction"] == "THICH"
 
 
 # =====================================================================

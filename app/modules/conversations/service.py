@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.datetime import ensure_utc_aware
 from app.core.realtime.presence import get_users_presence
 from app.core.redis import get_redis_client, get_or_reconnect_redis
@@ -407,9 +408,9 @@ class ConversationService:
                 avatar_url=other_u.avatar_url if other_u else None,
             )
 
-        # Count active members for GROUP / COMMUNITY
+        # Count active members for GROUP
         member_count = None
-        if conv.type in ("GROUP", "COMMUNITY"):
+        if conv.type == "GROUP":
             c_q = select(func.count(ConversationMember.user_id)).where(
                 ConversationMember.conversation_id == conversation_id,
                 ConversationMember.left_at.is_(None),
@@ -736,9 +737,59 @@ class ConversationService:
                     reply_to_message_id=reply_to_message_id,
                 )
 
-                # Create durable NEW_MESSAGE notifications for valid group @mentions in same transaction
-                created_notifications: List[Notification] = []
-                if conv.type == "GROUP" and msg.mentions:
+                # Create/coalesce durable NEW_MESSAGE notifications in same transaction
+                notifications_to_publish: List[Tuple[int, Notification]] = []
+
+                if conv.type == "DIRECT":
+                    recipient_id = conv.user_two_id if conv.user_one_id == current_user.user_id else conv.user_one_id
+                    if recipient_id and recipient_id != current_user.user_id:
+                        sender_name = current_user.full_name.strip() if (current_user.full_name and current_user.full_name.strip()) else "Một người dùng"
+                        title = "Tin nhắn mới"
+                        body = f"{sender_name} đã gửi tin nhắn cho bạn."
+
+                        # Concurrency-safe advisory lock per (recipient_id, conversation_id)
+                        await self.db.execute(
+                            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+                            {"lock_key": f"notif_chat:{recipient_id}:{conversation_id}"},
+                        )
+
+                        # Find existing unread chat notification for this conversation
+                        stmt_existing = (
+                            select(Notification)
+                            .where(
+                                Notification.user_id == recipient_id,
+                                Notification.type == NotificationType.NEW_MESSAGE.value,
+                                Notification.ref_type == "CONVERSATION",
+                                Notification.ref_id == conversation_id,
+                                Notification.is_read.is_(False),
+                            )
+                            .order_by(desc(Notification.notification_id))
+                            .limit(1)
+                            .with_for_update()
+                        )
+                        existing_notif = await self.db.scalar(stmt_existing)
+                        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+                        if existing_notif:
+                            existing_notif.title = title
+                            existing_notif.body = body
+                            existing_notif.created_at = now_utc
+                            notifications_to_publish.append((recipient_id, existing_notif))
+                        else:
+                            new_notif = Notification(
+                                user_id=recipient_id,
+                                type=NotificationType.NEW_MESSAGE.value,
+                                title=title,
+                                body=body,
+                                ref_type="CONVERSATION",
+                                ref_id=conversation_id,
+                                is_read=False,
+                                created_at=now_utc,
+                            )
+                            self.db.add(new_notif)
+                            notifications_to_publish.append((recipient_id, new_notif))
+
+                elif conv.type == "GROUP" and msg.mentions:
                     # Derived canonically from persisted msg.mentions, excluding sender
                     valid_recipient_uids = list(dict.fromkeys(
                         m.mentioned_user_id
@@ -748,27 +799,57 @@ class ConversationService:
 
                     group_title = conv.title.strip() if (conv.title and conv.title.strip()) else "một nhóm"
                     sender_name = current_user.full_name.strip() if (current_user.full_name and current_user.full_name.strip()) else "Một thành viên"
+                    title = "Bạn được nhắc đến trong nhóm"
+                    body = f"{sender_name} đã nhắc đến bạn trong {group_title}."
+                    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
                     for target_uid in valid_recipient_uids:
-                        notif = Notification(
-                            user_id=target_uid,
-                            type=NotificationType.NEW_MESSAGE.value,
-                            title="Bạn được nhắc đến trong nhóm",
-                            body=f"{sender_name} đã nhắc đến bạn trong {group_title}.",
-                            ref_type="CONVERSATION",
-                            ref_id=conversation_id,
-                            is_read=False,
+                        await self.db.execute(
+                            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+                            {"lock_key": f"notif_chat:{target_uid}:{conversation_id}"},
                         )
-                        self.db.add(notif)
-                        created_notifications.append(notif)
 
-                if created_notifications:
+                        stmt_existing = (
+                            select(Notification)
+                            .where(
+                                Notification.user_id == target_uid,
+                                Notification.type == NotificationType.NEW_MESSAGE.value,
+                                Notification.ref_type == "CONVERSATION",
+                                Notification.ref_id == conversation_id,
+                                Notification.is_read.is_(False),
+                            )
+                            .order_by(desc(Notification.notification_id))
+                            .limit(1)
+                            .with_for_update()
+                        )
+                        existing_notif = await self.db.scalar(stmt_existing)
+
+                        if existing_notif:
+                            existing_notif.title = title
+                            existing_notif.body = body
+                            existing_notif.created_at = now_utc
+                            notifications_to_publish.append((target_uid, existing_notif))
+                        else:
+                            new_notif = Notification(
+                                user_id=target_uid,
+                                type=NotificationType.NEW_MESSAGE.value,
+                                title=title,
+                                body=body,
+                                ref_type="CONVERSATION",
+                                ref_id=conversation_id,
+                                is_read=False,
+                                created_at=now_utc,
+                            )
+                            self.db.add(new_notif)
+                            notifications_to_publish.append((target_uid, new_notif))
+
+                if notifications_to_publish:
                     await self.db.flush()
 
                 # Build immutable plain DTO snapshots before commit to prevent post-commit async ORM lazy-loading
                 notif_snapshots = [
-                    (n.user_id, NotificationResponse.model_validate(n))
-                    for n in created_notifications
+                    (uid, NotificationResponse.model_validate(n))
+                    for uid, n in notifications_to_publish
                 ]
 
                 # Single atomic transaction commit for message, message_mentions, and mention notifications
@@ -913,7 +994,7 @@ class ConversationService:
         return {"success": True, "read_count": count}
 
     # =========================================================================
-    # Group and Community Management Methods
+    # Group Management Methods
     # =========================================================================
 
     async def create_group(
@@ -1936,76 +2017,35 @@ class ConversationService:
         return {"success": True, "status": "ACCEPTED"}
 
     # =========================================================================
-    # Official Community Methods
+    # Official Support Group Methods
     # =========================================================================
 
-    async def get_or_bootstrap_community(
-        self, current_user: User
-    ) -> ConversationDetailResponse:
-        """Retrieves or creates the singleton official Community."""
-        conv = await self.repo.get_or_create_community_conversation(
-            bootstrap_owner_id=current_user.user_id
-        )
-        if not conv:
+    async def join_official_support_group(self, current_user: User) -> dict:
+        """
+        Resolves the configured official support GROUP and joins current user idempotently.
+        """
+        support_id = settings.OFFICIAL_SUPPORT_GROUP_ID
+        if not support_id or support_id <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Nhóm hỗ trợ chính thức chưa được cấu hình.",
+            )
+
+        conv = await self.repo.get_conversation_by_id(support_id)
+        if not conv or conv.deleted_at is not None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cộng đồng chưa sẵn sàng.",
+                detail="Nhóm hỗ trợ chính thức không tồn tại.",
             )
 
-        # Check membership
-        stmt_mem = select(ConversationMember).where(
-            ConversationMember.conversation_id == conv.conversation_id,
-            ConversationMember.user_id == current_user.user_id,
-            ConversationMember.left_at.is_(None),
-        )
-        mem = await self.db.scalar(stmt_mem)
-
-        c_q = select(func.count(ConversationMember.user_id)).where(
-            ConversationMember.conversation_id == conv.conversation_id,
-            ConversationMember.left_at.is_(None),
-        )
-        member_count = (await self.db.scalar(c_q)) or 0
-
-        return ConversationDetailResponse(
-            conversation_id=conv.conversation_id,
-            type="COMMUNITY",
-            title=conv.title,
-            description=conv.description,
-            avatar_url=conv.avatar_url,
-            member_count=member_count,
-            my_role=mem.role if mem else None,
-            is_joined=mem is not None,
-            created_at=conv.created_at,
-        )
-
-    async def join_community(
-        self, current_user: User, conversation_id: int
-    ) -> dict:
-        """Joins the official Community."""
-        conv = await self.repo.get_conversation_by_id(conversation_id)
-        if not conv or conv.type != "COMMUNITY":
+        if conv.type != "GROUP":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Chỉ có thể tham gia cộng đồng chính thức.",
+                detail="Nhóm hỗ trợ chính thức có loại không hợp lệ.",
             )
 
-        await self.repo.join_community(conversation_id, current_user.user_id)
-        return {"success": True}
-
-    async def leave_community(
-        self, current_user: User, conversation_id: int
-    ) -> dict:
-        """Leaves the official Community."""
-        try:
-            await self.repo.leave_community(conversation_id, current_user.user_id)
-        except ValueError as e:
-            if "OWNER_CANNOT_LEAVE" in str(e):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Chủ sở hữu cộng đồng không thể rời nhóm.",
-                )
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-        return {"success": True}
+        await self.repo.join_support_group(conv.conversation_id, current_user.user_id)
+        return {"conversation_id": conv.conversation_id}
 
     # =========================================================================
     # User Search
@@ -2037,10 +2077,10 @@ class ConversationService:
         try:
             await self.repo.delete_group_conversation(conversation_id, current_user.user_id)
         except PermissionError as pe:
-            if "CANNOT_DELETE_OFFICIAL_COMMUNITY" in str(pe):
+            if "CANNOT_DELETE_OFFICIAL_SUPPORT_GROUP" in str(pe):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Không thể xóa nhóm Cộng đồng chính thức.",
+                    detail="Không thể xóa nhóm hỗ trợ chính thức.",
                 )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2065,7 +2105,7 @@ class ConversationService:
         conv, member = await self.repo.get_conversation_with_member(
             conversation_id, current_user.user_id
         )
-        if not conv or (conv.type != "COMMUNITY" and not member):
+        if not conv or not member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2101,7 +2141,7 @@ class ConversationService:
         conv, member = await self.repo.get_conversation_with_member(
             conversation_id, current_user.user_id
         )
-        if not conv or (conv.type != "COMMUNITY" and not member):
+        if not conv or not member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2123,7 +2163,7 @@ class ConversationService:
         conv, member = await self.repo.get_conversation_with_member(
             conversation_id, current_user.user_id
         )
-        if not conv or (conv.type != "COMMUNITY" and not member):
+        if not conv or not member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2182,7 +2222,7 @@ class ConversationService:
         conv, member = await self.repo.get_conversation_with_member(
             conversation_id, current_user.user_id
         )
-        if not conv or (conv.type != "COMMUNITY" and not member):
+        if not conv or not member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2326,7 +2366,7 @@ class ConversationService:
         conv, member = await self.repo.get_conversation_with_member(
             conversation_id, user_id
         )
-        if not conv or (conv.type != "COMMUNITY" and not member):
+        if not conv or not member:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
@@ -2373,7 +2413,6 @@ class ConversationService:
         - Conversation must exist.
         - DIRECT: user must be user_one_id or user_two_id (no conversation_members row required).
         - GROUP: user must be active member (left_at is None).
-        - COMMUNITY: explicitly rejected with 400.
         - Message: must belong to conversation_id, not deleted, type != 'SYSTEM',
                    and for GROUP must not precede user's joined_at.
         All forbidden / non-existent lookups return 404 to avoid leaking existence.
@@ -2383,12 +2422,6 @@ class ConversationService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cuộc trò chuyện không tồn tại hoặc bạn không có quyền truy cập.",
-            )
-
-        if conv.type == "COMMUNITY":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Tính năng bày tỏ cảm xúc không khả dụng cho cuộc trò chuyện cộng đồng.",
             )
 
         joined_at_filter = None

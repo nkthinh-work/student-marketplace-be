@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.main import app
 from app.modules.auth.dependencies import get_current_active_user, get_current_user
 from app.modules.conversations.models import (
@@ -524,24 +525,51 @@ async def test_mentions_in_direct_chat_rejected(
 
 
 @pytest.mark.asyncio
-async def test_mentions_in_community_persists_without_notifications(
+async def test_mentions_in_official_support_group_notifies_mentioned_user_only(
     test_client: AsyncClient,
     user_a: User,
     user_b: User,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """9. Mentions in COMMUNITY persist mentions metadata, but produce ZERO notifications."""
+    """9. Mentions in official support group (GROUP) notify mentioned user; ordinary messages produce ZERO notifications."""
+    supp_conv = Conversation(
+        type="GROUP",
+        title="Cộng đồng Chợ PTITers",
+    )
+    db_session.add(supp_conv)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", supp_conv.conversation_id)
+
     with auth_patch(user_a):
-        comm_resp = await test_client.get("/api/v1/conversations/community")
-        assert comm_resp.status_code == 200
-        comm_id = comm_resp.json()["conversation_id"]
-        await test_client.post(f"/api/v1/conversations/community/{comm_id}/join")
+        join_a = await test_client.post("/api/v1/conversations/official-support/join")
+        assert join_a.status_code == 200
 
     with auth_patch(user_b):
-        await test_client.post(f"/api/v1/conversations/community/{comm_id}/join")
+        join_b = await test_client.post("/api/v1/conversations/official-support/join")
+        assert join_b.status_code == 200
 
+    # 1. Ordinary message without mentions produces ZERO Bell notifications
+    with auth_patch(user_a):
+        resp_ord = await test_client.post(
+            f"/api/v1/conversations/{supp_conv.conversation_id}/messages",
+            data={"content": "Tin nhắn thông thường không tag ai"},
+        )
+    assert resp_ord.status_code == 201
+
+    notifs_ord = (
+        await db_session.scalars(
+            select(Notification).where(
+                Notification.ref_type == "CONVERSATION",
+                Notification.ref_id == supp_conv.conversation_id,
+            )
+        )
+    ).all()
+    assert len(notifs_ord) == 0
+
+    # 2. Message with mention produces 1 notification for user_b
     token = f"@{user_b.full_name}"
-    content = f"Xin chào cộng đồng và {token}"
+    content = f"Xin chào nhóm hỗ trợ và {token}"
     mentions_payload = [
         {
             "mentioned_user_id": user_b.user_id,
@@ -553,7 +581,7 @@ async def test_mentions_in_community_persists_without_notifications(
 
     with auth_patch(user_a):
         resp = await test_client.post(
-            f"/api/v1/conversations/{comm_id}/messages",
+            f"/api/v1/conversations/{supp_conv.conversation_id}/messages",
             data={
                 "content": content,
                 "mentions": json.dumps(mentions_payload),
@@ -563,16 +591,17 @@ async def test_mentions_in_community_persists_without_notifications(
     data = resp.json()
     assert len(data["mentions"]) == 1
 
-    # In Phase 8C, mention notifications are GROUP only; COMMUNITY produces 0 notifications
     notifs = (
         await db_session.scalars(
             select(Notification).where(
                 Notification.ref_type == "CONVERSATION",
-                Notification.ref_id == comm_id,
+                Notification.ref_id == supp_conv.conversation_id,
+                Notification.user_id == user_b.user_id,
             )
         )
     ).all()
-    assert len(notifs) == 0
+    assert len(notifs) == 1
+    assert "nhắc đến bạn" in notifs[0].body
 
 
 @pytest.mark.asyncio

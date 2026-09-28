@@ -10,6 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.main import app
 from app.modules.auth.dependencies import get_current_active_user, get_current_user
 from app.modules.conversations.models import (
@@ -378,31 +379,70 @@ async def test_group_join_history_privacy_rule(
 
 
 # ============================================================================
-# 5. OFFICIAL COMMUNITY SINGLETON
+# 5. OFFICIAL SUPPORT GROUP (CANONICAL GROUP RESOLUTION & JOIN)
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_official_community_join_leave(
-    test_client: AsyncClient, owner_user: User, member_user: User
+async def test_official_support_group_join_lifecycle(
+    test_client: AsyncClient,
+    owner_user: User,
+    member_user: User,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    # 1. Bootstrap official community with owner_user
-    with auth_patch(owner_user):
-        resp = await test_client.get("/api/v1/conversations/community")
-    assert resp.status_code == 200
-    comm_data = resp.json()
-    assert comm_data["type"] == "COMMUNITY"
-    comm_id = comm_data["conversation_id"]
-
-    # 2. Member joins community
+    # 1. Unconfigured support group returns 503
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", None)
     with auth_patch(member_user):
-        join_resp = await test_client.post(f"/api/v1/conversations/community/{comm_id}/join")
-    assert join_resp.status_code == 200
+        resp_unconf = await test_client.post("/api/v1/conversations/official-support/join")
+    assert resp_unconf.status_code == 503
 
-    # 3. Member leaves community
+    # 2. Non-existent support group returns 404
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", 999999)
     with auth_patch(member_user):
-        leave_resp = await test_client.post(f"/api/v1/conversations/community/{comm_id}/leave")
-    assert leave_resp.status_code == 200
+        resp_notfound = await test_client.post("/api/v1/conversations/official-support/join")
+    assert resp_notfound.status_code == 404
+
+    # 3. Configured group with wrong type (DIRECT) returns 400
+    direct_conv = Conversation(
+        type="DIRECT",
+        user_one_id=member_user.user_id,
+        user_two_id=owner_user.user_id,
+    )
+    db_session.add(direct_conv)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", direct_conv.conversation_id)
+    with auth_patch(member_user):
+        resp_wrong = await test_client.post("/api/v1/conversations/official-support/join")
+    assert resp_wrong.status_code == 400
+
+    # 4. Valid GROUP joins successfully
+    support_conv = Conversation(
+        type="GROUP",
+        title="Cộng đồng Chợ PTITers",
+    )
+    db_session.add(support_conv)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", support_conv.conversation_id)
+
+    with auth_patch(member_user):
+        resp_ok = await test_client.post("/api/v1/conversations/official-support/join")
+    assert resp_ok.status_code == 200
+    assert resp_ok.json()["conversation_id"] == support_conv.conversation_id
+
+    # 5. Idempotent join: repeated join does not create duplicate members
+    with auth_patch(member_user):
+        resp_repeat = await test_client.post("/api/v1/conversations/official-support/join")
+    assert resp_repeat.status_code == 200
+    assert resp_repeat.json()["conversation_id"] == support_conv.conversation_id
+
+    members_count = await db_session.scalar(
+        select(func.count(ConversationMember.user_id)).where(
+            ConversationMember.conversation_id == support_conv.conversation_id,
+            ConversationMember.user_id == member_user.user_id,
+        )
+    )
+    assert members_count == 1
 
 
 # ============================================================================

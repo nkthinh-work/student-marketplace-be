@@ -10,8 +10,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.realtime.presence import get_users_presence
 from app.integrations.cloudinary import generate_delivery_url
+from app.modules.notifications.models import Notification, NotificationType
 from app.modules.conversations.models import (
     Conversation,
     ConversationInvite,
@@ -275,43 +277,42 @@ class ConversationRepository:
         await self.db.commit()
         return conv
 
-    async def get_or_create_community_conversation(
-        self, bootstrap_owner_id: Optional[int] = None
-    ) -> Optional[Conversation]:
+    async def join_support_group(
+        self, conversation_id: int, user_id: int
+    ) -> ConversationMember:
         """
-        Ensures the singleton official Community conversation exists.
+        Joins or rejoins the official support group idempotently.
+        Initializes last_read_message_id to current latest message so old messages are not unread.
         """
-        stmt = select(Conversation).where(Conversation.type == "COMMUNITY")
-        conv = await self.db.scalar(stmt)
-        if conv:
-            return conv
-
-        # If not exists, create with bootstrap owner
-        if not bootstrap_owner_id:
-            first_user_stmt = select(User.user_id).order_by(User.user_id.asc()).limit(1)
-            bootstrap_owner_id = await self.db.scalar(first_user_stmt)
-            if not bootstrap_owner_id:
-                return None
-
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        conv = Conversation(
-            type="COMMUNITY",
-            title="Cộng đồng Chợ PTITers",
-            description="Trao đổi, hỏi đáp và hỗ trợ sử dụng Chợ PTITers.",
-            created_at=now,
+        latest_msg_stmt = (
+            select(func.max(Message.message_id))
+            .where(Message.conversation_id == conversation_id, Message.is_deleted.is_(False))
         )
-        self.db.add(conv)
-        await self.db.flush()
+        latest_msg_id = await self.db.scalar(latest_msg_stmt)
 
-        owner_member = ConversationMember(
-            conversation_id=conv.conversation_id,
-            user_id=bootstrap_owner_id,
-            role="OWNER",
-            joined_at=now,
+        stmt_mem = select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == user_id,
         )
-        self.db.add(owner_member)
+        mem = await self.db.scalar(stmt_mem)
+        if mem:
+            if mem.left_at is not None:
+                mem.left_at = None
+                mem.joined_at = now
+                mem.last_read_message_id = latest_msg_id
+        else:
+            mem = ConversationMember(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="MEMBER",
+                joined_at=now,
+                last_read_message_id=latest_msg_id,
+            )
+            self.db.add(mem)
+
         await self.db.commit()
-        return conv
+        return mem
 
     async def get_conversation_by_id(
         self, conversation_id: int
@@ -328,8 +329,7 @@ class ConversationRepository:
     ) -> Tuple[Optional[Conversation], Optional[ConversationMember]]:
         """
         Fetches conversation and active membership for user_id.
-        For COMMUNITY: returns conversation even if user is not a joined member.
-        For DIRECT/GROUP: returns (None, None) if user is not an active member.
+        Returns (None, None) if user is not an active member.
         """
         conv = await self.get_conversation_by_id(conversation_id)
         if not conv:
@@ -341,67 +341,10 @@ class ConversationRepository:
             ConversationMember.left_at.is_(None),
         )
         member = await self.db.scalar(stmt_mem)
-
-        if conv.type == "COMMUNITY":
-            return conv, member
-
         if not member:
             return None, None
 
         return conv, member
-
-    async def join_community(
-        self, conversation_id: int, user_id: int
-    ) -> ConversationMember:
-        """
-        Joins or rejoins the official Community conversation.
-        Initializes last_read_message_id to current latest message so old messages are not unread.
-        """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        latest_msg_stmt = (
-            select(func.max(Message.message_id))
-            .where(Message.conversation_id == conversation_id, Message.is_deleted.is_(False))
-        )
-        latest_msg_id = await self.db.scalar(latest_msg_stmt)
-
-        stmt_mem = select(ConversationMember).where(
-            ConversationMember.conversation_id == conversation_id,
-            ConversationMember.user_id == user_id,
-        )
-        mem = await self.db.scalar(stmt_mem)
-        if mem:
-            mem.left_at = None
-            mem.joined_at = now
-            mem.last_read_message_id = latest_msg_id
-        else:
-            mem = ConversationMember(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                role="MEMBER",
-                joined_at=now,
-                last_read_message_id=latest_msg_id,
-            )
-            self.db.add(mem)
-
-        await self.db.commit()
-        return mem
-
-    async def leave_community(self, conversation_id: int, user_id: int) -> bool:
-        """Leaves the official Community."""
-        stmt_mem = select(ConversationMember).where(
-            ConversationMember.conversation_id == conversation_id,
-            ConversationMember.user_id == user_id,
-            ConversationMember.left_at.is_(None),
-        )
-        mem = await self.db.scalar(stmt_mem)
-        if not mem:
-            return False
-        if mem.role == "OWNER":
-            raise ValueError("OWNER_CANNOT_LEAVE")
-
-        mem.left_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await self.db.commit()
-        return True
 
     async def list_user_conversations(
         self,
@@ -428,16 +371,13 @@ class ConversationRepository:
                 Conversation.deleted_at.is_(None),
                 or_(
                     Conversation.last_message_at.is_not(None),
-                    Conversation.type.in_(["GROUP", "COMMUNITY"]),
+                    Conversation.type == "GROUP",
                 )
             )
         )
 
         if conv_type:
-            if conv_type == "GROUP":
-                stmt = stmt.where(Conversation.type.in_(["GROUP", "COMMUNITY"]))
-            else:
-                stmt = stmt.where(Conversation.type == conv_type)
+            stmt = stmt.where(Conversation.type == conv_type)
 
         # Apply Keyset Cursor: (COALESCE(last_message_at, created_at), conversation_id)
         if cursor:
@@ -453,8 +393,8 @@ class ConversationRepository:
             )
 
         order_clauses = []
-        if conv_type == "GROUP":
-            order_clauses.append(case((Conversation.type == "COMMUNITY", 1), else_=0).desc())
+        if conv_type == "GROUP" and settings.OFFICIAL_SUPPORT_GROUP_ID:
+            order_clauses.append(case((Conversation.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID, 1), else_=0).desc())
         order_clauses.extend([
             func.coalesce(Conversation.last_message_at, Conversation.created_at).desc(),
             Conversation.conversation_id.desc(),
@@ -502,8 +442,8 @@ class ConversationRepository:
             for dm in direct_members:
                 direct_other_users_map[dm.conversation_id] = dm.user
 
-        # BATCH QUERY 2: Member counts for GROUP / COMMUNITY
-        group_conv_ids = [c.conversation_id for c in conv_items if c.type in ("GROUP", "COMMUNITY")]
+        # BATCH QUERY 2: Member counts for GROUP
+        group_conv_ids = [c.conversation_id for c in conv_items if c.type == "GROUP"]
         member_counts_map = {}
         if group_conv_ids:
             count_stmt = (
@@ -550,7 +490,7 @@ class ConversationRepository:
                     Message.is_deleted.is_(False),
                     Message.type != "SYSTEM",
                     Message.message_id > (last_read_id or 0),
-                    (Message.sent_at >= joined_at if conv.type != "COMMUNITY" else True),
+                    (Message.sent_at >= joined_at if conv.type == "GROUP" else True),
                 )
             )
             count_val = (await self.db.scalar(unread_q)) or 0
@@ -821,10 +761,10 @@ class ConversationRepository:
             await self.db.flush()
 
         if mentions_data:
-            # Check conversation type: only GROUP and COMMUNITY allow mentions
+            # Check conversation type: only GROUP allows mentions
             stmt_conv_type = select(Conversation.type).where(Conversation.conversation_id == conversation_id)
             ctype = await self.db.scalar(stmt_conv_type)
-            if ctype not in ("GROUP", "COMMUNITY"):
+            if ctype != "GROUP":
                 raise ValueError("MENTIONS_NOT_ALLOWED_FOR_CONVERSATION_TYPE")
 
             # Validate that every mentioned user is an active member
@@ -943,6 +883,21 @@ class ConversationRepository:
         unread_count = (await self.db.scalar(unread_q)) or 0
 
         mem.last_read_message_id = max_id
+
+        # Mark matching unread chat Bell notification as read
+        stmt_notif = (
+            update(Notification)
+            .where(
+                Notification.user_id == reader_id,
+                Notification.type == NotificationType.NEW_MESSAGE.value,
+                Notification.ref_type == "CONVERSATION",
+                Notification.ref_id == conversation_id,
+                Notification.is_read.is_(False),
+            )
+            .values(is_read=True)
+        )
+        await self.db.execute(stmt_notif)
+
         await self.db.commit()
         return unread_count
 
@@ -1165,14 +1120,14 @@ class ConversationRepository:
         if not conv or conv.deleted_at is not None:
             raise ValueError("CONVERSATION_NOT_FOUND")
 
-        # Verify user is active member unless Community
+        # Verify user is active member
         stmt_check = select(ConversationMember.role).where(
             ConversationMember.conversation_id == conversation_id,
             ConversationMember.user_id == user_id,
             ConversationMember.left_at.is_(None),
         )
         my_role = await self.db.scalar(stmt_check)
-        if conv.type != "COMMUNITY" and not my_role:
+        if not my_role:
             raise PermissionError("NOT_AN_ACTIVE_MEMBER")
 
         stmt = (
@@ -1356,7 +1311,7 @@ class ConversationRepository:
             raise PermissionError("PERMISSION_DENIED")
 
         conv = await self.get_conversation_by_id(conversation_id)
-        if not conv or conv.type not in ("GROUP", "COMMUNITY"):
+        if not conv or conv.type != "GROUP":
             raise ValueError("INVALID_CONVERSATION")
 
         if title is not None:
@@ -1419,7 +1374,7 @@ class ConversationRepository:
         Soft-deletes a regular GROUP conversation (OWNER only).
         Sets conversation.deleted_at = now and sets all active members' left_at = now.
         Preserves all historical messages and attachments in database.
-        Official COMMUNITY cannot be deleted.
+        Official support group cannot be deleted.
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         stmt_conv = select(Conversation).where(
@@ -1430,8 +1385,8 @@ class ConversationRepository:
         if not conv:
             raise ValueError("CONVERSATION_NOT_FOUND")
 
-        if conv.type == "COMMUNITY":
-            raise PermissionError("CANNOT_DELETE_OFFICIAL_COMMUNITY")
+        if settings.OFFICIAL_SUPPORT_GROUP_ID and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID:
+            raise PermissionError("CANNOT_DELETE_OFFICIAL_SUPPORT_GROUP")
 
         if conv.type != "GROUP":
             raise ValueError("ONLY_GROUP_CAN_BE_DELETED")
@@ -1596,7 +1551,7 @@ class ConversationRepository:
         Retrieves eligible invite candidates for group_id based on inviter_id's prior DIRECT contacts.
         Rules:
         - Caller must be an active member of group_id.
-        - Target conversation must be GROUP (not COMMUNITY).
+        - Target conversation must be GROUP.
         - Candidate must have a canonical DIRECT conversation with inviter_id.
         - That DIRECT conversation must have exchanged messages (last_message_at IS NOT NULL).
         - Exclude candidate == inviter_id.
@@ -1608,7 +1563,7 @@ class ConversationRepository:
         conv, member = await self.get_conversation_with_member(group_id, inviter_id)
         if not conv or not member:
             raise PermissionError("NOT_ACTIVE_MEMBER")
-        if conv.type not in ("GROUP", "COMMUNITY"):
+        if conv.type != "GROUP":
             raise ValueError("INVITES_ONLY_FOR_GROUPS")
 
         other_user_expr = case(

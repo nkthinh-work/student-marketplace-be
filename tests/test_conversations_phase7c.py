@@ -365,30 +365,34 @@ async def test_member_invites_for_regular_group(
 
 
 @pytest.mark.asyncio
-async def test_community_governance_protected(
+async def test_official_support_group_cannot_be_deleted(
     test_client: AsyncClient,
     user_a: User,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """K. Official Community cannot be deleted or transferred via Group owner flow."""
-    # Bootstrap community
-    with auth_patch(user_a):
-        comm_res = await test_client.get("/api/v1/conversations/community")
-    assert comm_res.status_code == 200
-    comm_id = comm_res.json()["conversation_id"]
-
-    # Attempt delete community -> 403 Forbidden
-    with auth_patch(user_a):
-        del_res = await test_client.delete(f"/api/v1/conversations/groups/{comm_id}")
-    assert del_res.status_code == 403
-
-    # Attempt group invites to community -> 400
-    with auth_patch(user_a):
-        inv_res = await test_client.post(
-            f"/api/v1/conversations/groups/{comm_id}/invites",
-            json={"invitee_ids": [user_a.user_id]},
+    """K. Official support group cannot be deleted via Group owner delete flow."""
+    supp_conv = Conversation(
+        type="GROUP",
+        title="Cộng đồng Chợ PTITers",
+    )
+    db_session.add(supp_conv)
+    await db_session.flush()
+    db_session.add(
+        ConversationMember(
+            conversation_id=supp_conv.conversation_id,
+            user_id=user_a.user_id,
+            role="OWNER",
         )
-    assert inv_res.status_code == 400
+    )
+    await db_session.commit()
+    monkeypatch.setattr(settings, "OFFICIAL_SUPPORT_GROUP_ID", supp_conv.conversation_id)
+
+    # Attempt delete official support group -> 403 Forbidden
+    with auth_patch(user_a):
+        del_res = await test_client.delete(f"/api/v1/conversations/groups/{supp_conv.conversation_id}")
+    assert del_res.status_code == 403
+    assert "nhóm hỗ trợ chính thức" in del_res.json()["detail"]
 
 
 @pytest.mark.asyncio
