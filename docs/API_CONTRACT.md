@@ -99,6 +99,12 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 }
 ```
 *Ghi chú*: Mọi trường đều là optional. `avatar_url` được quản lý và đồng bộ tự động từ tài khoản Google/Firebase của người dùng khi đăng nhập, không được phép chỉnh sửa qua endpoint này. Tuyệt đối không cho phép client cập nhật: `avatar_url`, `user_id`, `email`, `role`, `status`, `created_at`, `updated_at`, `provider_uid`. Nếu client gửi `avatar_url` hoặc các trường ngoài danh mục cho phép, request sẽ bị từ chối với `422 Unprocessable Entity`.
+*Quy tắc xác thực `phone`*:
+- Cho phép `null` hoặc bỏ qua trường này khi cập nhật thông tin cá nhân thông thường.
+- Khi cung cấp giá trị số điện thoại không rỗng, bắt buộc phải là số di động Việt Nam thuộc các dải đầu số hợp lệ (`03`, `05`, `07`, `08`, `09`) và đúng 10 chữ số.
+- Chấp nhận các định dạng đầu vào: `0912345678`, `+84912345678`, `84912345678`, cũng như có dấu phân cách hiển thị (`0912 345 678`, `0912-345-678`, `0912.345.678`).
+- Backend tự động chuẩn hóa và lưu trữ duy nhất dưới dạng chính tắc `0XXXXXXXXX`.
+- Từ chối các chuỗi chứa chữ cái, ký tự đặc biệt, số máy bàn cố định, số nước ngoài hoặc số không đúng 10 chữ số với `422 Unprocessable Entity`.
 
 #### Response: `200 OK`
 Trích xuất `UserResponse` đã được cập nhật:
@@ -188,9 +194,9 @@ Trích xuất `UserResponse` đã được cập nhật:
 }
 ```
 - **Validation**:
-  - `bank_bin`: Nhận mã BIN chuẩn (VD: `970422`) hoặc Code ngân hàng (VD: `MB`). Backend tự động chuẩn hóa sang canonical BIN.
-  - `account_number`: 4 - 30 ký tự alphanumeric, không chứa khoảng trắng hoặc ký tự đặc biệt.
-  - `account_name`: 2 - 100 ký tự.
+  - `bank_bin`: Nhận mã BIN chuẩn (VD: `970422`) hoặc Code ngân hàng (VD: `MB`). Bắt buộc thuộc danh mục ngân hàng được hệ thống hỗ trợ (`GET /api/v1/users/banks`); mã không hỗ trợ sẽ bị từ chối với `422 Unprocessable Entity`. Backend tự động chuẩn hóa sang canonical BIN.
+  - `account_number`: Bắt buộc chỉ chứa chữ số (`0-9`), độ dài từ 4 đến 30 chữ số. Không chứa chữ cái, khoảng trắng hay ký tự phân cách/đặc biệt. Bảo lưu nguyên vẹn số 0 ở đầu (dưới dạng chuỗi ký tự) để tương thích 100% với VietQR Quick Link. Chuỗi chứa chữ cái hoặc ký tự không hợp lệ sẽ bị từ chối với `422 Unprocessable Entity`.
+  - `account_name`: Độ dài từ 2 đến 100 ký tự, bắt buộc chứa chữ cái (hỗ trợ tiếng Việt có dấu), khoảng trắng và dấu tên cơ bản (`.`, `'`, `-`). Tự động thu gọn khoảng trắng thừa. Từ chối chuỗi chỉ gồm số/ký tự đặc biệt hoặc chứa ký tự điều khiển (ASCII <= 31, 127).
 - **Response: `200 OK`** (`BankAccountResponse`).
 
 ---
@@ -1162,7 +1168,8 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
       "thumbnail_url": "https://res.cloudinary.com/...",
       "listing_type": "FIXED_PRICE"
     },
-    "created_at": "2026-09-02T10:00:00Z"
+    "created_at": "2026-09-02T10:00:00Z",
+    "is_official_support": false
   }
   ```
 
@@ -1170,12 +1177,17 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 
 ### 9.2. Lấy danh sách cuộc trò chuyện của tôi (List User Conversations)
 - **Method**: `GET`
-- **Path**: `/api/v1/conversations?limit=20&cursor=...`
+- **Path**: `/api/v1/conversations?type=DIRECT|GROUP&limit=20&cursor=...`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
 - **Query Params**:
+  - `type`: `DIRECT` | `GROUP` (tùy chọn)
   - `limit`: 1..50 (mặc định 20)
   - `cursor`: Chuỗi Base64 keyset pagination `(last_message_at DESC, conversation_id DESC)`.
 - **Inbox Invariant**: Chỉ trả về các cuộc trò chuyện đã có ít nhất 1 tin nhắn (`last_message_at IS NOT NULL`).
+- **Quy tắc ghim Nhóm Hỗ Trợ Chính Thức (`is_official_support`)**:
+  - `is_official_support: boolean`: Trường định danh an toàn từ server được xác định theo `conversation_id == OFFICIAL_SUPPORT_GROUP_ID` (tuyệt đối không dựa vào tiêu đề nhóm).
+  - Khi lọc theo nhóm (`type=GROUP`), nhóm hỗ trợ chính thức được ghim cố định ở vị trí đầu tiên (trang 1).
+  - Khi phân trang keyset bằng `cursor` (từ trang 2 trở đi), nhóm chính thức được loại trừ khỏi điều kiện lọc cursor (`conversation_id != OFFICIAL_SUPPORT_GROUP_ID`) để triệt tiêu hoàn toàn nguy cơ trùng lặp bản ghi trên nhiều trang, đồng thời bảo toàn tính xác định (determinism) và thứ tự cập nhật tin nhắn của các nhóm thường còn lại.
 - **Zero N+1 Query Guarantee**: Batch loading người tham gia, tin nhắn mới nhất, unread counts, và contextual products trong đúng 4 câu truy vấn cố định.
 - **Response**: `200 OK`
   ```json
@@ -1183,6 +1195,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
     "items": [
       {
         "conversation_id": 1,
+        "is_official_support": false,
         "other_participant": {
           "user_id": 2,
           "full_name": "Nguyễn Văn Bán",
@@ -1214,7 +1227,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 - **Path**: `/api/v1/conversations/{conversation_id}`
 - **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
 - **Authorization**: Chỉ người tham gia mới được truy cập; người ngoài nhận `404 Not Found` (không lộ sự tồn tại).
-- **Response**: `200 OK` (`ConversationDetailResponse`)
+- **Response**: `200 OK` (`ConversationDetailResponse` bao gồm trường `is_official_support: boolean`).
 
 ---
 
@@ -1404,9 +1417,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 - **Response**: `200 OK` (`OfficialSupportGroupJoinResponse`)
   ```json
   {
-    "conversation_id": 42,
-    "title": "Cộng đồng Chợ PTITers",
-    "is_joined": true
+    "conversation_id": 42
   }
   ```
 

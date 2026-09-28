@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9E — Post-Deployment UX & Messaging Hardening Pass (Local Workspace - Verified Locally; Not Deployed)**
-*Parent Task*: Post-Deployment Hardening
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT HARDENING WORK IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
+**Phase 9E — Corrective Follow-Up: Home Community CTA Pure Navigation & Structural Official Group Pinning / Branded Avatar Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+*Parent Task*: Post-Deployment Hardening & UX Refinements
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT CORRECTIVE PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL HARDENING PASS VERIFIED — READY FOR OPERATOR REVIEW (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**CORRECTIVE OFFICIAL GROUP UX VERIFIED — PURE HOME NAVIGATION & STRUCTURAL DND PINNING SECURED — READY FOR OPERATOR REVIEW (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -137,14 +137,16 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **849/849 PASS** (`pytest tests/ -q` in 165.85s).
+- **Backend Full Suite**: **865/865 PASS** (`pytest tests/ -q` in 314.23s, 0 failures, 9 warnings).
+- **Backend Hardening Suite**: **12/12 PASS** (`tests/test_official_support_and_profile_validation.py`).
 - **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).
 - **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
 - **Production Endpoint Health**: `/health` endpoint trên Railway trả về HTTP 200 `{"status": "healthy", "database": "up", "redis": "up", "service": "up"}`.
-- **Alembic State**: Head `4414f46b5404`, 0 schema drift (`alembic check` clean).
+- **Alembic State**: Head `f1a2b3c4d5e6`, 0 schema drift (`alembic check` clean, 0 new migrations).
 - **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
 - **Firebase Credentials Tests**: 7/7 PASS (`tests/test_firebase.py`).
-- **Frontend Acceptance Suite**: **14/14 PASS** (`node src/__tests__/pre_deployment_acceptance_fixes.test.mjs`).
+- **Frontend Hardening & Acceptance Suite**: **25/25 PASS** (`node src/__tests__/post_deployment_hardening.test.mjs`).
+- **Frontend ESLint Baseline**: **0 errors**, 80 historical warnings (`npm run lint`).
 - **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors).
 
 ---

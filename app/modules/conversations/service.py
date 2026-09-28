@@ -429,7 +429,12 @@ class ConversationService:
             is_joined=member is not None,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval) if conv.type == "GROUP" else False,
+            is_official_support=bool(
+                settings.OFFICIAL_SUPPORT_GROUP_ID
+                and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID
+            ),
         )
+
 
     async def list_conversations(
         self,
@@ -1048,6 +1053,7 @@ class ConversationService:
             is_joined=True,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval),
+            is_official_support=False,
         )
 
     async def invite_members_to_group(
@@ -1831,6 +1837,10 @@ class ConversationService:
             is_joined=True,
             created_at=conv.created_at,
             requires_approval=bool(conv.requires_approval),
+            is_official_support=bool(
+                settings.OFFICIAL_SUPPORT_GROUP_ID
+                and conv.conversation_id == settings.OFFICIAL_SUPPORT_GROUP_ID
+            ),
         )
 
     async def list_pending_approvals(

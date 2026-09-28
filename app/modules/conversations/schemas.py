@@ -308,6 +308,7 @@ class ConversationSummaryResponse(BaseModel):
     last_message_at: Optional[datetime] = None
     unread_count: int = 0
     created_at: datetime
+    is_official_support: bool = False
 
     @field_serializer("last_message_at", when_used="json")
     def serialize_last_message_at(self, dt: Optional[datetime]) -> Optional[str]:
@@ -352,6 +353,8 @@ class ConversationDetailResponse(BaseModel):
     product_context: Optional[ProductContextSummary] = None
     created_at: datetime
     requires_approval: bool = False
+    is_official_support: bool = False
+
 
 
 class PendingApprovalItem(BaseModel):

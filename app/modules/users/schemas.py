@@ -4,7 +4,10 @@ from typing import Optional, Any
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
 
+import unicodedata
 from app.core.banks import BankInfo, get_bank_by_bin, resolve_bank_bin
+from app.core.phone import normalize_vietnam_phone
+
 
 
 class SocialPlatform(str, Enum):
@@ -136,6 +139,13 @@ class UserUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("phone", mode="after")
+    @classmethod
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return normalize_vietnam_phone(v)
+
 
 class BankAccountResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
@@ -168,19 +178,26 @@ class BankAccountUpdate(BaseModel):
     @classmethod
     def validate_account_number(cls, v: str) -> str:
         v = v.strip()
-        if not v.isalnum():
-            raise ValueError("Số tài khoản chỉ được chứa chữ cái và chữ số, không chứa khoảng trắng hoặc ký tự đặc biệt.")
+        if not v.isdigit():
+            raise ValueError("Số tài khoản chỉ được chứa chữ số (0-9), không chứa chữ cái, khoảng trắng hoặc ký tự đặc biệt.")
         if len(v) < 4 or len(v) > 30:
-            raise ValueError("Độ dài số tài khoản không hợp lệ (4 - 30 ký tự).")
+            raise ValueError("Độ dài số tài khoản không hợp lệ (4 - 30 chữ số).")
         return v
 
     @field_validator("account_name", mode="after")
     @classmethod
     def validate_account_name(cls, v: str) -> str:
-        v = v.strip()
+        v = " ".join(v.split())
         if len(v) < 2 or len(v) > 100:
             raise ValueError("Tên chủ tài khoản phải từ 2 đến 100 ký tự.")
+        if any(unicodedata.category(c).startswith("C") for c in v):
+            raise ValueError("Tên chủ tài khoản không được chứa ký tự điều khiển.")
+        if not any(c.isalpha() for c in v):
+            raise ValueError("Tên chủ tài khoản phải chứa chữ cái.")
+        if not all(c.isalpha() or c in " .'-" for c in v):
+            raise ValueError("Tên chủ tài khoản chỉ được chứa chữ cái, khoảng trắng và dấu tên hợp lệ.")
         return v
+
 
 
 class UserCapabilityRestrictionResponse(BaseModel):
