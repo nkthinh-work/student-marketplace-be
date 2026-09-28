@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9E — Dedicated Official Support Special Entry Redesign Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
-*Parent Task*: Post-Deployment Hardening & UX Refinements
+**Phase 9E — Community Hero Note Full Readability & 80-Char Layout Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+*Parent Task*: Post-Deployment Hardening & Release Candidate Preparation
 *Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT CORRECTIVE PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — DEDICATED OFFICIAL SUPPORT ENTRY SYSTEM ARCHITECTURE COMPLETED & VERIFIED (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — HERO COMMUNITY NOTE READABILITY FULLY PRESERVED & HARDENING TESTS PASSED (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -146,7 +146,7 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Alembic State**: Head `f1a2b3c4d5e6`, 0 schema drift (`alembic check` clean, 0 new migrations).
 - **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
 - **Firebase Credentials Tests**: 7/7 PASS (`tests/test_firebase.py`).
-- **Frontend Hardening & Acceptance Suite**: **25/25 PASS** (`node src/__tests__/post_deployment_hardening.test.mjs`).
+- **Frontend Hardening & Acceptance Suite**: **30/30 PASS** (`node src/__tests__/post_deployment_hardening.test.mjs`).
 - **Frontend ESLint Baseline**: **0 errors**, 80 historical warnings (`npm run lint`).
 - **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors).
 
