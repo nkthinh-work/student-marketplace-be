@@ -148,10 +148,14 @@ async def list_auction_bids(
     return await service.list_bids(auction_id, cursor=cursor, limit=limit, current_user=current_user)
 
 
+from app.core.rate_limiter import rate_limit_write_mutation
+
+
 @router.post(
     "/{auction_id}/bids",
     response_model=AuctionBidResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write_mutation)],
     summary="Place an authenticated bid on an active auction",
 )
 async def place_bid(

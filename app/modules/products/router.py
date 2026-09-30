@@ -12,6 +12,11 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import (
+    rate_limit_public_browsing,
+    rate_limit_write_mutation,
+    rate_limit_user_profile,
+)
 from app.integrations.firebase import verify_firebase_token
 from app.modules.auth.dependencies import security, get_current_active_user
 from app.modules.auth.service import AuthService
@@ -54,6 +59,7 @@ async def get_optional_current_user(
     "",
     response_model=ProductListResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_public_browsing)],
     summary="Public product discovery with cursor pagination & search",
 )
 async def list_products(
@@ -127,6 +133,7 @@ async def submit_product_review(
     "/{product_id}",
     response_model=ProductDetailResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_public_browsing)],
     summary="Get product detail",
 )
 async def get_product_detail(
@@ -142,6 +149,7 @@ async def get_product_detail(
     "/{product_id}/view",
     response_model=ProductViewResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_profile)],
     summary="Register a product view (best-effort 24h deduplicated analytics)",
 )
 async def register_product_view(
@@ -163,6 +171,7 @@ async def register_product_view(
     "",
     response_model=ProductDetailResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write_mutation)],
     summary="Create a new product listing",
 )
 async def create_product(

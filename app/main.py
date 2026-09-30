@@ -44,6 +44,8 @@ from app.modules.products.admin_router import router as admin_product_approvals_
 
 
 
+from app.core.rate_limiter import RateLimitMiddleware
+
 logger = logging.getLogger("app")
 
 @asynccontextmanager
@@ -63,6 +65,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Outermost middleware is CORSMiddleware; RateLimitMiddleware sits inside CORS
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_write_mutation
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.orders.models import OrderStatus
 from app.modules.orders.schemas import (
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
     "",
     response_model=OrderDetailResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write_mutation)],
     summary="Tạo đơn hàng mua trực tiếp từ tin đăng",
 )
 async def create_order(

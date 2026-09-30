@@ -20,6 +20,11 @@ from app.modules.users.schemas import (
 )
 from app.modules.conversations.schemas import UserSearchResponse
 from app.modules.users.service import UserService
+from app.core.rate_limiter import (
+    rate_limit_user_profile,
+    rate_limit_user_search,
+    rate_limit_auth_sensitive,
+)
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -28,6 +33,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
     "/search",
     response_model=List[UserSearchResponse],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_search)],
     summary="Tìm kiếm người dùng công khai (cho mời nhóm)",
 )
 async def search_users(
@@ -115,6 +121,7 @@ async def get_my_profile(
     "/me",
     response_model=UserResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_auth_sensitive)],
     summary="Update current user profile",
 )
 async def update_my_profile(
@@ -152,6 +159,7 @@ async def get_my_bank_account(
     "/me/bank-account",
     response_model=BankAccountResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_auth_sensitive)],
     summary="Thiết lập / Cập nhật tài khoản nhận tiền của người dùng hiện tại",
 )
 async def update_my_bank_account(
@@ -186,6 +194,7 @@ async def delete_my_bank_account(
     "/{user_id}",
     response_model=PublicUserProfileResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy thông tin hồ sơ công khai của người dùng",
 )
 async def get_public_user_profile(
@@ -204,6 +213,7 @@ async def get_public_user_profile(
     "/{user_id}/sold-products",
     response_model=SoldProductListResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy danh sách lịch sử sản phẩm đã bán hoàn tất",
 )
 async def get_user_sold_products(

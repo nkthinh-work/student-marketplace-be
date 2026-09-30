@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase 9E — Community Hero Note Full Readability & 80-Char Layout Pass (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
-*Parent Task*: Post-Deployment Hardening & Release Candidate Preparation
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT CORRECTIVE PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
+**Production Security Hardening Pass: API Scraping, Request Flooding & User-Enumeration Abuse Prevention (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+*Parent Task*: Post-Deployment Hardening & Production API Protection
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT HARDENING PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — HERO COMMUNITY NOTE READABILITY FULLY PRESERVED & HARDENING TESTS PASSED (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — REDIS RATE LIMITING & ENUMERATION DEFENSE COMPLETE, 875/875 BACKEND TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -95,6 +95,14 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **Production Security Hardening Pass — Anti-Scraping, Request Rate Limiting & User Enumeration Defense** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+  - Triển khai `app.core.rate_limiter` trên Redis với thuật toán Atomic Fixed-Window Counter qua Lua Script, hỗ trợ `Retry-After` và HTTP 429 chuẩn tắc.
+  - Phân tầng hạn mức đa lớp: Emergency flood ceiling (3.000 req/60s per IP - sized for 100+ concurrent students on shared campus NAT/CGNAT, không phải bộ lọc chống cào chính), Public browsing (120 req/60s), Sensitive public profile (60 req/60s), Authenticated search & candidates (30 req/60s theo `user_id`), Write mutations (30 req/60s theo `user_id`), Chat messages (60 req/60s theo `user_id`), Auth sensitive (20 req/60s theo `user_id`). Healthcheck `/health` và static docs hoàn toàn không bị hạn chế.
+  - Khắc phục Blocker 1 (Railway / Cloudflare Client IP Trust): Thẩm định nút mạng kết nối vào Railway trực tiếp qua header `X-Real-IP` do Railway ghi nhận đối soát với dải CIDR Cloudflare chính thức (`CLOUDFLARE_NETWORKS`), không phụ thuộc vào giả định `X-Forwarded-For`. Khi gọi trực tiếp vào Railway origin, `CF-Connecting-IP` giả mạo bị loại bỏ hoàn toàn và hạn mức trói buộc vào chính `X-Real-IP`.
+  - Khắc phục Blocker 2 (Global Campus NAT Quota): Nâng ngưỡng lũ lụt khẩn cấp lên 3.000 req/60s per IP, bảo đảm cô lập trọn vẹn quota authenticated theo `user_id` và không làm nghẽn mạng các sinh viên dùng chung Wi-Fi/CGNAT ký túc xá.
+  - Chính sách chịu lỗi Fail-Open: Redis timeout/lỗi kết nối không làm crash ứng dụng hay chặn sinh viên.
+  - Kiểm toán quyền riêng tư: Xác nhận `PublicUserProfileResponse` không rò rỉ email/bank/provider UID, số điện thoại tuân thủ nghiêm ngặt cờ `show_phone_publicly`.
+  - Bộ kiểm thử an ninh chuyên biệt 20/20 tests (`tests/test_rate_limiter.py`) PASS; bao phủ toàn diện 7 ca kiểm thử Client IP trust theo chuẩn tài liệu chính thức, spoofing defense và campus NAT volume.
 - **First Production ADMIN Bootstrap** (CONFIRMED BY OPERATOR):
   - Khởi tạo và thăng cấp tài khoản Quản trị viên đầu tiên hoàn thành và được xác nhận trên môi trường Railway production bằng công cụ chuẩn tắc `scripts/promote_admin.py` kết nối trực tiếp CSDL Railway PostgreSQL.
 - **Phase 9C-D — Railway Production Deployment & Service Verification** (CONFIRMED BY OPERATOR):
@@ -137,7 +145,8 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **865/865 PASS** (`pytest tests/ -q` in 314.23s, 0 failures, 9 warnings).
+- **Backend Full Suite**: **884/884 PASS** (`pytest tests/ -q`, 0 failures, 9 warnings).
+- **Backend Rate Limiter Security Suite**: **20/20 PASS** (`tests/test_rate_limiter.py` in 2.92s).
 - **Backend Hardening Suite**: **11/11 PASS** (`tests/test_official_support_and_profile_validation.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
 - **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).

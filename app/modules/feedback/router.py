@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile,
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_write_mutation
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.feedback import service
 from app.modules.feedback.schemas import (
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/feedback", tags=["Feedback"])
     "",
     response_model=FeedbackCreateResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write_mutation)],
     summary="Gửi phản hồi / góp ý về website kèm minh chứng hình ảnh/video",
 )
 async def submit_feedback(

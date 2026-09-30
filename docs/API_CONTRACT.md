@@ -30,6 +30,53 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 
 ---
 
+## 1.1. Chính sách giới hạn tần suất truy cập (Rate Limiting & Abuse Prevention)
+
+Để ngăn chặn cào dữ liệu (scraping), vét cạn thông tin người dùng (user enumeration), và tấn công từ chối dịch vụ (DoS/flooding), hệ thống áp dụng cơ chế Rate Limiting phân tầng bằng Redis:
+
+### 1.1.1. Cơ chế xác thực định danh Client (Client Identity Strategy)
+- **Tầng Cloudflare & Reverse Proxy (Railway Edge Topology)**:
+  - Luồng request sản xuất chuẩn: `Client -> Cloudflare Edge -> Railway Edge (Envoy) -> FastAPI (Uvicorn)`.
+  - Backend xác thực nút mạng kết nối trực tiếp vào Railway dựa trên cam kết tài liệu chính thức của nền tảng:
+    - Railway tài liệu hóa chính thức: Header `X-Real-IP` định danh địa chỉ remote IP kết nối mà Railway Edge ghi nhận.
+    - Cloudflare tài liệu hóa chính thức: Header `CF-Connecting-IP` định danh địa chỉ IP của visitor gửi từ Cloudflare đến origin.
+    - Backend **không** dựa vào giả định không được tài liệu hóa rằng Railway luôn nối thêm bước nhảy vào `X-Forwarded-For`.
+  - Chỉ khi `X-Real-IP` thuộc dải IP chính thức của Cloudflare (`CLOUDFLARE_NETWORKS`, dải CIDR IPv4 & IPv6), backend mới xác nhận request đi qua Cloudflare và sử dụng `CF-Connecting-IP` (nếu hợp lệ) làm IP định danh của người dùng cuối.
+  - Khi request gọi trực tiếp vào domain origin của Railway (`*.up.railway.app`, bypass Cloudflare), `X-Real-IP` là địa chỉ IP của caller trực tiếp (không thuộc Cloudflare). Header `CF-Connecting-IP` giả mạo sẽ bị **loại bỏ hoàn toàn**, và hệ thống trói buộc hạn mức vào chính `X-Real-IP` do Railway ghi nhận.
+  - Khi `X-Real-IP` bị thiếu hoặc không đúng định dạng: Tuyệt đối không tin cậy `CF-Connecting-IP`, dự phòng an toàn về `request.client.host` (hoặc `"unknown"`).
+- **Phân tách rạch ròi hạn mức Người dùng & Địa chỉ IP (User vs IP Isolation)**:
+  - **Authenticated Endpoints**: Hạn mức được cách ly độc lập theo từng tài khoản (`u:{user_id}`). Nhiều sinh viên cùng truy cập trên một mạng Wi-Fi trường học hoặc CGNAT nhà mạng di động không chia sẻ hạn mức của nhau khi đã đăng nhập.
+  - **Anonymous/Public Endpoints**: Hạn mức được kiểm soát theo Client IP an toàn (`ip:{client_ip}`).
+
+### 1.1.2. Phân loại hạn mức (Rate Limit Policies)
+| Phân lớp (Class) | Phạm vi áp dụng | Định danh | Hạn mức mặc định | Ý nghĩa & Mục tiêu |
+| :--- | :--- | :--- | :--- | :--- |
+| **Emergency Flood Ceiling** | Toàn bộ API (ngoại trừ `/health`, static docs) | Client IP | 3000 req / 60s | Ngưỡng chặn khẩn cấp tấn công lũ lụt L7 / DoS theo IP mạng; được định cỡ đủ cho 100+ sinh viên dùng chung NAT trường học (~50 req/giây duy trì); **không phải** là lớp chống cào dữ liệu chính |
+| **Class A: Health / Static** | `/health`, `/api/v1/categories`, `/api/v1/users/banks` | N/A | Không giới hạn | Đảm bảo Railway liveness/readiness probe và metadata hoạt động liên tục |
+| **Class B: Public Browsing** | `GET /api/v1/products`, `GET /api/v1/products/{id}` | Client IP | 120 req / 60s | Cho phép duyệt hàng mượt mà, phân trang, lọc sản phẩm |
+| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai sinh viên theo IP |
+| **Class D: Authenticated Search** | `GET /api/v1/users/search`, invite candidates, member lookup | User ID | 30 req / 60s | Chặn tài khoản sinh viên bị lạm dụng để dò danh tính hàng loạt |
+| **Class E: Write Mutations** | `POST /api/v1/products`, reports, feedback, bids, orders | User ID | 30 req / 60s | Chặn spam tạo dữ liệu, gửi báo cáo và đơn hàng rác |
+| **Class F: Chat Messages** | `POST /api/v1/conversations/{id}/messages` | User ID | 60 req / 60s | Cho phép nhắn tin tự nhiên nhưng chặn bot spam tin nhắn |
+| **Class G: Auth Sensitive** | `PATCH /api/v1/users/me`, `PUT /me/bank-account` | User ID | 20 req / 60s | Bảo vệ tài khoản và cập nhật thông tin nhạy cảm |
+
+### 1.1.3. Quy chuẩn phản hồi khi vượt hạn mức (HTTP 429 Response Semantics)
+Khi client vượt quá hạn mức truy cập, hệ thống trả về:
+- **HTTP Status**: `429 Too Many Requests`
+- **Header**:
+  ```http
+  Retry-After: <số giây cần chờ đến khi cửa sổ thời gian reset>
+  ```
+- **Response Body**:
+  ```json
+  {
+    "detail": "Too many requests. Please try again later."
+  }
+  ```
+- **Redis Outage Behavior**: Chính sách **Fail-Open** (nếu Redis gặp sự cố hoặc timeout, hệ thống ghi log cảnh báo và tiếp tục cho phép request đi qua, không làm gián đoạn trải nghiệm của sinh viên).
+
+---
+
 ## 2. Authentication & User Management Endpoints
 
 ### 2.1. Lấy thông tin Current User
@@ -232,6 +279,7 @@ Trích xuất `UserResponse` đã được cập nhật:
 ```
 - **Error Responses**:
   - `404 Not Found`: Người dùng không tồn tại hoặc tài khoản đã bị khóa/ngừng hoạt động.
+  - `429 Too Many Requests`: Vượt quá hạn mức truy vấn hồ sơ công khai (header `Retry-After` chỉ định số giây chờ).
 
 ---
 

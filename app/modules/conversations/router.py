@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_user_search, rate_limit_chat_message
 from app.integrations.firebase import verify_firebase_token, FirebaseVerificationError
 from app.modules.auth.dependencies import get_current_active_user, get_current_user, security
 from app.modules.auth.service import AuthService
@@ -336,12 +337,14 @@ async def process_group_pending_approval(
     "/{conversation_id}/invite-candidates",
     response_model=InviteCandidateListResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_search)],
     summary="Danh sách bạn bè từng trò chuyện trực tiếp để mời vào nhóm",
 )
 @router.get(
     "/groups/{conversation_id}/invite-candidates",
     response_model=InviteCandidateListResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_search)],
     summary="Danh sách bạn bè từng trò chuyện trực tiếp để mời vào nhóm (alias)",
 )
 async def get_invite_candidates(
@@ -362,6 +365,7 @@ async def get_invite_candidates(
     "/groups/{conversation_id}/members",
     response_model=List[ConversationMemberResponse],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_search)],
     summary="Danh sách thành viên nhóm",
 )
 async def list_group_members(
@@ -658,6 +662,7 @@ async def get_messages(
     "/{conversation_id}/messages",
     response_model=MessageResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_chat_message)],
     summary="Gửi tin nhắn hoặc tệp đính kèm trong cuộc trò chuyện",
 )
 async def send_message(

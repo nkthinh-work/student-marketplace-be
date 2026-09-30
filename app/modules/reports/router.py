@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_write_mutation
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.reports.schemas import (
     ReportCreateRequest,
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
     "",
     response_model=ReportResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write_mutation)],
     summary="Tạo báo cáo vi phạm mới (User, Product, Order)",
 )
 async def create_report(

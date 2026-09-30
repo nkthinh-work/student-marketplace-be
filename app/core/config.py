@@ -63,6 +63,24 @@ class Settings(BaseSettings):
     PRODUCT_VIEW_FLUSH_INTERVAL_SECONDS: int = 60
     PRODUCT_VIEW_FLUSH_BATCH_SIZE: int = 200
 
+    # Rate Limiting & Abuse Prevention (Production Hardening)
+    RATE_LIMIT_ENABLED: bool = True
+    # Emergency volumetric flood ceiling (not primary scraper limit; sized for 100+ concurrent students on shared NAT)
+    RATE_LIMIT_GLOBAL_IP_LIMIT: int = 3000
+    RATE_LIMIT_GLOBAL_IP_WINDOW: int = 60
+    RATE_LIMIT_PUBLIC_BROWSING_LIMIT: int = 120
+    RATE_LIMIT_PUBLIC_BROWSING_WINDOW: int = 60
+    RATE_LIMIT_USER_PROFILE_LIMIT: int = 60
+    RATE_LIMIT_USER_PROFILE_WINDOW: int = 60
+    RATE_LIMIT_USER_SEARCH_LIMIT: int = 30
+    RATE_LIMIT_USER_SEARCH_WINDOW: int = 60
+    RATE_LIMIT_WRITE_MUTATION_LIMIT: int = 30
+    RATE_LIMIT_WRITE_MUTATION_WINDOW: int = 60
+    RATE_LIMIT_CHAT_MESSAGE_LIMIT: int = 60
+    RATE_LIMIT_CHAT_MESSAGE_WINDOW: int = 60
+    RATE_LIMIT_AUTH_SENSITIVE_LIMIT: int = 20
+    RATE_LIMIT_AUTH_SENSITIVE_WINDOW: int = 60
+
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
     FIREBASE_CREDENTIALS_JSON: Optional[str] = None

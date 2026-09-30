@@ -645,3 +645,31 @@ Auction chỉ DONE khi thêm các điều kiện:
   3. `moderation_status`: Chế tài vi phạm sau báo cáo (`CLEAR`, `BLOCKED`).
 - **Notification Hard-delete (User Inbox Cleanup)**: Cho phép người dùng dọn dẹp hòm thư thông báo bằng thao tác hard-delete bản ghi thông báo cá nhân (`DELETE /api/v1/notifications/{id}`); trên thiết bị di động hỗ trợ thao tác vuốt sang phải trực tiếp (direct swipe-right release commit >= 38% chiều rộng và >= 90px) để xóa ngay lập tức khi thả tay mà không cần chạm lần 2 hay modal xác nhận; thao tác này là dọn dẹp hiển thị cục bộ, tuyệt đối không gây hiệu ứng phụ lên các thực thể nghiệp vụ được tham chiếu (Đơn hàng, Báo cáo, Đấu giá, Tin đăng).
 - **Daily Journal Real-data Contract & Continuous Two-Way Marquee**: Giữ nguyên endpoint `/api/v1/daily-needs/today` cho ngữ nghĩa nhật ký hôm nay. Bổ sung `GET /api/v1/daily-needs/recent` (limit clamped 1..10, sắp xếp xác định `note_date DESC, updated_at DESC, daily_need_id DESC`) lấy 10 bản ghi nhật ký thật gần nhất xuyên suốt các ngày để cung cấp dữ liệu cho Marquee trang chủ. Tuyệt đối không sinh dữ liệu giả ở backend. Trên frontend, khi có 1..9 bản ghi thật, tạo presentation pool 10 slots thông qua round-robin tuần hoàn (render key duy nhất dạng `${daily_need_id}-${slotIndex}`) để hai hàng marquee liên tục chuyển động ngược hướng (RTL và LTR) mượt mà; track B phục vụ loop mang `aria-hidden="true"`; khi 0 bản ghi hiển thị empty state trang trọng.
+
+## 15. Architectural Decisions — Anti-Scraping, Request Rate Limiting & Enumeration Hardening
+
+- **Kiến trúc Rate Limiting trên Redis (Redis-backed Rate Limiter)**:
+  - Triển khai thuật toán Fixed-Window Counter nguyên tử qua Lua script (`RATE_LIMIT_LUA`) chạy trực tiếp trên Redis instance dùng chung của ứng dụng.
+  - Ngăn chặn race conditions và đảm bảo TTL của key được thiết lập ngay từ request đầu tiên trong window. Counter không bị tăng thêm khi đã vượt ngưỡng để tránh kéo dài vô hạn thời gian chặn.
+  - Định danh khóa Redis (Namespaced Keys):
+    - Public/Anonymous: `rl:{policy}:ip:{client_ip}`
+    - Authenticated: `rl:{policy}:u:{user_id}`
+    - Emergency Flood Ceiling: `rl:emergency_flood:ip:{client_ip}` (3.000 req / 60s per IP)
+    - Tuyệt đối không lưu raw Firebase token, Authorization header, mật khẩu hay PII trong Redis key.
+- **Chiến lược định danh Client IP qua cấu trúc mạng Railway & Cloudflare**:
+  - Chuỗi định tuyến thực tế: `Client -> Cloudflare Edge -> Railway Edge (Envoy) -> FastAPI (Uvicorn)`.
+  - Backend sử dụng header `X-Real-IP` (tín hiệu do Railway Edge thiết lập phản ánh remote IP kết nối vào Railway theo tài liệu chính thức). Backend không phụ thuộc vào giả định Railway nối thêm hop vào `X-Forwarded-For`.
+  - Chỉ khi `X-Real-IP` được xác thực thuộc dải CIDR IPv4 & IPv6 chính thức của Cloudflare (`CLOUDFLARE_NETWORKS`), backend mới chấp nhận `CF-Connecting-IP` làm địa chỉ IP thực tế của người dùng.
+  - Khi request gọi trực tiếp vào origin Railway (`*.up.railway.app`, bypass Cloudflare), `X-Real-IP` là địa chỉ IP của caller trực tiếp. Header `CF-Connecting-IP` giả mạo bị loại bỏ hoàn toàn, và hạn mức bị trói buộc vào chính `X-Real-IP`.
+  - Khi `X-Real-IP` bị thiếu hoặc không đúng định dạng, `CF-Connecting-IP` không được tin cậy, hệ thống dự phòng an toàn về `request.client.host`.
+- **Phân tách hạn mức Người dùng & Địa chỉ IP trên mạng Campus NAT**:
+  - Ngưỡng toàn cục (Global Middleware) được thiết lập ở mức 3.000 req / 60s trên mỗi IP, đóng vai trò là chốt chặn khẩn cấp chống tấn công lũ lụt mạng (Layer-7 Volumetric Flood / DoS), không phải là công cụ chống cào dữ liệu chính.
+  - Ngưỡng 3.000 req / 60s bảo đảm hơn 100 sinh viên cùng sử dụng chung cổng NAT Wi-Fi trường học hoặc CGNAT di động không bị nghẽn mạng do hạn mức IP toàn cục.
+  - Các endpoint nhạy cảm (vét cạn hồ sơ cá nhân, tìm kiếm người dùng, gửi tin nhắn, tạo đơn) được bảo vệ bằng hạn mức chuyên biệt tại từng endpoint theo `user_id` (khi đã xác thực) hoặc `client_ip` (khi ẩn danh).
+- **Chính sách chịu lỗi Fail-Open (Redis Outage Policy)**:
+  - Redis đóng vai trò là tầng phối hợp tạm thời (ephemeral coordination layer), PostgreSQL là nguồn chân lý nghiệp vụ duy nhất.
+  - Khi Redis gặp sự cố kết nối, quá tải hoặc timeout, hệ thống bắt ngoại lệ, ghi log cảnh báo có cấu trúc và **cho phép request đi qua (Fail-Open)**, không bao giờ làm crash tiến trình FastAPI hoặc chặn truy cập của sinh viên.
+- **Chống vét cạn danh tính & Bảo vệ quyền riêng tư (User Enumeration & Privacy Hardening)**:
+  - `GET /api/v1/users/{user_id}`: Áp dụng hạn mức nhạy cảm (Class C — 60 req/60s). DTO trả về (`PublicUserProfileResponse`) chỉ gồm các trường công khai, tuyệt đối không lộ email, số tài khoản ngân hàng, hay Firebase UID.
+  - Số điện thoại tuân thủ nghiêm ngặt cờ `show_phone_publicly`: chỉ trả về khi người dùng chủ động cho phép công khai.
+  - `GET /api/v1/users/search`: Bắt buộc xác thực (`401 Unauthorized` với khách vãng lai) và bị giới hạn nghiêm ngặt (Class D — 30 req/60s theo `user_id`).
