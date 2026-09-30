@@ -42,7 +42,10 @@ Cung cấp quy trình an toàn, lặp lại được và đã được kiểm ch
 
 ## 4. Điều kiện tiên quyết (Prerequisites)
 
-- Docker và Docker Compose đang chạy với container service `postgres` (PostgreSQL 15+).
+- **Môi trường Docker Compose (Local Dev / VPS)**: Docker và Docker Compose đang chạy với container service `postgres` (PostgreSQL 15+).
+- **Môi trường Trực tiếp / External Tunnel (Railway Production)**:
+  - Cài đặt công cụ native PostgreSQL client (`psql`, `pg_dump`, `pg_restore`) tương thích phiên bản major với PostgreSQL server.
+  - Cài đặt và cấu hình Railway CLI (`@railway/cli`) khi kết nối hạ tầng sản xuất.
 - Python 3.10+ trên máy chủ vận hành (sử dụng duy nhất thư viện chuẩn `standard library`, không phát sinh dependency mới).
 - Thư mục lưu trữ bản sao lưu có quyền ghi (`backups/`).
 
@@ -51,14 +54,21 @@ Cung cấp quy trình an toàn, lặp lại được và đã được kiểm ch
 ## 5. Tạo bản sao lưu (Create Backup)
 
 ### 5.1. Nguyên tắc kỹ thuật
-- Sử dụng công cụ `pg_dump` chính thức bên trong PostgreSQL container với định dạng custom (`-Fc` / `--format=custom`).
+- Sử dụng công cụ `pg_dump` chính thức với định dạng custom (`-Fc` / `--format=custom`).
 - Thiết lập cờ `--no-owner --no-acl` để đảm bảo tính di động cao nhất giữa các môi trường database khác nhau.
-- Cơ chế ghi tệp nguyên tử (Atomic writing): Dữ liệu được stream trực tiếp từ tiến trình container vào tệp tạm thời `<filename>.dump.part`. Chỉ khi tiến trình hoàn tất thành công, tệp mới được đổi tên thành `.dump`. Nếu có lỗi hoặc bị ngắt quãng, tệp `.part` sẽ bị xóa bỏ ngay lập tức.
-- Không khóa toàn bộ ứng dụng: Sao lưu tận dụng cơ chế PostgreSQL MVCC snapshot nhất quán, các tiến trình đọc/ghi của ứng dụng vẫn diễn ra bình thường. Lưu ý: Không chạy migration (DDL) cùng thời điểm tạo bản sao lưu.
-- Tuyệt đối không đưa mật khẩu cơ sở dữ liệu vào tiến trình CLI hay lưu vào manifest.
+- **Cơ chế ghi tệp nguyên tử (Atomic writing)**: Dữ liệu được stream trực tiếp vào tệp tạm thời `<filename>.dump.part`. Chỉ khi tiến trình hoàn tất thành công (exit code 0), tệp mới được đổi tên thành `.dump`. Nếu có lỗi hoặc bị ngắt quãng, tệp `.part` sẽ bị xóa bỏ ngay lập tức.
+- **Cổng kiểm tra phiên bản (PostgreSQL Version Gate)**:
+  - Trước khi dump, script tự động đối soát phiên bản: `SHOW server_version;` so với `pg_dump --version`.
+  - Quy tắc: Phiên bản major của `pg_dump` **bắt buộc phải $\ge$** phiên bản major của PostgreSQL server. Nếu `pg_dump` cũ hơn server, script **từ chối an toàn** và dừng lại với mã lỗi non-zero.
+- **Chính sách Snapshot nhất quán & Số lượng dòng (Consistent Snapshot Review)**:
+  - Trên cơ sở dữ liệu có lưu lượng ghi đồng thời (concurrent production writes), nếu truy vấn `SELECT count(*)` trên các bảng độc lập với `pg_dump`, số lượng dòng có thể chênh lệch tự nhiên so với transaction snapshot của dump.
+  - Do đó, số lượng dòng (`row_counts`) trong manifest mang tính chất **ảnh chụp thông tin (informational snapshot)**.
+  - Các cổng kiểm tra cứng phục vụ nghiệm thu bản sao lưu là: `pg_restore` không lỗi, khớp SHA-256, TOC hợp lệ, đủ 100% bảng nghiệp vụ và khớp chính xác `alembic_version`.
+- **An toàn bí mật**: Tuyệt đối không đưa mật khẩu cơ sở dữ liệu vào tiến trình CLI (sử dụng biến môi trường `PGPASSWORD` truyền trong subprocess) hay lưu vào manifest.
 
 ### 5.2. Lệnh thực hiện
 
+#### A. Chế độ Docker Compose (Mặc định cho Local Development / VPS)
 Tạo bản sao lưu tiêu chuẩn:
 ```bash
 python scripts/db_backup.py backup
@@ -74,9 +84,33 @@ Khi chạy trên stack Production Compose:
 python scripts/db_backup.py backup --compose-file docker-compose.prod.yml
 ```
 
+#### B. Chế độ Kết nối Trực tiếp (Direct Connection / Railway Production Tunnel)
+Khi kết nối tới Railway qua tunnel an toàn:
+1. Mở tunnel Railway ở terminal riêng (chế độ tunnel-only, gán cổng cục bộ cố định):
+   ```bash
+   railway connect postgres --tunnel-only -P 15432
+   ```
+2. Thiết lập biến môi trường kết nối trong terminal vận hành (không in ra log/chat):
+   ```powershell
+   # PowerShell
+   $env:PGHOST = "127.0.0.1"
+   $env:PGPORT = "15432"
+   $env:PGUSER = "postgres"
+   $env:PGDATABASE = "railway"
+   $env:PGPASSWORD = "<MẬT_KHẨU_TỪ_RAILWAY>"
+   ```
+3. Thực thi sao lưu ở chế độ Direct:
+   ```bash
+   python scripts/db_backup.py backup --direct --output-dir backups --include-row-counts
+   ```
+4. Xóa ngay biến môi trường nhạy cảm sau khi hoàn tất:
+   ```powershell
+   Remove-Item Env:\PGPASSWORD
+   ```
+
 Tệp tạo ra gồm cặp đôi hoàn chỉnh:
-- `backups/student_marketplace_<UTC_TIMESTAMP>.dump`: Binary archive nén.
-- `backups/student_marketplace_<UTC_TIMESTAMP>.dump.manifest.json`: Siêu dữ liệu vận hành.
+- `backups/<dbname>_<UTC_TIMESTAMP>.dump`: Binary archive nén.
+- `backups/<dbname>_<UTC_TIMESTAMP>.dump.manifest.json`: Siêu dữ liệu vận hành.
 
 ---
 
@@ -89,8 +123,14 @@ Mọi tệp dump sau khi tạo phải vượt qua bước kiểm tra nghiêm ng�
 4. Kiểm tra manifest không chứa bất kỳ trường bí mật (password, token, connection string) nào.
 
 ### Lệnh thực hiện
+Kiểm tra qua Docker Compose (mặc định):
 ```bash
-python scripts/db_backup.py verify backups/student_marketplace_<TIMESTAMP>.dump
+python scripts/db_backup.py verify backups/<filename>.dump
+```
+
+Kiểm tra bằng công cụ native `pg_restore` trực tiếp trên host:
+```bash
+python scripts/db_backup.py verify backups/<filename>.dump --direct
 ```
 
 ---
@@ -98,26 +138,35 @@ python scripts/db_backup.py verify backups/student_marketplace_<TIMESTAMP>.dump
 ## 7. Diễn tập khôi phục (Restore Drill)
 
 ### 7.1. Nguyên tắc an toàn tuyệt đối
-- **Bảo vệ database chính (`student_marketplace`)**: Quy trình khôi phục CẤM TUYỆT ĐỐI việc khôi phục đè hoặc xóa cơ sở dữ liệu nguồn đang hoạt động.
-- Kiểm tra tính hợp lệ của tên database: Tên database đích chỉ được chứa chữ cái, chữ số và dấu gạch dưới (`^[a-zA-Z_][a-zA-Z0-9_]{1,62}$`), ngăn chặn hoàn toàn SQL Injection.
-- Nếu tên database đích trùng với database nguồn hiện tại: Kịch bản **TỪ CHỐI THỰC HIỆN** ngay lập tức và trả mã lỗi non-zero.
-- Mặc định, quy trình sẽ tự sinh tên database cô lập có tiền tố `student_marketplace_restore_<TIMESTAMP>`.
+- **Bảo vệ database chính / Source DB**: Quy trình khôi phục CẤM TUYỆT ĐỐI việc khôi phục đè hoặc xóa cơ sở dữ liệu nguồn đang hoạt động.
+- **Ranh giới cô lập tuyệt đối**: Kịch bản diễn tập lấy mốc kỳ vọng **hoàn toàn từ manifest**; **TUYỆT ĐỐI KHÔNG gửi bất kỳ truy vấn nào vào database nguồn** trong suốt quá trình diễn tập.
+- **Kiểm tra tính hợp lệ của tên database**: Tên database đích chỉ được chứa chữ cái, chữ số và dấu gạch dưới (`^[a-zA-Z_][a-zA-Z0-9_]{1,62}$`), ngăn chặn hoàn toàn SQL Injection.
+- **Chặn trùng tên**: Nếu tên database đích trùng với database nguồn ghi trong manifest: Kịch bản **TỪ CHỐI THỰC HIỆN** ngay lập tức và trả mã lỗi non-zero.
+- Mặc định, quy trình tự sinh tên database cô lập có tiền tố `<source_db>_restore_<TIMESTAMP>`.
+- **Đối soát động**: Kiểm tra `alembic_version`, số lượng bảng nghiệp vụ và danh sách bảng khớp với manifest; đối soát số dòng thông tin và tự động dọn dẹp sạch sẽ database tạm thời (`DROP DATABASE ... WITH (FORCE)`).
 
 ### 7.2. Lệnh thực hiện
 
-Diễn tập khôi phục tự động (tự tạo DB cô lập, kiểm chứng và tự động xóa sau khi thành công):
+#### A. Diễn tập trên Local Docker Compose
+Diễn tập tự động (tự tạo DB cô lập trên `postgres` container, kiểm chứng và tự động xóa sau khi thành công):
 ```bash
-python scripts/db_backup.py restore-drill backups/student_marketplace_<TIMESTAMP>.dump
-```
-
-Trên stack Production Compose:
-```bash
-python scripts/db_backup.py restore-drill backups/student_marketplace_<TIMESTAMP>.dump --compose-file docker-compose.prod.yml
+python scripts/db_backup.py restore-drill backups/<filename>.dump
 ```
 
 Nếu muốn giữ lại database đã phục hồi để thanh tra thủ công:
 ```bash
-python scripts/db_backup.py restore-drill backups/student_marketplace_<TIMESTAMP>.dump --keep-target
+python scripts/db_backup.py restore-drill backups/<filename>.dump --keep-target
+```
+
+Nếu muốn bắt buộc khớp 100% số lượng dòng (dành cho kiểm thử môi trường dev tĩnh):
+```bash
+python scripts/db_backup.py restore-drill backups/<filename>.dump --strict-row-counts
+```
+
+#### B. Diễn tập vào Target CSDL Cô lập Trực tiếp (Direct Isolated Target)
+Khi diễn tập bản sao lưu production vào một container PostgreSQL cô lập cùng phiên bản major trên máy local (ví dụ port 15433):
+```bash
+python scripts/db_backup.py restore-drill backups/<filename>.dump --direct --host 127.0.0.1 --port 15433 --user postgres
 ```
 
 ---
@@ -197,9 +246,14 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 
 ## 13. Xử lý bí mật và an toàn thông tin (Secret Handling)
 
-1. Tệp `.env` và các khóa truy cập tuyệt đối không được gộp vào tệp sao lưu.
+1. Tệp `.env`, API keys và credentials tuyệt đối không được gộp vào tệp sao lưu.
 2. Thư mục `backups/` đã được khai báo loại trừ triệt để trong cả `.gitignore` và `.dockerignore`.
-3. Bản sao lưu chứa dữ liệu cá nhân sinh viên và giao dịch mua bán, do đó tệp `.dump` phải được quản lý với quyền truy cập hạn chế tối đa trên máy chủ, không được đặt trong thư mục public web hay chia sẻ công khai.
+3. **Cảnh báo Terminal Railway CLI**: Lệnh `railway connect postgres --tunnel-only -P 15432` sẽ in thông tin đăng nhập trực tiếp ra console của người vận hành:
+   - Tuyệt đối **KHÔNG copy/paste** output console này vào chat AI, issue trackers, pull requests hay tệp tài liệu.
+   - Khi thiết lập biến môi trường `$env:PGPASSWORD` hoặc `export PGPASSWORD`, phải xóa ngay lập tức sau khi hoàn tất lệnh (`Remove-Item Env:\PGPASSWORD` hoặc `unset PGPASSWORD`).
+   - Xóa sạch buffer terminal sau phiên làm việc (`Clear-Host` hoặc `clear`).
+4. **Kiểm tra Secret trong Manifest**: Hàm `assert_manifest_clean_of_secrets()` tự động quét toàn bộ khóa và giá trị trong manifest JSON để ngăn chặn hoàn toàn việc rò rỉ credential lên đĩa.
+5. Bản sao lưu chứa dữ liệu cá nhân sinh viên và giao dịch mua bán, do đó tệp `.dump` phải được quản lý với quyền truy cập hạn chế tối đa trên máy chủ, không được đặt trong thư mục public web hay chia sẻ công khai.
 
 ---
 
@@ -230,20 +284,19 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 
 ## 16. Bằng chứng diễn tập kiểm chứng thực tế (Tested Evidence)
 
-> **Ghi chú**: Bằng chứng diễn tập bên dưới thuộc thời điểm Phase 9C-B (Alembic `c2f84937f5d2`, 29 bảng), phản ánh trung thực kết quả diễn tập tại thời điểm đó trước khi bổ sung bảng `support_contributions`. Công cụ `db_backup.py` đo lường số lượng bảng hoàn toàn động qua `information_schema.tables`, bảo đảm tự động bao gồm toàn bộ 30 bảng nghiệp vụ mà không cần chỉnh sửa mã nguồn.
+Bản sao lưu và diễn tập thực tế gần nhất ghi nhận trên hệ thống (Phase B Preparation Readiness):
 
-Bản sao lưu và diễn tập thực tế gần nhất được ghi nhận trên môi trường phát triển:
-
-- **Thời gian diễn tập (UTC)**: `2026-09-24T04:25:08Z`
-- **Tệp sao lưu**: `student_marketplace_20260924T042508Z.dump` (Dung lượng: `136,184` bytes)
-- **Mã băm SHA-256**: `48aeaf69cfd8060dea724359672df64300d7b97c7ff2173d1d551964e143dc56`
-- **Manifest**: `student_marketplace_20260924T042508Z.dump.manifest.json`
-- **Phiên bản PostgreSQL**: `15.19 (Alpine Linux 64-bit)`
-- **Alembic Revision**: `c2f84937f5d2`
-- **Số bảng ứng dụng**: 29/29 bảng
-- **Số bảng vật lý**: 30 bảng
-- **Tên database diễn tập cô lập**: `student_marketplace_restore_20260924_042548`
-- **Thời gian khôi phục (Restore Elapsed)**: `1.13 giây`
-- **Kiểm chứng khớp số lượng bản ghi**: 100% khớp tuyệt đối trên toàn bộ 29 bảng nghiệp vụ
-- **Bảo toàn dữ liệu nguồn**: Database `student_marketplace` không bị ảnh hưởng, giữ nguyên 100% cấu trúc và dữ liệu.
-- **Thu dọn tài nguyên**: Database cô lập tạm thời đã được `DROP` sạch sẽ sau khi kiểm chứng hoàn tất.
+- **Thời gian diễn tập (UTC)**: `2026-09-30T14:25:32Z`
+- **Tệp sao lưu**: `student_marketplace_20260930T142532Z.dump` (Dung lượng: `163,496` bytes)
+- **Mã băm SHA-256**: `3df94b5554e50b2f30fcd685ba736aa4066b06dc01485310c55638205bc267ff`
+- **Manifest**: `student_marketplace_20260930T142532Z.dump.manifest.json` (TOC: 329 entries)
+- **Phiên bản PostgreSQL Server**: `15.19 (Alpine Linux 64-bit)`
+- **Phiên bản pg_dump Client**: `15 (khớp phiên bản server)`
+- **Alembic Revision**: `f1a2b3c4d5e6` (Head)
+- **Số bảng ứng dụng**: 32/32 bảng
+- **Số bảng vật lý**: 33 bảng
+- **Tên database diễn tập cô lập**: `student_marketplace_restore_20260930_142559`
+- **Thời gian khôi phục (Restore Elapsed)**: `1.71 giây`
+- **Kiểm chứng khớp số lượng bản ghi**: 100% khớp tuyệt đối trên toàn bộ 32 bảng nghiệp vụ
+- **Bảo toàn dữ liệu nguồn**: Database nguồn không bị truy vấn hay tác động trong suốt quá trình drill.
+- **Thu dọn tài nguyên**: Database cô lập tạm thời đã được `DROP DATABASE ... WITH (FORCE)` an toàn.

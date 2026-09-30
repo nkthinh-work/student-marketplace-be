@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**P2 Public API Security Hardening: Daily Needs Rate Limiting & Auction WebSocket Connection Hardening (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
-*Parent Task*: Public API Security Audit & Hardening
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT REMEDIATION PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
+**PostgreSQL Production Backup & Restore Tooling Readiness (Direct Mode, Version Gate, Dynamic Restore Verification - Phase A Complete; Verified Locally, Production Not Mutated / Not Deployed)**
+*Parent Task*: Phase 9C-D Release Verification & Disaster Recovery Readiness
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (BACKUP TOOLING IMPLEMENTED & VERIFIED LOCALLY; PRODUCTION NOT MUTATED)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — P2 SECURITY HARDENING COMPLETE, 897/897 BACKEND TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — DIRECT CONNECTION TOOLING & TESTS COMPLETE (15/15 BACKUP TESTS PASS, LOCAL DRILL 100% PASS, PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -95,6 +95,14 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **PostgreSQL Production Backup Tooling Readiness Pass (Direct Mode, Version Gate & Dynamic Restore Verification)** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+  - Mở rộng `scripts/db_backup.py` hỗ trợ chế độ kết nối trực tiếp native (`--direct`, `--host`, `--port`, `--user`, `--dbname`, biến môi trường chuẩn `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`) tương thích hoàn toàn với Railway tunnel (`railway connect postgres --tunnel-only -P 15432`).
+  - Bảo toàn 100% tương thích ngược với chế độ Docker Compose mặc định.
+  - Tích hợp cổng kiểm tra phiên bản PostgreSQL (Version Gate): đối soát `server_version` và `pg_dump --version`, chặn cứng lỗi nếu `pg_dump < server_major`, cảnh báo rõ ràng nếu `pg_dump > server_major`.
+  - Phân tích và ban hành quyết định snapshot nhất quán: số lượng bản ghi `row_counts` là ảnh chụp thông tin (`informational snapshot`), không dùng làm hard failure làm sai lệch kết quả sao lưu khỏe mạnh khi production có ghi đồng thời; bảo toàn các hard gate kiểm chứng (schema, 100% bảng, Alembic head, TOC, SHA-256).
+  - Khắc phục triệt để logic restore-drill: đọc toàn bộ mốc kỳ vọng động từ manifest, TUYỆT ĐỐI KHÔNG truy vấn source database trong quá trình diễn tập; hỗ trợ target trực tiếp cô lập; dọn dẹp an toàn sau drill.
+  - Xử lý bảo mật: mật khẩu chỉ truyền qua `PGPASSWORD` trong process environment, tuyệt đối không lộ trong CLI args, log hay manifest.
+  - Bộ kiểm thử tự động 15/15 tests (`tests/test_db_backup.py`) PASS; diễn tập end-to-end cục bộ thành công 100% (backup, verify, restore-drill).
 - **P2 Public API Security Hardening Pass** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
   - **Daily Needs Rate Limiting**: Tái sử dụng bộ hạn mức Class C (`rate_limit_user_profile`, 60 req/60s theo Client IP) gắn vào endpoint công khai `GET /api/v1/daily-needs/users/{user_id}/today`; bảo vệ tuyệt đối chống quét dò nhật ký sinh viên theo dải `user_id`; bảo toàn trạng thái công khai không yêu cầu token, giữ nguyên cấu trúc phản hồi DTO và chuẩn hóa `429 Too Many Requests` kèm `Retry-After`.
   - **Auction WebSocket Connection Hardening**: Gia cố route `WS /ws/auctions/{auction_id}` trước khi `accept`: thẩm định tính hợp lệ của `auction_id > 0`, kiểm tra sự tồn tại trong CSDL và xác thực trạng thái phiên đấu giá hợp lệ nhận sự kiện thời gian thực (`status` thuộc `SCHEDULED`, `ACTIVE`). Mọi yêu cầu không hợp lệ, không tồn tại hoặc không ở trạng thái hoạt động (như `CANCELLED`, `ENDED`) đều bị đóng/từ chối tức thì với mã đóng WebSocket `1008` (Policy Violation), hoàn toàn không được lưu trữ trong `AuctionConnectionManager` và không tạo tác vụ Redis pub/sub listener rò rỉ.
@@ -148,7 +156,8 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **897/897 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
+- **Backend Full Suite**: **906/906 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
+- **Backend Backup & Restore Tooling Suite**: **15/15 PASS** (`tests/test_db_backup.py`).
 - **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
 - **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
