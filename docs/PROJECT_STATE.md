@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Production Security Hardening Pass: API Scraping, Request Flooding & User-Enumeration Abuse Prevention (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
-*Parent Task*: Post-Deployment Hardening & Production API Protection
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT HARDENING PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
+**P1 Public API Security Remediations: Rate Limiting Reviews (Finding-01), Omitting Internal Role from Public Profile (Finding-02), and Disabling OpenAPI/Swagger in Production (Finding-04) (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+*Parent Task*: Public API Security Audit & Hardening
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT REMEDIATION PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — REDIS RATE LIMITING & ENUMERATION DEFENSE COMPLETE, 875/875 BACKEND TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — P1 SECURITY REMEDIATIONS COMPLETE, 890/890 BACKEND TESTS PASS, FRONTEND BUILD & TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -95,6 +95,11 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **P1 Public API Security Remediations Pass** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+  - **Finding-01 (Public Reviews Rate Limiting)**: Gắn `rate_limit_user_profile` (Class C Sensitive Public, 60 req/60s theo Client IP) vào route `GET /api/v1/users/{user_id}/reviews`, triệt tiêu lỗ hổng active-user enumeration oracle; bảo toàn tuyệt đối truy cập công khai không yêu cầu token và chuẩn hóa phản hồi `429 Too Many Requests` kèm `Retry-After`.
+  - **Finding-02 (Omit Internal Role from Public Profile)**: Loại bỏ triệt để trường `role` khỏi `PublicUserProfileResponse` backend DTO và `get_public_profile` service; cập nhật frontend `PublicProfilePage` hiển thị huy hiệu cộng đồng chuẩn "Sinh viên PTIT" không rẽ nhánh theo role nội bộ; bảo toàn trường `role` trong `UserResponse` cho authenticated current user (`/users/me`) và toàn bộ logic phân quyền Admin backend.
+  - **Finding-04 (Disable OpenAPI/Swagger in Production)**: Cấu hình `docs_url=None`, `redoc_url=None`, `openapi_url=None` khi `ENVIRONMENT == "production"`; trả về `404 Not Found` trên production, bảo toàn khả năng truy cập `/docs`, `/redoc`, `/openapi.json` (`200 OK`) trên development và test; không ảnh hưởng các route nghiệp vụ và healthcheck.
+  - Kiểm thử: 890/890 backend pytest tests PASS (bao gồm 21/21 rate limiter tests, 14/14 reviews tests, 15/15 user profile tests, 2/2 OpenAPI config tests, 95/95 auth/admin tests); frontend build `tsc -b && vite build` PASS; 30/30 frontend hardening tests PASS.
 - **Production Security Hardening Pass — Anti-Scraping, Request Rate Limiting & User Enumeration Defense** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
   - Triển khai `app.core.rate_limiter` trên Redis với thuật toán Atomic Fixed-Window Counter qua Lua Script, hỗ trợ `Retry-After` và HTTP 429 chuẩn tắc.
   - Phân tầng hạn mức đa lớp: Emergency flood ceiling (3.000 req/60s per IP - sized for 100+ concurrent students on shared campus NAT/CGNAT, không phải bộ lọc chống cào chính), Public browsing (120 req/60s), Sensitive public profile (60 req/60s), Authenticated search & candidates (30 req/60s theo `user_id`), Write mutations (30 req/60s theo `user_id`), Chat messages (60 req/60s theo `user_id`), Auth sensitive (20 req/60s theo `user_id`). Healthcheck `/health` và static docs hoàn toàn không bị hạn chế.
@@ -109,13 +114,6 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
   - Frontend (`student-marketplace-fe`) và Backend (`student-marketplace-be`) đã được triển khai trực tiếp trên Railway.
   - Cả hai domain công khai đã hoạt động; endpoint `/health` backend xác nhận kết nối CSDL và Redis thành công.
   - Tích hợp credentials `FIREBASE_CREDENTIALS_JSON` không ghi file đĩa, bảo đảm an toàn bảo mật tuyệt đối.
-- **Phase 9C-D — Minimal Railway-Compatible Firebase Credentials Support** (COMPLETED & VERIFIED):
-  - Bổ sung cấu hình `FIREBASE_CREDENTIALS_JSON` trong `Settings`, ưu tiên JSON trực tiếp cho Railway, bảo toàn 100% đường dẫn tệp cục bộ (`FIREBASE_CREDENTIALS_PATH`).
-  - Viết suite kiểm thử 7/7 tests (`tests/test_firebase.py`) bao phủ đầy đủ kịch bản phân giải, ưu tiên và xử lý lỗi không lộ secret.
-- **Phase 9C-D — GitHub Release & CI Verification** (COMPLETED & VERIFIED / USER ACCEPTED):
-  - Toàn bộ release gates trên GitHub Actions của cả Backend và Frontend đạt `SUCCESS`.
-- **Phase 9C-D — Release Candidate Hygiene & Production Data Preparation** (USER ACCEPTED / COMPLETED & VERIFIED):
-  - Vệ sinh toàn diện repository: Triệt tiêu code debug, bảo toàn 100% tài nguyên Cloudinary legacy, chuẩn bị scripts quản trị sạch.
 
 ---
 
@@ -145,8 +143,12 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **884/884 PASS** (`pytest tests/ -q`, 0 failures, 9 warnings).
-- **Backend Rate Limiter Security Suite**: **20/20 PASS** (`tests/test_rate_limiter.py` in 2.92s).
+- **Backend Full Suite**: **890/890 PASS** (`pytest tests/ -q`, 0 failures, 9 warnings).
+- **Backend Rate Limiter Security Suite**: **21/21 PASS** (`tests/test_rate_limiter.py`).
+- **Backend Reviews Suite**: **14/14 PASS** (`tests/test_reviews.py`).
+- **Backend User Profile Suite**: **15/15 PASS** (`tests/test_user_profile.py`).
+- **Backend OpenAPI Production Configuration Suite**: **2/2 PASS** (`tests/test_openapi_config.py`).
+- **Backend Auth & Admin Authorization Suite**: **95/95 PASS** (`tests/test_auth.py`, `tests/test_admin_user_enforcement.py`, `tests/test_admin_reports.py`, `tests/test_admin_product_enforcement.py`).
 - **Backend Hardening Suite**: **11/11 PASS** (`tests/test_official_support_and_profile_validation.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
 - **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).

@@ -60,75 +60,86 @@ async def lifespan(app: FastAPI):
     await close_redis()
     await engine.dispose()
 
-app = FastAPI(
-    title=settings.PROJECT_NAME,
-    lifespan=lifespan,
-)
+def create_app() -> FastAPI:
+    is_production = settings.ENVIRONMENT.lower() == "production"
 
-# Outermost middleware is CORSMiddleware; RateLimitMiddleware sits inside CORS
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    application = FastAPI(
+        title=settings.PROJECT_NAME,
+        lifespan=lifespan,
+        docs_url=None if is_production else "/docs",
+        redoc_url=None if is_production else "/redoc",
+        openapi_url=None if is_production else "/openapi.json",
+    )
 
-app.include_router(users_router, prefix=settings.API_V1_STR)
-app.include_router(categories_router, prefix=settings.API_V1_STR)
-app.include_router(products_router, prefix=settings.API_V1_STR)
-app.include_router(favorites_router, prefix=settings.API_V1_STR)
-app.include_router(orders_router, prefix=settings.API_V1_STR)
-app.include_router(orders_ws_router)
-app.include_router(auctions_router, prefix=settings.API_V1_STR)
-app.include_router(auctions_ws_router)
-app.include_router(reviews_router, prefix=settings.API_V1_STR)
-app.include_router(conversations_router, prefix=settings.API_V1_STR)
-app.include_router(daily_needs_router, prefix=settings.API_V1_STR)
-app.include_router(notifications_router, prefix=settings.API_V1_STR)
-app.include_router(reports_router, prefix=settings.API_V1_STR)
-app.include_router(admin_reports_router, prefix=settings.API_V1_STR)
-app.include_router(admin_users_router, prefix=settings.API_V1_STR)
-app.include_router(community_moments_router, prefix=settings.API_V1_STR)
-app.include_router(admin_community_moments_router, prefix=settings.API_V1_STR)
-app.include_router(feedback_router, prefix=settings.API_V1_STR)
-app.include_router(admin_feedback_router, prefix=settings.API_V1_STR)
-app.include_router(admin_support_router, prefix=settings.API_V1_STR)
-app.include_router(admin_support_claims_router, prefix=settings.API_V1_STR)
-app.include_router(tutorials_router, prefix=settings.API_V1_STR)
-app.include_router(admin_tutorials_router, prefix=settings.API_V1_STR)
-app.include_router(admin_product_approvals_router, prefix=settings.API_V1_STR)
+    # Outermost middleware is CORSMiddleware; RateLimitMiddleware sits inside CORS
+    application.add_middleware(RateLimitMiddleware)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.BACKEND_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-@app.get("/health")
-async def health_check(
-    db: AsyncSession = Depends(get_db),
-    redis_conn: aioredis.Redis = Depends(get_redis)
-) -> dict[str, Any]:
-    db_status = "down"
-    try:
-        await db.execute(text("SELECT 1"))
-        db_status = "up"
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
+    application.include_router(users_router, prefix=settings.API_V1_STR)
+    application.include_router(categories_router, prefix=settings.API_V1_STR)
+    application.include_router(products_router, prefix=settings.API_V1_STR)
+    application.include_router(favorites_router, prefix=settings.API_V1_STR)
+    application.include_router(orders_router, prefix=settings.API_V1_STR)
+    application.include_router(orders_ws_router)
+    application.include_router(auctions_router, prefix=settings.API_V1_STR)
+    application.include_router(auctions_ws_router)
+    application.include_router(reviews_router, prefix=settings.API_V1_STR)
+    application.include_router(conversations_router, prefix=settings.API_V1_STR)
+    application.include_router(daily_needs_router, prefix=settings.API_V1_STR)
+    application.include_router(notifications_router, prefix=settings.API_V1_STR)
+    application.include_router(reports_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_reports_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_users_router, prefix=settings.API_V1_STR)
+    application.include_router(community_moments_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_community_moments_router, prefix=settings.API_V1_STR)
+    application.include_router(feedback_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_feedback_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_support_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_support_claims_router, prefix=settings.API_V1_STR)
+    application.include_router(tutorials_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_tutorials_router, prefix=settings.API_V1_STR)
+    application.include_router(admin_product_approvals_router, prefix=settings.API_V1_STR)
 
-    redis_status = "down"
-    try:
-        if redis_conn is not None:
-            if await asyncio.wait_for(redis_conn.ping(), timeout=1.0):
-                redis_status = "up"
-    except Exception as e:
-        logger.error(f"Redis health check failed: {e}")
+    @application.get("/health")
+    async def health_check(
+        db: AsyncSession = Depends(get_db),
+        redis_conn: aioredis.Redis = Depends(get_redis)
+    ) -> dict[str, Any]:
+        db_status = "down"
+        try:
+            await db.execute(text("SELECT 1"))
+            db_status = "up"
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
 
-    overall_status = "healthy" if db_status == "up" and redis_status == "up" else "unhealthy"
-    
-    return {
-        "status": overall_status,
-        "database": db_status,
-        "redis": redis_status,
-        "service": "up"
-    }
+        redis_status = "down"
+        try:
+            if redis_conn is not None:
+                if await asyncio.wait_for(redis_conn.ping(), timeout=1.0):
+                    redis_status = "up"
+        except Exception as e:
+            logger.error(f"Redis health check failed: {e}")
 
-@app.get("/")
-async def root() -> dict[str, str]:
-    return {"message": "Welcome to Student Marketplace C2C API"}
+        overall_status = "healthy" if db_status == "up" and redis_status == "up" else "unhealthy"
+
+        return {
+            "status": overall_status,
+            "database": db_status,
+            "redis": redis_status,
+            "service": "up"
+        }
+
+    @application.get("/")
+    async def root() -> dict[str, str]:
+        return {"message": "Welcome to Student Marketplace C2C API"}
+
+    return application
+
+
+app = create_app()

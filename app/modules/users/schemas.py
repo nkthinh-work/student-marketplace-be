@@ -89,7 +89,6 @@ class PublicUserProfileResponse(BaseModel):
     delivery_area: Optional[str] = None
     phone: Optional[str] = None
     social_links: Optional[list[SocialLinkItem]] = None
-    role: str
     created_at: datetime
     active_listing_count: int = 0
     completed_sold_count: int = 0

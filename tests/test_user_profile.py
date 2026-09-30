@@ -147,7 +147,9 @@ async def test_get_public_user_profile_success(test_client: AsyncClient, sample_
     assert data["avatar_url"] == "https://lh3.googleusercontent.com/a/test_avatar"
     assert data["bio"] == "Sinh viên D20 PTIT"
     assert data["delivery_area"] == "Hà Đông, Thanh Xuân, Cầu Giấy"
-    assert data["role"] == "STUDENT"
+
+    # Privacy Hardening (Finding-02): Internal role must be omitted from public profile
+    assert "role" not in data
 
     # Strict Privacy: Must NOT expose sensitive/private fields
     assert "email" not in data
@@ -156,6 +158,70 @@ async def test_get_public_user_profile_success(test_client: AsyncClient, sample_
     assert "bank_account_number" not in data
     assert "bank_account_name" not in data
     assert "default_meetup_area" not in data
+
+
+@pytest.mark.asyncio
+async def test_get_public_user_profile_admin_role_omitted(test_client: AsyncClient, db_session: AsyncSession):
+    """
+    Finding-02: Public user profile of an ADMIN user must NOT serialize internal role
+    (neither 'ADMIN' nor 'STUDENT'). The role field must be completely omitted.
+    """
+    admin_user = User(
+        email="admin_privacy_test@ptit.edu.vn",
+        full_name="Admin Privacy Test",
+        role=UserRole.ADMIN.value,
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(admin_user)
+    await db_session.flush()
+
+    res = await test_client.get(f"/api/v1/users/{admin_user.user_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["user_id"] == admin_user.user_id
+    assert data["full_name"] == "Admin Privacy Test"
+    assert "role" not in data, "Public profile must omit role entirely, even for ADMIN users"
+    assert "email" not in data
+
+
+@pytest.mark.asyncio
+async def test_get_my_profile_authenticated_role_preserved(
+    test_client: AsyncClient,
+    sample_user: User,
+    db_session: AsyncSession,
+):
+    """
+    Finding-02: Authenticated /api/v1/users/me contract continues to provide the
+    authenticated user's internal role for client-side routing/authorization.
+    """
+    # 1. Student user me
+    with auth_patch(sample_user):
+        res_student = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert res_student.status_code == 200
+    data_student = res_student.json()
+    assert data_student["role"] == "STUDENT"
+
+    # 2. Admin user me
+    admin_user = User(
+        email="admin_me_test@ptit.edu.vn",
+        full_name="Admin Me Test",
+        role=UserRole.ADMIN.value,
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(admin_user)
+    await db_session.flush()
+
+    with auth_patch(admin_user):
+        res_admin = await test_client.get(
+            "/api/v1/users/me",
+            headers={"Authorization": "Bearer mock"},
+        )
+    assert res_admin.status_code == 200
+    data_admin = res_admin.json()
+    assert data_admin["role"] == "ADMIN"
 
 
 @pytest.mark.asyncio

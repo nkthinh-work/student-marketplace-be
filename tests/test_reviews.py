@@ -1,11 +1,14 @@
 from decimal import Decimal
 from datetime import datetime, timezone
+from unittest.mock import patch
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
+from app.core.config import settings
+from app.core.redis import get_or_reconnect_redis
 from app.modules.auth.dependencies import get_current_active_user, get_current_user
 from app.modules.categories.models import Category
 from app.modules.orders.models import (
@@ -652,3 +655,88 @@ async def test_sold_products_contextual_review_enrichment_and_privacy(
     # Bounded list contains recent reviews (latest first)
     assert sold_item_2["recent_reviews"][0]["rating"] == 3
     assert sold_item_2["recent_reviews"][1]["rating"] == 5
+
+
+@pytest.mark.asyncio
+async def test_get_public_seller_reviews_contract_and_rate_limiting(
+    db_session: AsyncSession,
+    seller_user: User,
+    buyer_user: User,
+    completed_order: Order,
+):
+    """
+    Finding-01:
+    - GET /api/v1/users/{user_id}/reviews remains public (no auth required)
+    - Response matches PublicSellerReviewsCursorPage contract
+    - Rate limit matches Class C user profile policy (below quota -> 200, above quota -> 429)
+    - Retry-After header returned on 429
+    - No internal role or sensitive data leaked in public reviews
+    """
+    from app.core.database import get_db
+
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    from app.core.redis import init_redis
+
+    client = await init_redis()
+    test_ip = "198.51.100.42"
+    key = f"rl:user_profile:ip:{test_ip}"
+    if client is not None:
+        await client.delete(key)
+
+    headers = {"x-real-ip": test_ip}
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            # 1. Post a review first (authenticated buyer)
+            with auth_patch(buyer_user):
+                await ac.post(
+                    f"/api/v1/orders/{completed_order.order_id}/review",
+                    json={"rating": 5, "comment": "Người bán uy tín, giao dịch nhanh!"},
+                )
+
+            with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
+                # Request 1: Below quota -> 200 OK (unauthenticated public access)
+                res1 = await ac.get(
+                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    headers=headers,
+                )
+                assert res1.status_code == 200
+                data1 = res1.json()
+                assert "items" in data1
+                assert "next_cursor" in data1
+                assert "has_more" in data1
+                assert len(data1["items"]) == 1
+                review_item = data1["items"][0]
+                assert review_item["rating"] == 5
+                assert review_item["comment"] == "Người bán uy tín, giao dịch nhanh!"
+                assert review_item["verified_transaction"] is True
+                # Strict Privacy: PublicSellerReviewItem does not expose reviewer identity or internal metadata
+                assert "reviewer_name" not in review_item
+                assert "reviewer_id" not in review_item
+                assert "email" not in review_item
+                assert "phone" not in review_item
+                assert "role" not in review_item
+
+                # Request 2: Boundary -> 200 OK
+                res2 = await ac.get(
+                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    headers=headers,
+                )
+                assert res2.status_code == 200
+
+                # Request 3: Exceeded -> 429 Too Many Requests
+                res3 = await ac.get(
+                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    headers=headers,
+                )
+                assert res3.status_code == 429
+                assert "Retry-After" in res3.headers
+                assert res3.json() == {"detail": "Too many requests. Please try again later."}
+    finally:
+        app.dependency_overrides.clear()
+        if client is not None:
+            await client.delete(key)

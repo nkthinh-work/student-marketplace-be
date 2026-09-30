@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_user_profile
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.reviews.schemas import (
     OrderReviewResponse,
@@ -67,6 +68,7 @@ async def update_order_review(
     "/users/{user_id}/reviews",
     response_model=PublicSellerReviewsCursorPage,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy danh sách đánh giá công khai của người bán (phân trang keyset)",
 )
 async def get_public_seller_reviews(

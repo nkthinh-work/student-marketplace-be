@@ -54,7 +54,7 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 | **Emergency Flood Ceiling** | Toàn bộ API (ngoại trừ `/health`, static docs) | Client IP | 3000 req / 60s | Ngưỡng chặn khẩn cấp tấn công lũ lụt L7 / DoS theo IP mạng; được định cỡ đủ cho 100+ sinh viên dùng chung NAT trường học (~50 req/giây duy trì); **không phải** là lớp chống cào dữ liệu chính |
 | **Class A: Health / Static** | `/health`, `/api/v1/categories`, `/api/v1/users/banks` | N/A | Không giới hạn | Đảm bảo Railway liveness/readiness probe và metadata hoạt động liên tục |
 | **Class B: Public Browsing** | `GET /api/v1/products`, `GET /api/v1/products/{id}` | Client IP | 120 req / 60s | Cho phép duyệt hàng mượt mà, phân trang, lọc sản phẩm |
-| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai sinh viên theo IP |
+| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products`, `GET /api/v1/users/{id}/reviews` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai và lịch sử đánh giá sinh viên theo IP |
 | **Class D: Authenticated Search** | `GET /api/v1/users/search`, invite candidates, member lookup | User ID | 30 req / 60s | Chặn tài khoản sinh viên bị lạm dụng để dò danh tính hàng loạt |
 | **Class E: Write Mutations** | `POST /api/v1/products`, reports, feedback, bids, orders | User ID | 30 req / 60s | Chặn spam tạo dữ liệu, gửi báo cáo và đơn hàng rác |
 | **Class F: Chat Messages** | `POST /api/v1/conversations/{id}/messages` | User ID | 60 req / 60s | Cho phép nhắn tin tự nhiên nhưng chặn bot spam tin nhắn |
@@ -74,6 +74,20 @@ Khi client vượt quá hạn mức truy cập, hệ thống trả về:
   }
   ```
 - **Redis Outage Behavior**: Chính sách **Fail-Open** (nếu Redis gặp sự cố hoặc timeout, hệ thống ghi log cảnh báo và tiếp tục cho phép request đi qua, không làm gián đoạn trải nghiệm của sinh viên).
+
+---
+
+### 1.2. Chính sách hiển thị Tài liệu OpenAPI / Swagger UI (Documentation & Schema Exposure Policy)
+
+Nhằm bảo vệ hệ thống trước hành vi dò quét cấu trúc API tự động trên môi trường công khai:
+- **Local Development & Test Environments (`ENVIRONMENT != "production"`)**:
+  - `/docs` (Swagger UI): Khả dụng (`200 OK`) phục vụ phát triển và kiểm thử.
+  - `/redoc` (ReDoc UI): Khả dụng (`200 OK`).
+  - `/openapi.json` (OpenAPI Schema): Khả dụng (`200 OK`).
+- **Production Environment (`ENVIRONMENT == "production"`)**:
+  - Toàn bộ giao diện Swagger UI, ReDoc và lược đồ OpenAPI Schema bị vô hiệu hóa hoàn toàn thông qua cấu hình FastAPI (`docs_url=None`, `redoc_url=None`, `openapi_url=None`).
+  - Các yêu cầu tới `/docs`, `/redoc`, `/openapi.json` trả về HTTP `404 Not Found`.
+  - Các endpoint nghiệp vụ và endpoint probe sức khỏe (`/health`, `/`) hoạt động bình thường, không bị ảnh hưởng.
 
 ---
 
@@ -264,7 +278,7 @@ Trích xuất `UserResponse` đã được cập nhật:
 - **Method**: `GET`
 - **Path**: `/api/v1/users/{user_id}`
 - **Authentication**: Không bắt buộc / Public
-- **Business Rule**: Trả về thông tin công khai (tên, avatar, bio, phạm vi giao / nhận hàng, ngày tham gia). Tuyệt đối không để lộ thông tin riêng tư (email, số điện thoại, tài khoản ngân hàng).
+- **Business Rule**: Trả về thông tin công khai (tên, avatar, bio, phạm vi giao / nhận hàng, ngày tham gia, thống kê bán hàng). Tuyệt đối không để lộ thông tin riêng tư (email, số điện thoại chưa bật công khai, tài khoản ngân hàng) hoặc vai trò quản trị nội bộ (`role` bị lược bỏ hoàn toàn; không falsify).
 - **Response: `200 OK`**:
 ```json
 {
@@ -273,7 +287,6 @@ Trích xuất `UserResponse` đã được cập nhật:
   "avatar_url": "https://lh3.googleusercontent.com/a/.../photo.jpg",
   "bio": "Sinh viên năm 3 CNTT",
   "delivery_area": "Hà Đông, Thanh Xuân, Cầu Giấy",
-  "role": "STUDENT",
   "created_at": "2026-08-25T09:40:00"
 }
 ```
@@ -1148,6 +1161,8 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   "has_more": false
 }
 ```
+- **Error Responses**:
+  - `429 Too Many Requests`: Vượt quá hạn mức truy vấn hồ sơ công khai (Class C Sensitive Public — 60 req/60s). Trả về header `Retry-After` chỉ định số giây chờ và JSON `{"detail": "Too many requests. Please try again later."}`.
 
 ---
 

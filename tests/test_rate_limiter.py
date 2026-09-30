@@ -307,6 +307,60 @@ async def test_public_user_profile_remains_public_and_throttled(db_session):
 
 
 @pytest.mark.asyncio
+async def test_public_seller_reviews_remains_public_and_throttled(db_session):
+    """
+    Finding-01:
+    Public seller reviews endpoint /api/v1/users/{user_id}/reviews remains public
+    (accessible without auth), but is protected by the same Class C user-profile
+    rate limiter (rate_limit_user_profile) against active-user enumeration.
+    """
+    client = await get_or_reconnect_redis()
+    test_ip = "192.0.2.105"
+    key = f"rl:user_profile:ip:{test_ip}"
+    await client.delete(key)
+
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    seller = User(
+        email="seller_reviews_rate_test@ptit.edu.vn",
+        full_name="Seller Reviews Rate Test",
+        role=UserRole.STUDENT.value,
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(seller)
+    await db_session.flush()
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            headers = {"x-real-ip": test_ip}
+
+            with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
+                # Request 1: succeeds below quota, remains public without auth
+                r1 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                assert r1.status_code == 200
+                data = r1.json()
+                assert "items" in data
+                assert "next_cursor" in data
+                assert "has_more" in data
+
+                # Request 2: succeeds (boundary)
+                r2 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                assert r2.status_code == 200
+
+                # Request 3: 429 Too Many Requests
+                r3 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                assert r3.status_code == 429
+                assert "Retry-After" in r3.headers
+                assert r3.json() == {"detail": "Too many requests. Please try again later."}
+    finally:
+        app.dependency_overrides.clear()
+        await client.delete(key)
+
+
+@pytest.mark.asyncio
 async def test_show_phone_publicly_privacy_preserved(db_session):
     """
     Requirement 10:

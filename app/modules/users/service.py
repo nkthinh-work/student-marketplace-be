@@ -155,7 +155,6 @@ class UserService:
             delivery_area=user.delivery_area,
             phone=phone,
             social_links=social_links,
-            role=user.role,
             created_at=user.created_at,
             active_listing_count=int(active_listing_count),
             completed_sold_count=int(completed_sold_count),
