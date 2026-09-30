@@ -54,7 +54,7 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 | **Emergency Flood Ceiling** | Toàn bộ API (ngoại trừ `/health`, static docs) | Client IP | 3000 req / 60s | Ngưỡng chặn khẩn cấp tấn công lũ lụt L7 / DoS theo IP mạng; được định cỡ đủ cho 100+ sinh viên dùng chung NAT trường học (~50 req/giây duy trì); **không phải** là lớp chống cào dữ liệu chính |
 | **Class A: Health / Static** | `/health`, `/api/v1/categories`, `/api/v1/users/banks` | N/A | Không giới hạn | Đảm bảo Railway liveness/readiness probe và metadata hoạt động liên tục |
 | **Class B: Public Browsing** | `GET /api/v1/products`, `GET /api/v1/products/{id}` | Client IP | 120 req / 60s | Cho phép duyệt hàng mượt mà, phân trang, lọc sản phẩm |
-| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products`, `GET /api/v1/users/{id}/reviews` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai và lịch sử đánh giá sinh viên theo IP |
+| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products`, `GET /api/v1/users/{id}/reviews`, `GET /api/v1/daily-needs/users/{user_id}/today` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai, lịch sử đánh giá và nhật ký sinh viên theo IP |
 | **Class D: Authenticated Search** | `GET /api/v1/users/search`, invite candidates, member lookup | User ID | 30 req / 60s | Chặn tài khoản sinh viên bị lạm dụng để dò danh tính hàng loạt |
 | **Class E: Write Mutations** | `POST /api/v1/products`, reports, feedback, bids, orders | User ID | 30 req / 60s | Chặn spam tạo dữ liệu, gửi báo cáo và đơn hàng rác |
 | **Class F: Chat Messages** | `POST /api/v1/conversations/{id}/messages` | User ID | 60 req / 60s | Cho phép nhắn tin tự nhiên nhưng chặn bot spam tin nhắn |
@@ -1064,6 +1064,12 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - `AUCTION_STARTED`: Kèm `current_price`, `bid_count`, `server_time`.
   - `AUCTION_ENDED`: Kèm `final_price`, `has_winner`, `server_time`.
   - `AUCTION_CANCELLED`: Kèm `server_time`.
+- **Cơ chế bảo vệ & Từ chối kết nối (Connection Hardening)**:
+  Trước khi chấp thuận kết nối WebSocket (`accept`), hệ thống xác thực nghiêm ngặt:
+  1. `auction_id` phải hợp lệ về cú pháp (`auction_id > 0` và là số nguyên).
+  2. Phiên đấu giá phải tồn tại trong CSDL.
+  3. Phiên đấu giá phải ở trạng thái sẵn sàng nhận sự kiện thời gian thực (`status` thuộc `SCHEDULED` hoặc `ACTIVE`).
+  Nếu vi phạm bất kỳ điều kiện nào ở trên, kết nối bị từ chối/đóng ngay lập tức với WebSocket Close Code `1008` (Policy Violation), hoàn toàn không được chấp thuận (`accept`), không đăng ký vào `AuctionConnectionManager`, và không khởi tạo tác vụ lắng nghe kênh Redis pub/sub.
 
 ---
 
@@ -1635,6 +1641,7 @@ Tích hợp:
   - Chỉ trả về nhật ký của ngày hôm nay (múi giờ `Asia/Ho_Chi_Minh`). Không trả về nhật ký ngày cũ.
   - Tuyệt đối không để lộ thông tin bảo mật (chỉ gồm `daily_need_id`, `content`, `note_date`, `updated_at`, `author`).
   - Nếu người dùng không có nhật ký hôm nay: trả về `200 OK` với body `null` (không dùng 404).
+  - Giới hạn tần suất truy cập: Áp dụng Class C Sensitive Public (60 req/60s theo Client IP). Khi vượt hạn mức trả về HTTP `429 Too Many Requests` kèm header `Retry-After`.
 - **Response**: `200 OK`
   ```json
   {

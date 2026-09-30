@@ -361,6 +361,75 @@ async def test_public_seller_reviews_remains_public_and_throttled(db_session):
 
 
 @pytest.mark.asyncio
+async def test_public_user_today_daily_needs_remains_public_and_throttled(db_session):
+    """
+    P2 Security Hardening:
+    Public user daily need endpoint /api/v1/daily-needs/users/{user_id}/today
+    remains public (accessible without auth), but is protected by the Class C
+    rate limiter (rate_limit_user_profile) against active-user enumeration.
+    """
+    from app.modules.daily_needs.models import DailyNeed
+    from app.modules.daily_needs.repository import get_vietnam_today
+
+    client = await get_or_reconnect_redis()
+    test_ip = "192.0.2.106"
+    key = f"rl:user_profile:ip:{test_ip}"
+    await client.delete(key)
+
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    user = User(
+        email="daily_needs_rate_test@ptit.edu.vn",
+        full_name="Daily Needs Rate Test",
+        role=UserRole.STUDENT.value,
+        status=UserStatus.ACTIVE,
+        avatar_url="https://res.cloudinary.com/test/avatar_daily.jpg",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    note = DailyNeed(
+        user_id=user.user_id,
+        note_date=get_vietnam_today(),
+        content="Đang tìm tài liệu học tập tối nay",
+    )
+    db_session.add(note)
+    await db_session.flush()
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            headers = {"x-real-ip": test_ip}
+
+            with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
+                # Request 1: succeeds below quota, remains public without auth
+                r1 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                assert r1.status_code == 200
+                data = r1.json()
+                assert data is not None
+                assert data["content"] == "Đang tìm tài liệu học tập tối nay"
+                assert data["note_date"] == str(get_vietnam_today())
+                assert data["author"]["user_id"] == user.user_id
+                assert data["author"]["full_name"] == user.full_name
+                assert data["author"]["avatar_url"] == user.avatar_url
+
+                # Request 2: succeeds (boundary)
+                r2 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                assert r2.status_code == 200
+
+                # Request 3: 429 Too Many Requests
+                r3 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                assert r3.status_code == 429
+                assert "Retry-After" in r3.headers
+                assert r3.json() == {"detail": "Too many requests. Please try again later."}
+    finally:
+        app.dependency_overrides.clear()
+        await client.delete(key)
+
+
+@pytest.mark.asyncio
 async def test_show_phone_publicly_privacy_preserved(db_session):
     """
     Requirement 10:

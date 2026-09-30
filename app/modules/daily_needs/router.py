@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.rate_limiter import rate_limit_user_profile
 from app.modules.auth.dependencies import get_current_active_user
 from app.modules.users.models import User
 from app.modules.daily_needs.schemas import (
@@ -72,6 +73,7 @@ async def get_my_daily_need_summary(
 @router.get(
     "/users/{user_id}/today",
     response_model=Optional[DailyNeedPublicResponse],
+    dependencies=[Depends(rate_limit_user_profile)],
     summary="Nhật ký hôm nay của người dùng công khai",
 )
 async def get_user_today_daily_need(

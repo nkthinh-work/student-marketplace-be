@@ -1,12 +1,15 @@
+from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.integrations.firebase import verify_firebase_token
 from app.modules.auth.dependencies import get_current_active_user, security
 from app.modules.auth.service import AuthService
+from app.modules.auctions.models import Auction, AuctionStatus
 from app.modules.auctions.schemas import (
     AuctionBidCursorPage,
     AuctionBidResponse,
@@ -185,8 +188,52 @@ async def winner_checkout(
     return format_order_detail(created_order)
 
 
+@asynccontextmanager
+async def _get_ws_db_session():
+    # Lazy import app to respect test dependency overrides without circular import at module load
+    from app.main import app
+
+    if get_db in app.dependency_overrides:
+        override = app.dependency_overrides[get_db]
+        res = override()
+        if hasattr(res, "__anext__"):
+            session = await res.__anext__()
+            try:
+                yield session
+            finally:
+                try:
+                    await res.__anext__()
+                except StopAsyncIteration:
+                    pass
+        else:
+            yield res
+    else:
+        async with SessionLocal() as session:
+            yield session
+
+
 @ws_router.websocket("/ws/auctions/{auction_id}")
 async def auction_websocket_endpoint(websocket: WebSocket, auction_id: int):
+    # 1. Syntactic validation: auction_id must be a positive integer
+    if auction_id <= 0:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # 2. Database validation: check auction exists and is in an eligible status
+    async with _get_ws_db_session() as db:
+        stmt = select(Auction.status).where(Auction.auction_id == auction_id)
+        result = await db.execute(stmt)
+        auction_status = result.scalar_one_or_none()
+
+    if auction_status is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    if auction_status not in (AuctionStatus.SCHEDULED.value, AuctionStatus.ACTIVE.value):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # 3. Connection manager registration & realtime loop
     await manager.connect(auction_id, websocket)
     try:
         while True:

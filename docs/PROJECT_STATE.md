@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**P1 Public API Security Remediations: Rate Limiting Reviews (Finding-01), Omitting Internal Role from Public Profile (Finding-02), and Disabling OpenAPI/Swagger in Production (Finding-04) (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
+**P2 Public API Security Hardening: Daily Needs Rate Limiting & Auction WebSocket Connection Hardening (Local Workspace Only - Verified Locally; Not Deployed / Not Verified in Production)**
 *Parent Task*: Public API Security Audit & Hardening
 *Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (CURRENT REMEDIATION PASS IS LOCAL WORKSPACE ONLY; NOT DEPLOYED YET)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — P1 SECURITY REMEDIATIONS COMPLETE, 890/890 BACKEND TESTS PASS, FRONTEND BUILD & TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — P2 SECURITY HARDENING COMPLETE, 897/897 BACKEND TESTS PASS (PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -95,9 +95,14 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **P2 Public API Security Hardening Pass** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+  - **Daily Needs Rate Limiting**: Tái sử dụng bộ hạn mức Class C (`rate_limit_user_profile`, 60 req/60s theo Client IP) gắn vào endpoint công khai `GET /api/v1/daily-needs/users/{user_id}/today`; bảo vệ tuyệt đối chống quét dò nhật ký sinh viên theo dải `user_id`; bảo toàn trạng thái công khai không yêu cầu token, giữ nguyên cấu trúc phản hồi DTO và chuẩn hóa `429 Too Many Requests` kèm `Retry-After`.
+  - **Auction WebSocket Connection Hardening**: Gia cố route `WS /ws/auctions/{auction_id}` trước khi `accept`: thẩm định tính hợp lệ của `auction_id > 0`, kiểm tra sự tồn tại trong CSDL và xác thực trạng thái phiên đấu giá hợp lệ nhận sự kiện thời gian thực (`status` thuộc `SCHEDULED`, `ACTIVE`). Mọi yêu cầu không hợp lệ, không tồn tại hoặc không ở trạng thái hoạt động (như `CANCELLED`, `ENDED`) đều bị đóng/từ chối tức thì với mã đóng WebSocket `1008` (Policy Violation), hoàn toàn không được lưu trữ trong `AuctionConnectionManager` và không tạo tác vụ Redis pub/sub listener rò rỉ.
+  - **Client/IP WebSocket Limit Audit**: Kiểm toán connection manager cho thấy kiến trúc sử dụng `set[WebSocket]` tự hủy rò rỉ theo vòng đời kết nối. Báo cáo giới hạn kỹ thuật: không thể áp dụng hạn mức kết nối per-IP tùy tiện trên WebSocket do kiến trúc proxy đa tầng (Cloudflare + Railway Envoy) và đặc thù mạng NAT trường học/ký túc xá (hàng trăm sinh viên dùng chung 1 IP public IPv4).
+  - Kiểm thử: 897/897 backend pytest tests PASS (bao gồm 22/22 rate limiter tests, 6/6 auction websocket hardening tests, 55/55 auction suite tests, 29/29 daily needs tests).
 - **P1 Public API Security Remediations Pass** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
   - **Finding-01 (Public Reviews Rate Limiting)**: Gắn `rate_limit_user_profile` (Class C Sensitive Public, 60 req/60s theo Client IP) vào route `GET /api/v1/users/{user_id}/reviews`, triệt tiêu lỗ hổng active-user enumeration oracle; bảo toàn tuyệt đối truy cập công khai không yêu cầu token và chuẩn hóa phản hồi `429 Too Many Requests` kèm `Retry-After`.
-  - **Finding-02 (Omit Internal Role from Public Profile)**: Loại bỏ triệt để trường `role` khỏi `PublicUserProfileResponse` backend DTO và `get_public_profile` service; cập nhật frontend `PublicProfilePage` hiển thị huy hiệu cộng đồng chuẩn "Sinh viên PTIT" không rẽ nhánh theo role nội bộ; bảo toàn trường `role` trong `UserResponse` cho authenticated current user (`/users/me`) và toàn bộ logic phân quyền Admin backend.
+  - **Finding-02 (Omit Internal Role from Public Profile)**: Loại bỏ triệt để trường `role` khỏi `PublicUserProfileResponse` backend DTO và `get_public_profile` service; cập nhật frontend `PublicProfilePage` hiển thị huy hiệu cộng đồng chuẩn "Thành viên Chợ PTITers" không rẽ nhánh theo role nội bộ; bảo toàn trường `role` trong `UserResponse` cho authenticated current user (`/users/me`) và toàn bộ logic phân quyền Admin backend.
   - **Finding-04 (Disable OpenAPI/Swagger in Production)**: Cấu hình `docs_url=None`, `redoc_url=None`, `openapi_url=None` khi `ENVIRONMENT == "production"`; trả về `404 Not Found` trên production, bảo toàn khả năng truy cập `/docs`, `/redoc`, `/openapi.json` (`200 OK`) trên development và test; không ảnh hưởng các route nghiệp vụ và healthcheck.
   - Kiểm thử: 890/890 backend pytest tests PASS (bao gồm 21/21 rate limiter tests, 14/14 reviews tests, 15/15 user profile tests, 2/2 OpenAPI config tests, 95/95 auth/admin tests); frontend build `tsc -b && vite build` PASS; 30/30 frontend hardening tests PASS.
 - **Production Security Hardening Pass — Anti-Scraping, Request Rate Limiting & User Enumeration Defense** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
@@ -143,8 +148,10 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **890/890 PASS** (`pytest tests/ -q`, 0 failures, 9 warnings).
-- **Backend Rate Limiter Security Suite**: **21/21 PASS** (`tests/test_rate_limiter.py`).
+- **Backend Full Suite**: **897/897 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
+- **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
+- **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
+- **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
 - **Backend Reviews Suite**: **14/14 PASS** (`tests/test_reviews.py`).
 - **Backend User Profile Suite**: **15/15 PASS** (`tests/test_user_profile.py`).
 - **Backend OpenAPI Production Configuration Suite**: **2/2 PASS** (`tests/test_openapi_config.py`).
