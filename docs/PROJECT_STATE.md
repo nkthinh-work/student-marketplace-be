@@ -10,14 +10,14 @@
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**PostgreSQL Production Backup & Restore Tooling Readiness (Direct Mode, Version Gate, Dynamic Restore Verification - Phase A Complete; Verified Locally, Production Not Mutated / Not Deployed)**
+**Phase C — Production Database Backup Automation & Retention (Local Implementation Complete: db_backup_remote.py, Dockerfile.backup, 30/30 Backup Tests Passing, Container Smoke Tested; Ready for R2 + Railway Configuration; Production Not Mutated / Not Deployed)**
 *Parent Task*: Phase 9C-D Release Verification & Disaster Recovery Readiness
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (BACKUP TOOLING IMPLEMENTED & VERIFIED LOCALLY; PRODUCTION NOT MUTATED)
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (REMOTE BACKUP AUTOMATION IMPLEMENTED & VERIFIED LOCALLY; PRODUCTION NOT MUTATED)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — DIRECT CONNECTION TOOLING & TESTS COMPLETE (15/15 BACKUP TESTS PASS, LOCAL DRILL 100% PASS, PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — REMOTE BACKUP TOOLING, S3/R2 RUNNER & RETENTION TESTS COMPLETE (30/30 BACKUP TESTS PASS, DOCKERFILE.BACKUP BUILD & SMOKE PASS, PRODUCTION NOT MUTATED / NOT DEPLOYED)**
 
 ---
 
@@ -95,7 +95,14 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **Phase C — Production Database Backup Automation & Retention Pass** (LOCAL WORKSPACE VERIFIED — READY FOR R2 + RAILWAY CONFIGURATION; PRODUCTION NOT MUTATED):
+  - Xây dựng `scripts/db_backup_remote.py` chuyên trách tải cặp bản sao lưu nguyên tử (`.dump` + `.dump.manifest.json`) lên Cloudflare R2 STANDARD storage (`StorageClass: "STANDARD"`), xác thực từ xa (`head_object` content-length match), lọc tệp mồ côi/dị vật, và quản lý chính sách lưu giữ (Rolling Retention: 14 ngày + 4 tuần qua tuần lịch ISO).
+  - Thiết lập các chốt chặn an toàn fail-closed: bảo vệ tuyệt đối bản sao lưu mới nhất không bao giờ bị xóa, hủy bỏ retention nếu tải lên thất bại, không xóa nếu tổng số cặp $\le 1$, bảo toàn hoàn toàn bản sao lưu từ xa nếu có lỗi.
+  - Chuẩn hóa biến tham chiếu CSDL trên Railway theo dạng canonical: `PGHOST=${{Postgres.PGHOST}}`, `PGPORT=${{Postgres.PGPORT}}`, `PGUSER=${{Postgres.PGUSER}}`, `PGPASSWORD=${{Postgres.PGPASSWORD}}`, `PGDATABASE=${{Postgres.PGDATABASE}}` (không ưu tiên `Postgres.RAILWAY_PRIVATE_DOMAIN`).
+  - Xây dựng `Dockerfile.backup` trên nền `postgres:18-alpine` (PostgreSQL 18.6 client tools khớp phiên bản server) + Python 3 + `boto3`, chạy dưới người dùng không đặc quyền `postgres` (uid 70) với CMD mặc định thực thi chu trình tự động `run-pipeline --cleanup-local`.
+  - Kiểm thử: 15/15 unit tests `tests/test_db_backup_remote.py` PASS; 15/15 unit tests `tests/test_db_backup.py` PASS (tổng cộng 30/30 backup tests PASS); Docker build image `student-marketplace-backup:test` thành công; smoke test container xác nhận PostgreSQL 18.6 client, non-root user và import boto3 thành công; cập nhật đầy đủ tài liệu vận hành `docs/BACKUP_RESTORE.md`.
 - **PostgreSQL Production Backup Tooling Readiness Pass (Direct Mode, Version Gate & Dynamic Restore Verification)** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+
   - Mở rộng `scripts/db_backup.py` hỗ trợ chế độ kết nối trực tiếp native (`--direct`, `--host`, `--port`, `--user`, `--dbname`, biến môi trường chuẩn `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`) tương thích hoàn toàn với Railway tunnel (`railway connect postgres --tunnel-only -P 15432`).
   - Bảo toàn 100% tương thích ngược với chế độ Docker Compose mặc định.
   - Tích hợp cổng kiểm tra phiên bản PostgreSQL (Version Gate): đối soát `server_version` và `pg_dump --version`, chặn cứng lỗi nếu `pg_dump < server_major`, cảnh báo rõ ràng nếu `pg_dump > server_major`.
@@ -156,8 +163,8 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **906/906 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
-- **Backend Backup & Restore Tooling Suite**: **15/15 PASS** (`tests/test_db_backup.py`).
+- **Backend Full Suite**: **921/921 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
+- **Backend Backup & Remote Retention Tooling Suite**: **30/30 PASS** (`tests/test_db_backup.py`, `tests/test_db_backup_remote.py`).
 - **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
 - **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
@@ -171,7 +178,7 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
 - **Production Endpoint Health**: `/health` endpoint trên Railway trả về HTTP 200 `{"status": "healthy", "database": "up", "redis": "up", "service": "up"}`.
 - **Alembic State**: Head `f1a2b3c4d5e6`, 0 schema drift (`alembic check` clean, 0 new migrations).
-- **Cơ sở dữ liệu vật lý**: 32 bảng nghiệp vụ + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý.
+- **Cơ sở dữ liệu vật lý**: Baseline hiện tại gồm 32 bảng nghiệp vụ (`application_table_count`) + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý (`physical_table_count`); quy trình sao lưu và đối soát phục hồi đánh giá động theo metadata của manifest, không ràng buộc cứng con số 33.
 - **Firebase Credentials Tests**: 7/7 PASS (`tests/test_firebase.py`).
 - **Frontend Hardening & Acceptance Suite**: **30/30 PASS** (`node src/__tests__/post_deployment_hardening.test.mjs`).
 - **Frontend ESLint Baseline**: **0 errors**, 80 historical warnings (`npm run lint`).

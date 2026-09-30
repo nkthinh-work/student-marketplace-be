@@ -1,0 +1,38 @@
+# ==============================================================================
+# Production Backup & Retention Runner for Student Marketplace
+# Base: postgres:18-alpine (PostgreSQL 18 client tools) + Python 3 + boto3
+# Non-root user, lean runtime context, short-lived cron execution
+# ==============================================================================
+
+FROM postgres:18-alpine
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Cài đặt Python 3, pip và boto3 vào virtual environment
+RUN apk add --no-cache python3 py3-pip && \
+    python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir boto3
+
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+# Tạo thư mục làm việc và cấp quyền cho user không đặc quyền postgres
+RUN mkdir -p /app/scripts /app/backups && \
+    chown -R postgres:postgres /app
+
+# Copy các mã nguồn sao lưu vận hành
+COPY scripts/db_backup.py /app/scripts/db_backup.py
+COPY scripts/db_backup_remote.py /app/scripts/db_backup_remote.py
+
+RUN chmod +x /app/scripts/db_backup.py /app/scripts/db_backup_remote.py
+
+USER postgres
+
+# Thiết lập Python path để import scripts như một package
+ENV PYTHONPATH="/app"
+
+# Lệnh mặc định: chạy toàn bộ chu trình backup -> verify -> upload R2 -> retention
+# Tiến trình kết thúc sau khi hoàn thành công việc
+CMD ["python3", "-m", "scripts.db_backup_remote", "run-pipeline", "--output-dir", "/app/backups", "--cleanup-local"]

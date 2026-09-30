@@ -209,7 +209,7 @@ Khi cần thực hiện phục hồi cơ sở dữ liệu trong tình huống s�
 
 Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuật:
 1. `alembic_version`: Truy vấn `SELECT version_num FROM alembic_version;` phải trả về đúng revision mong đợi.
-2. Danh mục bảng: Đảm bảo đủ 29 bảng nghiệp vụ vật lý của hệ thống.
+2. Danh mục bảng: Đảm bảo khớp chính xác 100% số lượng bảng nghiệp vụ (`application_table_count`) và tổng số bảng vật lý (`physical_table_count`) được ghi nhận động trong manifest của bản sao lưu.
 3. Ràng buộc toàn vẹn: Không có lỗi khóa ngoại hoặc bảng thiếu chỉ mục.
 4. Truy vấn khói (Smoke SELECT): Thực hiện truy vấn đọc thử trên các bảng `users`, `products`, `orders`, `auctions`.
 
@@ -257,13 +257,61 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 
 ---
 
-## 14. Định hướng lưu trữ & lưu giữ (Retention Considerations)
+## 14. Chính sách lưu giữ & Lưu trữ từ xa (Phase C Retention & Remote Storage)
 
-- Hiện tại hệ thống đã hoàn thiện công cụ vận hành (`Procedure Implemented`). Lịch trình tự động (`Scheduled Automation`) sẽ được kích hoạt tại các pha hạ tầng triển khai tiếp theo khi môi trường cloud được xác định.
-- **Khuyến nghị lưu giữ**:
-  - Sao lưu bắt buộc ngay trước mỗi lần triển khai migration cấu trúc dữ liệu (`Pre-migration backup`).
-  - Giữ lại tối thiểu 7 bản sao lưu ngày gần nhất và 4 bản sao lưu tuần trên bộ lưu trữ bảo mật độc lập ngoài máy chủ chính.
-  - Kịch bản vận hành mặc định không tự động xóa bất kỳ bản sao lưu cũ nào để tránh rủi ro mất mát dữ liệu do cấu hình nhầm.
+Hệ thống triển khai tự động hóa sao lưu và lưu giữ theo mô hình cặp bản sao lưu nguyên tử (Atomic Backup Set) trên Cloudflare R2 (S3-compatible):
+
+### 14.1. Khái niệm Cặp Bản sao lưu Nguyên tử (Atomic Remote Backup Set)
+Một bản sao lưu từ xa chỉ được công nhận hợp lệ khi tồn tại đầy đủ cặp đôi tương ứng:
+- `<prefix>/<base_name>.dump` (Binary custom dump)
+- `<prefix>/<base_name>.dump.manifest.json` (Operational manifest metadata)
+
+Một phiên sao lưu từ xa được coi là **THÀNH CÔNG** khi và chỉ khi:
+1. Dump tải lên thành công vào bucket R2.
+2. Manifest tải lên thành công vào bucket R2.
+3. Cả 2 đối tượng được kiểm chứng tồn tại từ xa qua `head_object`.
+4. Kích thước đối tượng trên R2 khớp 100% với kích thước tệp cục bộ (`dump_size_bytes` và `manifest_size_bytes`).
+
+> **Nguyên tắc Chống Thất Thoát (Fail-Closed Safety)**:
+> Nếu bất kỳ tệp nào tải thất bại hoặc không vượt qua kiểm tra kích thước: Phiên chạy lập tức bị đánh dấu **THẤT BÀI**, **KHÔNG kích hoạt tiến trình retention**, và **toàn bộ bản sao lưu cũ trên R2 được bảo toàn tuyệt đối**.
+
+### 14.2. Thuật toán Lưu giữ (Rolling Retention: 14 Daily + 4 Weekly)
+- **Cửa sổ hàng ngày (Daily Window)**: Giữ lại toàn bộ bản sao lưu trong vòng 14 ngày gần nhất (14 bản ngày).
+- **Cửa sổ hàng tuần (Weekly Window)**: Giữ lại 1 bản/tuần (nhóm theo tuần lịch ISO) cho 4 tuần kế tiếp (khoảng thời gian từ 14 đến 42 ngày trước).
+- **Thu dọn bản hết hạn (Pruning)**: Toàn bộ bản sao lưu cũ hơn 42 ngày hoặc bản dư thừa trong cùng một tuần lịch cũ hơn 14 ngày sẽ bị thu dọn hoàn chỉnh (xóa đồng thời cả `.dump` và `.manifest.json`).
+- **Các chốt chặn an toàn bất biến (Retention Invariants)**:
+  1. **Bản sao lưu mới nhất (Newest Verified Pair)**: TUYỆT ĐỐI KHÔNG BAO GIỜ bị xóa trong bất kỳ hoàn cảnh nào.
+  2. **Điều kiện kích hoạt**: Retention CHỈ được phép chạy sau khi đã tải và kiểm chứng thành công một bản sao lưu mới trong phiên hiện tại (`newest_verified != None`).
+  3. **Ngưỡng tối thiểu**: Nếu tổng số cặp bản sao lưu trên R2 $\le 1$, tuyệt đối không xóa bất kỳ bản nào.
+  4. **Tệp mồ côi (Orphan objects)**: Các tệp đơn lẻ thiếu dump hoặc manifest không được coi là backup hợp lệ và không làm ảnh hưởng tới retention các cặp hoàn chỉnh.
+
+### 14.3. Hạ tầng & Tham số Thời gian thực
+- **Lưu trữ**: Cloudflare R2 STANDARD storage (`StorageClass: "STANDARD"`). Tính chính xác và an toàn của hệ thống lưu trữ độc lập với chính sách giá của nhà cung cấp. Về mặt vận hành, theo giả định gói miễn phí hiện hành của Cloudflare R2: 10 GB lưu trữ chuẩn và chính sách không thu phí truyền tải dữ liệu tải xuống (zero egress fee policy) phù hợp với quy mô hiện tại của dự án (không mô tả việc tải xuống/khôi phục là vô hạn).
+- **RPO (Recovery Point Objective)**: Bản sao lưu tự động hàng ngày bảo đảm RPO $\le$ 24 giờ. Bản sao lưu thủ công trước migration là điểm rollback đã biết (chỉ đạt RPO = 0 khi luồng ghi của ứng dụng được tạm dừng có kiểm soát giữa thời điểm backup và migration).
+- **Thời gian thực thi & Headroom**: Thời gian thực thi `pg_dump` đo đạc thực tế trên production Railway là ~27 giây (tuyệt đối không áp dụng giả định dưới 2 giây cho production). Tiến trình container được thiết kế với biên độ an toàn (headroom) từ 60 đến 120 giây.
+- **Chi phí**: Tiến trình tiêu thụ tài nguyên tính toán container thông thường của Railway và là phần sử dụng có tính phí theo quy định của nền tảng (billable compute usage). Mức gia tăng tài nguyên này dự kiến là không đáng kể và có thể được bù trừ bởi hạn mức tín dụng sẵn có của gói dịch vụ (không cam kết cố định $0.00).
+- **Thuật ngữ bảng CSDL**: Luôn sử dụng `application_table_count` (số bảng nghiệp vụ) và `physical_table_count` (tổng số bảng vật lý) được trích xuất động từ manifest (baseline hiện tại là 32 bảng nghiệp vụ + 1 bảng Alembic = 33 bảng vật lý, nhưng mã nguồn và quy trình đối soát không ràng buộc cứng con số 33).
+
+### 14.4. Cấu hình Biến Tham chiếu Chuẩn tắc trên Railway (Canonical Railway Variables)
+Tiến trình container sao lưu trên Railway nhận thông tin kết nối CSDL chuẩn tắc từ service PostgreSQL nội bộ:
+```text
+PGHOST=${{Postgres.PGHOST}}
+PGPORT=${{Postgres.PGPORT}}
+PGUSER=${{Postgres.PGUSER}}
+PGPASSWORD=${{Postgres.PGPASSWORD}}
+PGDATABASE=${{Postgres.PGDATABASE}}
+```
+*(Ghi chú: Không ưu tiên `Postgres.RAILWAY_PRIVATE_DOMAIN` thay cho `Postgres.PGHOST`).*
+
+Các biến cấu hình lưu trữ R2 độc lập:
+```text
+R2_BUCKET_NAME=choptiters-backups
+R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=<access_key_id>
+R2_SECRET_ACCESS_KEY=<secret_access_key>
+R2_PREFIX=backups/
+```
+
 
 ---
 
@@ -274,7 +322,7 @@ Sau khi phục hồi, cần kiểm tra tối thiểu các tiêu chí kỹ thuậ
 - [ ] Database đích được tạo trên môi trường cô lập hoặc cluster mới.
 - [ ] `pg_restore` thực thi thành công không phát sinh cảnh báo lỗi cấu trúc.
 - [ ] Bảng `alembic_version` được kiểm tra và khớp với revision của mã nguồn.
-- [ ] Số lượng bảng vật lý đạt đủ 33 (32 bảng ứng dụng + 1 bảng Alembic).
+- [ ] Khớp số lượng bảng nghiệp vụ (`application_table_count`) và tổng số bảng vật lý (`physical_table_count`) đối soát động từ manifest.
 - [ ] Redis được khởi tạo mới hoặc làm sạch an toàn trước khi kết nối ứng dụng.
 - [ ] Biến môi trường kết nối đã được kiểm tra tính chính xác.
 - [ ] Chạy các truy vấn SELECT kiểm tra danh tính và đơn hàng mẫu.
@@ -300,3 +348,47 @@ Bản sao lưu và diễn tập thực tế gần nhất ghi nhận trên hệ t
 - **Kiểm chứng khớp số lượng bản ghi**: 100% khớp tuyệt đối trên toàn bộ 32 bảng nghiệp vụ
 - **Bảo toàn dữ liệu nguồn**: Database nguồn không bị truy vấn hay tác động trong suốt quá trình drill.
 - **Thu dọn tài nguyên**: Database cô lập tạm thời đã được `DROP DATABASE ... WITH (FORCE)` an toàn.
+
+---
+
+## 17. Hướng dẫn Vận hành Sao lưu Đám mây & Khôi phục Ngoại vi (Phase C Runbook)
+
+### 17.1. Cấu trúc Công cụ Vận hành
+- `scripts/db_backup.py`: Trọng tâm xử lý logic cốt lõi (tạo dump, verify, isolated restore drill).
+- `scripts/db_backup_remote.py`: Trọng tâm xử lý kết nối Cloudflare R2, tải cặp tệp nguyên tử, xác thực remote và áp dụng chính sách retention.
+- `Dockerfile.backup`: Container runner độc lập (`postgres:18-alpine` + `python3` + `boto3`), chạy tác vụ sao lưu ngắn hạn (`short-lived cron`) theo lịch trình.
+
+### 17.2. Lệnh Vận hành CLI từ xa
+
+#### A. Chạy toàn bộ chu trình tự động (Pipeline)
+Thực thi tuần tự: dump direct -> verify -> upload R2 -> confirm -> prune retention:
+```bash
+python scripts/db_backup_remote.py run-pipeline --output-dir backups --cleanup-local
+```
+
+#### B. Tải thủ công một cặp bản sao lưu lên R2
+Khi người vận hành muốn đẩy một bản sao lưu cục bộ đã kiểm chứng lên R2:
+```bash
+python scripts/db_backup_remote.py upload-pair backups/railway_20261001T200000Z.dump --apply-retention
+```
+
+#### C. Liệt kê danh sách các cặp bản sao lưu trên R2
+Kiểm tra các bản sao lưu hợp lệ đang được lưu trữ an toàn:
+```bash
+python scripts/db_backup_remote.py list-pairs
+```
+
+#### D. Diễn tập Phục hồi Ngoại vi (Off-Platform Disaster Recovery Drill)
+1. Tải cặp bản sao lưu mới nhất từ Cloudflare R2 về thư mục cục bộ (sử dụng AWS CLI hoặc giao diện Cloudflare Dashboard):
+   ```bash
+   aws s3 cp s3://choptiters-backups/backups/railway_LATEST.dump ./backups/ --endpoint-url $R2_ENDPOINT_URL
+   aws s3 cp s3://choptiters-backups/backups/railway_LATEST.dump.manifest.json ./backups/ --endpoint-url $R2_ENDPOINT_URL
+   ```
+2. Thực hiện kiểm chứng tính toàn vẹn:
+   ```bash
+   python scripts/db_backup.py verify backups/railway_LATEST.dump --direct
+   ```
+3. Diễn tập khôi phục vào database cô lập:
+   ```bash
+   python scripts/db_backup.py restore-drill backups/railway_LATEST.dump --direct --host 127.0.0.1 --port 15432 --user postgres
+   ```
