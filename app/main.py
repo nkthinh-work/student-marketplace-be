@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -108,12 +108,13 @@ def create_app() -> FastAPI:
 
     @application.get("/health")
     async def health_check(
+        response: Response,
         db: AsyncSession = Depends(get_db),
         redis_conn: aioredis.Redis = Depends(get_redis)
     ) -> dict[str, Any]:
         db_status = "down"
         try:
-            await db.execute(text("SELECT 1"))
+            await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=2.0)
             db_status = "up"
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
@@ -126,7 +127,12 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error(f"Redis health check failed: {e}")
 
-        overall_status = "healthy" if db_status == "up" and redis_status == "up" else "unhealthy"
+        if db_status == "up":
+            overall_status = "healthy" if redis_status == "up" else "degraded"
+            response.status_code = status.HTTP_200_OK
+        else:
+            overall_status = "unhealthy"
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
         return {
             "status": overall_status,

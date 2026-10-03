@@ -416,3 +416,26 @@ def test_pipeline_success_end_to_end_mocked(tmp_path: pathlib.Path, monkeypatch)
         assert not dump_file.exists()
         assert not manifest_file.exists()
 
+
+def test_main_run_pipeline_success_exit_code_0(monkeypatch):
+    """Hàm main() trả về 0 khi pipeline chạy thành công."""
+    from scripts.db_backup_remote import main
+
+    monkeypatch.setattr("sys.argv", ["db_backup_remote.py", "run-pipeline"])
+    with patch("scripts.db_backup_remote.cmd_run_pipeline", return_value=0):
+        rc = main()
+        assert rc == 0
+
+
+def test_main_failure_returns_exit_code_1_with_error_marker(capsys, monkeypatch):
+    """Hàm main() trả về 1 khi gặp lỗi và in ra marker lỗi chuẩn hóa."""
+    from scripts.db_backup_remote import main
+
+    monkeypatch.setattr("sys.argv", ["db_backup_remote.py", "run-pipeline"])
+    with patch("scripts.db_backup_remote.cmd_run_pipeline", side_effect=RuntimeError("Database dump failed")):
+        rc = main()
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "[!] LỖI THỰC THI (REMOTE BACKUP):" in captured.err
+        assert "Database dump failed" in captured.err
+

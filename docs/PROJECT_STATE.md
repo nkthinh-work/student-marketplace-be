@@ -5,19 +5,19 @@
 ---
 
 ## 1. Current Phase (Giai đoạn hiện tại)
-**Phase 9 — Workers + Optimization + Deploy**
+**Phase D-Lite — Minimal Production Monitoring & Operational Visibility**
 
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase C — Production Database Backup Automation & Retention (Local Implementation Complete: db_backup_remote.py, Dockerfile.backup, 30/30 Backup Tests Passing, Container Smoke Tested; Ready for R2 + Railway Configuration; Production Not Mutated / Not Deployed)**
-*Parent Task*: Phase 9C-D Release Verification & Disaster Recovery Readiness
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (REMOTE BACKUP AUTOMATION IMPLEMENTED & VERIFIED LOCALLY; PRODUCTION NOT MUTATED)
+**Phase D-Lite — Minimal Production Monitoring & Operational Visibility (Implemented & Locally Verified; Awaiting User Acceptance)**
+*Parent Task*: Phase 9 — Workers + Optimization + Deploy
+*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (PHASE C BACKUP VERIFIED ON PRODUCTION; PHASE D-LITE HEALTH BOUNDED TIMEOUT & AUDIT VERIFIED LOCALLY)
 
 ---
 
 ## 3. Status (Trạng thái)
-**LOCAL WORKSPACE IMPLEMENTED / VERIFIED — REMOTE BACKUP TOOLING, S3/R2 RUNNER & RETENTION TESTS COMPLETE (30/30 BACKUP TESTS PASS, DOCKERFILE.BACKUP BUILD & SMOKE PASS, PRODUCTION NOT MUTATED / NOT DEPLOYED)**
+**IMPLEMENTED — AWAITING USER ACCEPTANCE (Health check readiness semantics refined with DB 503 gate & Redis fail-open degraded 200, Railway readiness semantics corrected, 5xx logging audited, backup cron failure visibility verified, 927/927 tests PASS, clean git diff --check, ready for manual Railway monitoring configuration)**
 
 ---
 
@@ -36,11 +36,46 @@
 - **Data Infrastructure (Hạ tầng Dữ liệu Sản xuất)**:
   - **Railway PostgreSQL**: CSDL PostgreSQL được quản lý trên Railway, là nguồn dữ liệu chuẩn xác duy nhất (persistent production source of truth) của môi trường sản xuất. **TUYỆT ĐỐI KHÔNG PHẢI là local Docker PostgreSQL**.
   - **Railway Redis**: Redis được quản lý trên Railway, kết nối qua `REDIS_URL` / mạng nội bộ Railway. **TUYỆT ĐỐI KHÔNG PHẢI là local Docker Redis**.
+- **Backup & Retention Service (Dịch vụ Sao lưu & Lưu giữ Đám mây - Phase C Verified on Production)**:
+  - Dịch vụ: `student-marketplace-backup` trên Railway, sử dụng image xây dựng từ `/Dockerfile.backup` (nền `postgres:18-alpine` client major 18 + Python 3 + boto3).
+  - Biến kết nối CSDL: Tham chiếu Railway canonical `PGHOST=${{Postgres.PGHOST}}`, `PGPORT=${{Postgres.PGPORT}}`, `PGUSER=${{Postgres.PGUSER}}`, `PGPASSWORD=${{Postgres.PGPASSWORD}}`, `PGDATABASE=${{Postgres.PGDATABASE}}`.
+  - Bộ lưu trữ từ xa: Cloudflare R2 bucket `choptiters-backups` (private, storage class `STANDARD`), xác thực qua dedicated scoped Object Read & Write token.
+  - Lịch trình tự động: Cron `0 20 * * *` kích hoạt trên Railway.
+  - Kiểm chứng sản xuất: Phiên sao lưu thật đầu tiên trên production đã hoàn thành thành công: `pg_dump` major 18 khớp server major 18, kiểm chứng toàn vẹn dump + manifest vượt qua, cả 2 đối tượng tải lên R2 thành công và khớp kích thước (`head_object`), chính sách retention hoàn tất an toàn.
+  - Diễn tập ngoại vi: Diễn tập restore-from-R2 ngoại vi cục bộ tạm hoãn do image local bị xóa và DNS/pull Docker Hub gặp sự cố kết nối mạng phát triển; không ảnh hưởng tới vận hành production.
 - **Backend Production Integrations**:
   - Firebase Admin SDK: Khởi tạo an toàn từ biến môi trường `FIREBASE_CREDENTIALS_JSON`.
   - Cloudinary: Cấu hình credentials sản xuất hoạt động (namespace `student-marketplace/prod/`).
   - Backend Production CORS: Cấu hình cho frontend production origin dưới dạng JSON-array Pydantic:
     `BACKEND_CORS_ORIGINS = ["https://student-marketplace-fe-production.up.railway.app"]`.
+
+### 4.1. Monitoring-Lite Operator Guide (Hướng dẫn Vận hành Giám sát Tối giản)
+
+- **Railway Healthcheck Path & Facts**:
+  - Path: `/health`
+  - Purpose: Deployment readiness gate, **KHÔNG PHẢI** là continuous uptime monitoring.
+  - Hành vi chuẩn xác của Railway:
+    - Khi có phiên bản triển khai mới (new deployment), Railway đợi nhận phản hồi HTTP 2xx từ `/health` trước khi kích hoạt container mới và chuyển traffic mạng sang.
+    - Railway **KHÔNG** liên tục thăm dò (continuously monitor) endpoint này sau khi deployment đã vào trạng thái live.
+    - Việc tiến trình sập/khởi động lại trong quá trình chạy (runtime crash/restart) được quản lý độc lập bởi cơ chế **Restart Policy** của container trên Railway, không phải do endpoint `/health`.
+- **Backend Health Probe Contract (`GET /health`)**:
+  - **A. PostgreSQL UP + Redis UP**: HTTP 200 `{"status": "healthy", "database": "up", "redis": "up", "service": "up"}`
+  - **B. PostgreSQL UP + Redis DOWN**: HTTP 200 `{"status": "degraded", "database": "up", "redis": "down", "service": "up"}` (Redis là fail-open realtime dependency; sự cố Redis không làm nghẽn việc kích hoạt deployment).
+  - **C. PostgreSQL DOWN hoặc DB probe timeout**: HTTP 503 `{"status": "unhealthy", "database": "down", "redis": "...", "service": "up"}` (PostgreSQL là persistent source of truth; Railway không được kích hoạt deployment mới nếu không kết nối được PostgreSQL).
+  - **Guarantees**:
+    - Bounded timeouts: PostgreSQL probe timeout = 2.0s (`asyncio.wait_for`), Redis probe timeout = 1.0s.
+    - Zero secret leakage: Tuyệt đối không để lộ chi tiết exception, credentials, stack trace hay query trong payload JSON.
+    - Rate-limit bypass: Bỏ qua rate limiting hoàn toàn qua Class A whitelist trong `RateLimitMiddleware`.
+    - Thiết kế tối giản: Không phân tách `/live` và `/ready` phức tạp; giữ nguyên 1 endpoint duy nhất `/health`.
+- **Production Runtime Monitoring (Giám sát Tiến trình Runtime)**:
+  - Phương thức: Theo dõi trực tiếp Railway service/deployment logs và deployment state.
+  - Vị trí: Railway Dashboard -> `student-marketplace-be` -> tab `Deployments` & `Logs`.
+  - Điều tra lỗi 5xx: Lọc theo từ khóa `500` hoặc `ERROR`. Uvicorn access log ghi nhận method, path, HTTP status; Starlette/Uvicorn log traceback phía server; client nhận phản hồi an toàn `500 Internal Server Error`; tuyệt đối không log header `Authorization`, cookie, token Firebase hay request body.
+- **Backup Monitoring (Giám sát Sao lưu Tự động)**:
+  - Phương thức: Theo dõi lịch sử thực thi Railway cron execution/deployment history + process exit code + explicit SUCCESS/ERROR log markers.
+  - Vị trí: Railway Dashboard -> `student-marketplace-backup` -> cron execution history -> tab `Logs`.
+  - Tiêu chí thành công (SUCCESS): Tiến trình kết thúc với exit code `0` (Railway hiển thị badge xanh) và log chứa marker rõ ràng: `[OK] CHU TRÌNH SAO LƯU TỰ ĐỘNG HOÀN TẤT THÀNH CÔNG`.
+  - Tiêu chí thất bại (FAILURE): Tiến trình kết thúc với exit code khác 0 (exit `1`, Railway hiển thị badge đỏ), retention bị hủy bỏ ngay lập tức để bảo vệ bản sao lưu cũ, và log chứa marker: `[!] LỖI THỰC THI (REMOTE BACKUP): <lỗi đã được che giấu secret>`.
 
 ### Ranh giới Môi trường & Bản chất các Thao tác (Environment & Operation Boundaries)
 
@@ -82,11 +117,11 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - [x] **Cloudinary Backend Integration**: Cấu hình credentials sản xuất hoạt động.
 - [x] **Frontend VITE Production Variables**: Đã cấu hình và đóng gói vào build artifact.
 - [x] **First Production ADMIN Bootstrap**: Khởi tạo và thăng cấp tài khoản Quản trị viên đầu tiên đã hoàn thành và được xác nhận trên môi trường Railway production (First production ADMIN bootstrap completed and verified).
+- [x] **Production Database Backup Automation & Retention (Phase C)**: Dịch vụ `student-marketplace-backup` chạy `Dockerfile.backup` trên Railway với cron `0 20 * * *`; phiên sao lưu thật đầu tiên hoàn tất thành công (`pg_dump` major 18 khớp server 18, upload R2 STANDARD bucket `choptiters-backups`, xác thực remote size match, rolling retention hoàn tất); off-platform restore-from-R2 drill tạm hoãn cục bộ, không cản trở production.
 
 ### TODO (Chưa Thực Hiện Trên Production)
 - [ ] **Production Reference Seed**: Thực thi nạp 10 danh mục chuẩn tắc trên Railway PostgreSQL (`python -m scripts.seed_production_reference`).
 - [ ] **Production Background Worker Deployment**: Triển khai dịch vụ worker độc lập (`python -m app.workers.order_auto_cancel`) trên Railway.
-- [ ] **Production Backup Verification**: Diễn tập và xác thực sao lưu trên Railway PostgreSQL.
 
 ### UNKNOWN / TODO (Cần Xác Minh Thủ Công)
 - [ ] **Firebase Authentication Authorized Domains**: Chưa có bằng chứng trong repo xác nhận domain `student-marketplace-fe-production.up.railway.app` đã được thêm vào danh sách Authorized Domains trên Firebase Console. Cần người vận hành kiểm tra trên Firebase Console.
@@ -95,12 +130,16 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
-- **Phase C — Production Database Backup Automation & Retention Pass** (LOCAL WORKSPACE VERIFIED — READY FOR R2 + RAILWAY CONFIGURATION; PRODUCTION NOT MUTATED):
-  - Xây dựng `scripts/db_backup_remote.py` chuyên trách tải cặp bản sao lưu nguyên tử (`.dump` + `.dump.manifest.json`) lên Cloudflare R2 STANDARD storage (`StorageClass: "STANDARD"`), xác thực từ xa (`head_object` content-length match), lọc tệp mồ côi/dị vật, và quản lý chính sách lưu giữ (Rolling Retention: 14 ngày + 4 tuần qua tuần lịch ISO).
-  - Thiết lập các chốt chặn an toàn fail-closed: bảo vệ tuyệt đối bản sao lưu mới nhất không bao giờ bị xóa, hủy bỏ retention nếu tải lên thất bại, không xóa nếu tổng số cặp $\le 1$, bảo toàn hoàn toàn bản sao lưu từ xa nếu có lỗi.
-  - Chuẩn hóa biến tham chiếu CSDL trên Railway theo dạng canonical: `PGHOST=${{Postgres.PGHOST}}`, `PGPORT=${{Postgres.PGPORT}}`, `PGUSER=${{Postgres.PGUSER}}`, `PGPASSWORD=${{Postgres.PGPASSWORD}}`, `PGDATABASE=${{Postgres.PGDATABASE}}` (không ưu tiên `Postgres.RAILWAY_PRIVATE_DOMAIN`).
-  - Xây dựng `Dockerfile.backup` trên nền `postgres:18-alpine` (PostgreSQL 18.6 client tools khớp phiên bản server) + Python 3 + `boto3`, chạy dưới người dùng không đặc quyền `postgres` (uid 70) với CMD mặc định thực thi chu trình tự động `run-pipeline --cleanup-local`.
-  - Kiểm thử: 15/15 unit tests `tests/test_db_backup_remote.py` PASS; 15/15 unit tests `tests/test_db_backup.py` PASS (tổng cộng 30/30 backup tests PASS); Docker build image `student-marketplace-backup:test` thành công; smoke test container xác nhận PostgreSQL 18.6 client, non-root user và import boto3 thành công; cập nhật đầy đủ tài liệu vận hành `docs/BACKUP_RESTORE.md`.
+- **Phase D-Lite — Minimal Production Monitoring & Operational Visibility Pass** (LOCAL WORKSPACE VERIFIED — READY FOR MANUAL RAILWAY CONFIGURATION):
+  - Bổ sung bounded timeout 2.0s cho probe CSDL PostgreSQL trong `GET /health` (`asyncio.wait_for(..., timeout=2.0)`), đồng bộ với timeout 1.0s của Redis; đảm bảo `/health` phản hồi tức thì và không bị nghẽn (hang) khi mạng CSDL gặp sự cố.
+  - Chuẩn hóa ngữ nghĩa Railway deployment readiness gate: `/health` trả về HTTP 200 `healthy` khi cả DB và Redis sẵn sàng; HTTP 200 `degraded` khi Redis gặp sự cố (bảo đảm tính năng fail-open của Redis không chặn việc kích hoạt deployment backend); và HTTP 503 `unhealthy` khi PostgreSQL down hoặc probe timeout (ngăn Railway kích hoạt deployment mới không thể kết nối tới cơ sở dữ liệu chính).
+  - Đính chính thực tế Railway healthcheck: Railway Healthcheck Path đóng vai trò cổng kiểm tra sẵn sàng khi triển khai (deployment readiness gate) trước khi trỏ lưu lượng mạng, KHÔNG thăm dò liên tục để tự động restart container khi đã live; restart process runtime do Restart Policy container quyết định độc lập.
+  - Kiểm toán ghi log 5xx và an toàn thông tin: Xác nhận Uvicorn access log và ASGI exception logger đáp ứng đầy đủ yêu cầu điều tra mà không trùng lặp; không để lộ header `Authorization`, Firebase token, cookie, password, `DATABASE_URL` hay body dữ liệu cá nhân; client nhận thông báo 500 không có stack trace.
+  - Kiểm toán failure visibility của backup cron: Xác nhận `scripts/db_backup_remote.py` trả exit code 0 khi thành công kèm marker `[OK]`, trả exit code 1 khi thất bại kèm marker `[!]`, sanitize toàn bộ secret và hủy bỏ retention khi gặp lỗi.
+  - Bộ kiểm thử: 8/8 health tests PASS (bao gồm ca degraded, db down 503, db timeout 503, both down 503, và kiểm toán không rò rỉ secret trong payload), 17/17 remote backup tests PASS (bao gồm ca kiểm thử exit code 0/1 của `main()`); toàn bộ 927/927 backend tests PASS; `git diff --check` sạch 100%.
+- **Phase C — Production Database Backup Automation & Retention Pass** (CONFIRMED ON PRODUCTION BY OPERATOR):
+  - Xây dựng và triển khai dịch vụ `student-marketplace-backup` chạy `Dockerfile.backup` trên Railway với cron `0 20 * * *`.
+  - Phiên sao lưu thật đầu tiên trên production hoàn tất thành công: `pg_dump` major 18 khớp server major 18, kiểm chứng toàn vẹn dump + manifest vượt qua, tải lên Cloudflare R2 STANDARD bucket `choptiters-backups`, xác thực remote size match, rolling retention hoàn tất an toàn. Off-platform restore drill tạm hoãn cục bộ, không cản trở production.
 - **PostgreSQL Production Backup Tooling Readiness Pass (Direct Mode, Version Gate & Dynamic Restore Verification)** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
 
   - Mở rộng `scripts/db_backup.py` hỗ trợ chế độ kết nối trực tiếp native (`--direct`, `--host`, `--port`, `--user`, `--dbname`, biến môi trường chuẩn `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`) tương thích hoàn toàn với Railway tunnel (`railway connect postgres --tunnel-only -P 15432`).
@@ -163,8 +202,9 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **921/921 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
-- **Backend Backup & Remote Retention Tooling Suite**: **30/30 PASS** (`tests/test_db_backup.py`, `tests/test_db_backup_remote.py`).
+- **Backend Full Suite**: **927/927 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
+- **Backend Backup & Remote Retention Tooling Suite**: **32/32 PASS** (`tests/test_db_backup.py`, `tests/test_db_backup_remote.py`).
+- **Backend Health & Readiness Suite**: **8/8 PASS** (`tests/test_health.py`).
 - **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
 - **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
@@ -188,8 +228,9 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 9. Next Exact Task (Công việc chính xác tiếp theo)
 
-- **Phase 9C-D Slice 2 — Production Data Bootstrap & Release Verification**:
-  1. Thực thi nạp 10 danh mục tham chiếu trên Railway PostgreSQL: `python -m scripts.seed_production_reference`.
-  2. Triển khai dịch vụ Background Worker (`python -m app.workers.order_auto_cancel`) độc lập trên Railway kết nối Railway PostgreSQL và Redis.
-  3. Kiểm tra và xác nhận cấu hình Firebase Authorized Domains trên Firebase Console cho domain frontend production.
-  4. Diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường Railway live và xác thực quy trình sao lưu.
+- **Manual Railway Monitoring Configuration & Release Verification**:
+  1. Cấu hình Healthcheck Path = `/health` trên Railway cho dịch vụ `student-marketplace-be` (Settings -> Deploy -> Healthcheck Path).
+  2. Thực thi nạp 10 danh mục tham chiếu trên Railway PostgreSQL: `python -m scripts.seed_production_reference`.
+  3. Triển khai dịch vụ Background Worker (`python -m app.workers.order_auto_cancel`) độc lập trên Railway kết nối Railway PostgreSQL và Redis.
+  4. Kiểm tra và xác nhận cấu hình Firebase Authorized Domains trên Firebase Console cho domain frontend production.
+  5. Diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường Railway live.
