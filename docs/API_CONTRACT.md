@@ -54,7 +54,7 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 | **Emergency Flood Ceiling** | Toàn bộ API (ngoại trừ `/health`, static docs) | Client IP | 3000 req / 60s | Ngưỡng chặn khẩn cấp tấn công lũ lụt L7 / DoS theo IP mạng; được định cỡ đủ cho 100+ sinh viên dùng chung NAT trường học (~50 req/giây duy trì); **không phải** là lớp chống cào dữ liệu chính |
 | **Class A: Health / Static** | `/health`, `/api/v1/categories`, `/api/v1/users/banks` | N/A | Không giới hạn | Đảm bảo Railway liveness/readiness probe và metadata hoạt động liên tục |
 | **Class B: Public Browsing** | `GET /api/v1/products`, `GET /api/v1/products/{id}` | Client IP | 120 req / 60s | Cho phép duyệt hàng mượt mà, phân trang, lọc sản phẩm |
-| **Class C: Sensitive Public** | `GET /api/v1/users/{id}`, `GET /api/v1/users/{id}/sold-products`, `GET /api/v1/users/{id}/reviews`, `GET /api/v1/daily-needs/users/{user_id}/today` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai, lịch sử đánh giá và nhật ký sinh viên theo IP |
+| **Class C: Sensitive Public** | `GET /api/v1/users/{public_id}`, `GET /api/v1/users/{public_id}/sold-products`, `GET /api/v1/users/{public_id}/reviews`, `GET /api/v1/daily-needs/users/{public_id}/today` | Client IP | 60 req / 60s | Chặn vét cạn tự động hồ sơ công khai, lịch sử đánh giá và nhật ký sinh viên theo IP |
 | **Class D: Authenticated Search** | `GET /api/v1/users/search`, invite candidates, member lookup | User ID | 30 req / 60s | Chặn tài khoản sinh viên bị lạm dụng để dò danh tính hàng loạt |
 | **Class E: Write Mutations** | `POST /api/v1/products`, reports, feedback, bids, orders | User ID | 30 req / 60s | Chặn spam tạo dữ liệu, gửi báo cáo và đơn hàng rác |
 | **Class F: Chat Messages** | `POST /api/v1/conversations/{id}/messages` | User ID | 60 req / 60s | Cho phép nhắn tin tự nhiên nhưng chặn bot spam tin nhắn |
@@ -273,16 +273,17 @@ Trích xuất `UserResponse` đã được cập nhật:
 
 ---
 
-### 2.7. `GET /api/v1/users/{user_id}` — Hồ sơ công khai của người dùng
+### 2.7. `GET /api/v1/users/{public_id}` — Hồ sơ công khai của người dùng
 
 - **Method**: `GET`
-- **Path**: `/api/v1/users/{user_id}`
+- **Path**: `/api/v1/users/{public_id}`
+- **Path Parameter**: `public_id` (UUID v4) — Định danh công khai ngẫu nhiên của người dùng. Không chấp nhận `user_id` số nguyên nhằm triệt tiêu nguy cơ duyệt/vét cạn (anti-enumeration).
 - **Authentication**: Không bắt buộc / Public
-- **Business Rule**: Trả về thông tin công khai (tên, avatar, bio, phạm vi giao / nhận hàng, ngày tham gia, thống kê bán hàng). Tuyệt đối không để lộ thông tin riêng tư (email, số điện thoại chưa bật công khai, tài khoản ngân hàng) hoặc vai trò quản trị nội bộ (`role` bị lược bỏ hoàn toàn; không falsify).
+- **Business Rule**: Trả về thông tin công khai (tên, avatar, bio, phạm vi giao / nhận hàng, ngày tham gia, thống kê bán hàng). Tuyệt đối không để lộ thông tin riêng tư (email, số điện thoại chưa bật công khai, tài khoản ngân hàng, UID Firebase) hoặc thông tin quản trị nội bộ (`role` và `user_id` bị lược bỏ hoàn toàn khỏi public DTO).
 - **Response: `200 OK`**:
 ```json
 {
-  "user_id": 1,
+  "public_id": "a0000000-0000-0000-0000-000000000001",
   "full_name": "Nguyen Van A",
   "avatar_url": "https://lh3.googleusercontent.com/a/.../photo.jpg",
   "bio": "Sinh viên năm 3 CNTT",
@@ -1143,8 +1144,9 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 
 ### 8.4. Lấy danh sách đánh giá công khai của người bán (Get Public Seller Reviews)
 - **Method**: `GET`
-- **Path**: `/api/v1/users/{user_id}/reviews?limit=10&cursor=...`
+- **Path**: `/api/v1/users/{public_id}/reviews?limit=10&cursor=...`
 - **Auth**: Công khai (Public)
+- **Path Parameter**: `public_id` (UUID v4)
 - **Query Params**:
   - `limit`: Số lượng mỗi trang (1..50, mặc định 10).
   - `cursor`: Chuỗi Base64 con trỏ keyset pagination (`created_at DESC, review_id DESC`).
@@ -1174,8 +1176,9 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
 
 ### 8.5. Lịch sử sản phẩm đã bán kèm đánh giá giao dịch ngữ cảnh (Get Sold Products with Contextual Reviews)
 - **Method**: `GET`
-- **Path**: `/api/v1/users/{user_id}/sold-products`
+- **Path**: `/api/v1/users/{public_id}/sold-products`
 - **Auth**: Công khai (Public)
+- **Path Parameter**: `public_id` (UUID v4)
 - **Response**: `200 OK` (`SoldProductsListResponse`)
 ```json
 {
@@ -1240,6 +1243,26 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
     "created_at": "2026-09-02T10:00:00Z"
   }
   ```
+
+---
+
+### 9.1.1. Mở hoặc khởi tạo cuộc trò chuyện trực tiếp qua Public ID (Direct Conversation by Public ID)
+- **Method**: `POST`
+- **Path**: `/api/v1/conversations/direct`
+- **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
+- **Request Body** (`DirectConversationCreateRequest`, `extra="forbid"`):
+  ```json
+  {
+    "recipient_public_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"
+  }
+  ```
+- **Business Invariants**:
+  - Phía client công khai chỉ sử dụng duy nhất `recipient_public_id: UUID`. Không chấp nhận `recipient_id` hay `recipient_user_id` dạng số nguyên (bị từ chối với HTTP `422 Unprocessable Content`).
+  - Không cho phép tự chat trực tiếp với chính mình (`400 Bad Request`).
+  - Người nhận phải tồn tại và ở trạng thái `ACTIVE` (`404 Not Found`).
+  - Tính đơn nhất: Trả về cùng một `conversation_id` nếu cuộc trò chuyện 1-1 giữa 2 người dùng đã tồn tại (`200 OK`), hoặc tạo mới an toàn tương tranh (`201 Created`).
+  - Bên trong tầng service, `recipient_public_id` được phân giải thành `user_id` nội bộ; toàn bộ khóa ngoại và logic nghiệp vụ tiếp tục vận hành trên `users.user_id`.
+- **Response**: `200 OK` / `201 Created` (`ConversationDetailResponse`)
 
 ---
 
@@ -1634,12 +1657,13 @@ Tích hợp:
 
 ### 10.5. Nhật ký hôm nay của người dùng công khai (Direct Chat Status)
 - **Method**: `GET`
-- **Path**: `/api/v1/daily-needs/users/{user_id}/today`
+- **Path**: `/api/v1/daily-needs/users/{public_id}/today`
+- **Path Parameter**: `public_id` (UUID v4)
 - **Auth**: Public / Optional
 - **Quy tắc**:
   - Dùng riêng cho Header cuộc trò chuyện 1-1 (Direct Chat) để hiển thị dòng trạng thái dưới tên người dùng.
   - Chỉ trả về nhật ký của ngày hôm nay (múi giờ `Asia/Ho_Chi_Minh`). Không trả về nhật ký ngày cũ.
-  - Tuyệt đối không để lộ thông tin bảo mật (chỉ gồm `daily_need_id`, `content`, `note_date`, `updated_at`, `author`).
+  - Tuyệt đối không để lộ thông tin bảo mật (chỉ gồm `daily_need_id`, `content`, `note_date`, `updated_at`, `author`). `author` định danh bằng `public_id` (UUID).
   - Nếu người dùng không có nhật ký hôm nay: trả về `200 OK` với body `null` (không dùng 404).
   - Giới hạn tần suất truy cập: Áp dụng Class C Sensitive Public (60 req/60s theo Client IP). Khi vượt hạn mức trả về HTTP `429 Too Many Requests` kèm header `Retry-After`.
 - **Response**: `200 OK`
@@ -1650,7 +1674,7 @@ Tích hợp:
     "note_date": "2026-09-03",
     "updated_at": "2026-09-03T08:00:00+07:00",
     "author": {
-      "user_id": 123,
+      "public_id": "a0000000-0000-0000-0000-000000000001",
       "full_name": "Nguyễn Khắc Thịnh",
       "avatar_url": "https://..."
     }
@@ -2306,6 +2330,19 @@ Content-Type: application/json
 #### Request Body (`ReportCreateRequest`)
 Cấu hình schema: `extra = "forbid"` (từ chối mọi trường lạ ngoài hợp đồng).
 
+**Trường hợp 1: Báo cáo Người dùng (`target_type = "USER"`)**
+Bắt buộc cung cấp `target_public_id` (UUID v4). Nghiêm cấm cung cấp `target_id` dạng số nguyên (bị từ chối với HTTP `422 Unprocessable Content`).
+```json
+{
+  "target_type": "USER",
+  "target_public_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+  "reason": "SCAM",
+  "description": "Người dùng có dấu hiệu lừa đảo qua chuyển khoản"
+}
+```
+
+**Trường hợp 2: Báo cáo Sản phẩm hoặc Đơn hàng (`target_type = "PRODUCT"` hoặc `"ORDER"`)**
+Bắt buộc cung cấp `target_id` (số nguyên `BIGINT gt=0`). Nghiêm cấm cung cấp `target_public_id` (bị từ chối với HTTP `422 Unprocessable Content`).
 ```json
 {
   "target_type": "PRODUCT",
@@ -2316,7 +2353,10 @@ Cấu hình schema: `extra = "forbid"` (từ chối mọi trường lạ ngoài 
 ```
 
 - **`target_type`**: Enum chuỗi, bắt buộc. Giá trị hợp lệ: `USER`, `PRODUCT`, `ORDER`.
-- **`target_id`**: Số nguyên (`BIGINT`), bắt buộc (`gt=0`). ID của đối tượng bị báo cáo.
+- **`target_public_id`**: Chuỗi UUID v4, bắt buộc khi `target_type="USER"`, cấm khi báo cáo Sản phẩm/Đơn hàng.
+- **`target_id`**: Số nguyên (`BIGINT gt=0`), bắt buộc khi `target_type="PRODUCT"` hoặc `"ORDER"`, cấm khi báo cáo Người dùng.
+- Không cho phép gửi đồng thời cả hai trường identifier hoặc không gửi trường nào (`422 Unprocessable Content`).
+- Bên trong tầng service, khi báo cáo Người dùng, `target_public_id` được phân giải thành `target_user.user_id` nội bộ và lưu vào cột `reports.target_id` (BIGINT), bảo toàn 100% tính toàn vẹn quan hệ cơ sở dữ liệu.
 - **`reason`**: Enum chuỗi, bắt buộc. Giá trị hợp lệ: `SCAM`, `FAKE_ITEM`, `SPAM`, `INAPPROPRIATE`, `NO_SHOW`, `OTHER`.
 - **`description`**: Chuỗi văn bản, tuỳ chọn (trừ khi `reason="OTHER"`). Tối đa 1000 ký tự. Tự động trim khoảng trắng hai đầu; nếu chỉ gồm khoảng trắng sẽ chuẩn hoá về `null`.
 

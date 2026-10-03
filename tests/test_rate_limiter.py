@@ -339,7 +339,7 @@ async def test_public_seller_reviews_remains_public_and_throttled(db_session):
 
             with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
                 # Request 1: succeeds below quota, remains public without auth
-                r1 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                r1 = await ac.get(f"/api/v1/users/{seller.public_id}/reviews", headers=headers)
                 assert r1.status_code == 200
                 data = r1.json()
                 assert "items" in data
@@ -347,11 +347,11 @@ async def test_public_seller_reviews_remains_public_and_throttled(db_session):
                 assert "has_more" in data
 
                 # Request 2: succeeds (boundary)
-                r2 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                r2 = await ac.get(f"/api/v1/users/{seller.public_id}/reviews", headers=headers)
                 assert r2.status_code == 200
 
                 # Request 3: 429 Too Many Requests
-                r3 = await ac.get(f"/api/v1/users/{seller.user_id}/reviews", headers=headers)
+                r3 = await ac.get(f"/api/v1/users/{seller.public_id}/reviews", headers=headers)
                 assert r3.status_code == 429
                 assert "Retry-After" in r3.headers
                 assert r3.json() == {"detail": "Too many requests. Please try again later."}
@@ -364,7 +364,7 @@ async def test_public_seller_reviews_remains_public_and_throttled(db_session):
 async def test_public_user_today_daily_needs_remains_public_and_throttled(db_session):
     """
     P2 Security Hardening:
-    Public user daily need endpoint /api/v1/daily-needs/users/{user_id}/today
+    Public user daily need endpoint /api/v1/daily-needs/users/{public_id}/today
     remains public (accessible without auth), but is protected by the Class C
     rate limiter (rate_limit_user_profile) against active-user enumeration.
     """
@@ -405,22 +405,22 @@ async def test_public_user_today_daily_needs_remains_public_and_throttled(db_ses
 
             with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
                 # Request 1: succeeds below quota, remains public without auth
-                r1 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                r1 = await ac.get(f"/api/v1/daily-needs/users/{user.public_id}/today", headers=headers)
                 assert r1.status_code == 200
                 data = r1.json()
                 assert data is not None
                 assert data["content"] == "Đang tìm tài liệu học tập tối nay"
                 assert data["note_date"] == str(get_vietnam_today())
-                assert data["author"]["user_id"] == user.user_id
+                assert data["author"]["public_id"] == str(user.public_id)
                 assert data["author"]["full_name"] == user.full_name
                 assert data["author"]["avatar_url"] == user.avatar_url
 
                 # Request 2: succeeds (boundary)
-                r2 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                r2 = await ac.get(f"/api/v1/daily-needs/users/{user.public_id}/today", headers=headers)
                 assert r2.status_code == 200
 
                 # Request 3: 429 Too Many Requests
-                r3 = await ac.get(f"/api/v1/daily-needs/users/{user.user_id}/today", headers=headers)
+                r3 = await ac.get(f"/api/v1/daily-needs/users/{user.public_id}/today", headers=headers)
                 assert r3.status_code == 429
                 assert "Retry-After" in r3.headers
                 assert r3.json() == {"detail": "Too many requests. Please try again later."}
@@ -451,7 +451,7 @@ async def test_show_phone_publicly_privacy_preserved(db_session):
     await db_session.flush()
 
     service = UserService(db_session)
-    profile = await service.get_public_profile(user.user_id)
+    profile = await service.get_public_profile(user.public_id)
 
     assert profile.phone is None, "Phone must remain null when show_phone_publicly is False"
     assert "email" not in profile.model_dump(), "Email must not be in public profile"

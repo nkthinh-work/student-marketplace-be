@@ -589,9 +589,9 @@ async def test_leaderboard_ignores_claims_and_private_contributions(test_client:
     # Leaderboard MUST NOT have Student 1 or Student 2
     l_resp = await test_client.get("/api/v1/feedback/support/leaderboard")
     assert l_resp.status_code == 200
-    leaderboard_users = [item["supporter"]["user_id"] for item in l_resp.json()["items"]]
-    assert student1.user_id not in leaderboard_users
-    assert student2.user_id not in leaderboard_users
+    leaderboard_users = [item["supporter"]["public_id"] for item in l_resp.json()["items"]]
+    assert str(student1.public_id) not in leaderboard_users
+    assert str(student2.public_id) not in leaderboard_users
 
     # Now verify Student 1 with wants_public = False
     # First create private claim
@@ -615,7 +615,7 @@ async def test_leaderboard_ignores_claims_and_private_contributions(test_client:
 
     # Leaderboard still excludes Student 1 because is_public = False
     l_resp2 = await test_client.get("/api/v1/feedback/support/leaderboard")
-    assert student1.user_id not in [item["supporter"]["user_id"] for item in l_resp2.json()["items"]]
+    assert str(student1.public_id) not in [item["supporter"]["public_id"] for item in l_resp2.json()["items"]]
 
 
 # ======================================================================

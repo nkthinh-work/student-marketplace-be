@@ -123,7 +123,7 @@ async def test_admin_notifications_fanout_all_events(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": student2.user_id,
+                "target_public_id": str(student2.public_id),
                 "reason": "SCAM",
                 "description": "Gian lận bán hàng lừa đảo",
             },
@@ -375,7 +375,7 @@ async def test_report_terminal_user_outcomes(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": student2.user_id,
+                "target_public_id": str(student2.public_id),
                 "reason": "SPAM",
                 "description": "Quấy rối nhắn tin spam",
             },
@@ -431,7 +431,7 @@ async def test_report_terminal_user_outcomes(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": student2.user_id,
+                "target_public_id": str(student2.public_id),
                 "reason": "OTHER",
                 "description": "Báo cáo lý do khác",
             },
@@ -475,7 +475,7 @@ async def test_capability_restriction_and_restore_notifications(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": student2.user_id,
+                "target_public_id": str(student2.public_id),
                 "reason": "SCAM",
                 "description": "Gian lận bán hàng",
             },
@@ -616,7 +616,7 @@ async def test_realtime_failure_isolation(
                 "/api/v1/reports",
                 json={
                     "target_type": "USER",
-                    "target_id": student2.user_id,
+                    "target_public_id": str(student2.public_id),
                     "reason": "SPAM",
                     "description": "Gửi tin nhắn spam",
                 },

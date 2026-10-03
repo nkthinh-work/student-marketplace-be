@@ -34,7 +34,7 @@ class SellerUpdatableStatus(str, enum.Enum):
 class SellerSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
-    user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
 
@@ -42,7 +42,7 @@ class SellerSummary(BaseModel):
 class SellerDetailSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
-    user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
     delivery_area: Optional[str] = None
@@ -50,6 +50,7 @@ class SellerDetailSummary(BaseModel):
     created_at: datetime
     rating_average: Optional[float] = None
     review_count: int = 0
+
 
 
 class ProductCreate(BaseModel):

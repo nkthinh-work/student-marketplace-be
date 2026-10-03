@@ -1,14 +1,16 @@
+import uuid
 from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DailyNeedAuthor(BaseModel):
-    user_id: int
+    public_id: uuid.UUID
     full_name: str
     avatar_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
 
 
 class DailyNeedResponse(BaseModel):

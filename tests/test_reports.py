@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 import pytest
@@ -145,7 +146,7 @@ async def sample_order(
 async def test_unauthenticated_request_rejected(test_client: AsyncClient):
     resp = await test_client.post(
         "/api/v1/reports",
-        json={"target_type": "USER", "target_id": 1, "reason": "SPAM"},
+        json={"target_type": "USER", "target_public_id": str(uuid.uuid4()), "reason": "SPAM"},
     )
     assert resp.status_code == 401
 
@@ -159,7 +160,7 @@ async def test_banned_user_cannot_create_report(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SPAM",
             },
         )
@@ -189,7 +190,7 @@ async def test_invalid_reason_returns_422(
     with auth_patch(reporter_user):
         resp = await test_client.post(
             "/api/v1/reports",
-            json={"target_type": "USER", "target_id": 1, "reason": "UNKNOWN_REASON"},
+            json={"target_type": "USER", "target_public_id": str(uuid.uuid4()), "reason": "UNKNOWN_REASON"},
         )
         assert resp.status_code == 422
 
@@ -204,7 +205,7 @@ async def test_incompatible_reason_for_user_returns_422(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "FAKE_ITEM",
             },
         )
@@ -238,7 +239,7 @@ async def test_other_without_description_returns_422(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "OTHER",
             },
         )
@@ -249,7 +250,7 @@ async def test_other_without_description_returns_422(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "OTHER",
                 "description": "   \n\t  ",
             },
@@ -266,7 +267,7 @@ async def test_description_over_1000_chars_returns_422(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SPAM",
                 "description": "a" * 1001,
             },
@@ -283,9 +284,59 @@ async def test_forbidden_extra_fields_returns_422(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SPAM",
                 "extra_forbidden_field": "injected",
+            },
+        )
+        assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_user_report_with_numeric_target_id_returns_422(
+    test_client: AsyncClient, reporter_user: User, other_user: User
+):
+    with auth_patch(reporter_user):
+        resp = await test_client.post(
+            "/api/v1/reports",
+            json={
+                "target_type": "USER",
+                "target_id": other_user.user_id,
+                "reason": "SPAM",
+            },
+        )
+        assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_user_report_with_both_target_id_and_target_public_id_returns_422(
+    test_client: AsyncClient, reporter_user: User, other_user: User
+):
+    with auth_patch(reporter_user):
+        resp = await test_client.post(
+            "/api/v1/reports",
+            json={
+                "target_type": "USER",
+                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
+                "reason": "SPAM",
+            },
+        )
+        assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_product_report_with_target_public_id_returns_422(
+    test_client: AsyncClient, reporter_user: User, available_product: Product
+):
+    with auth_patch(reporter_user):
+        resp = await test_client.post(
+            "/api/v1/reports",
+            json={
+                "target_type": "PRODUCT",
+                "target_id": available_product.product_id,
+                "target_public_id": str(uuid.uuid4()),
+                "reason": "FAKE_ITEM",
             },
         )
         assert resp.status_code == 422
@@ -304,7 +355,7 @@ async def test_self_user_report_returns_400(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": reporter_user.user_id,
+                "target_public_id": str(reporter_user.public_id),
                 "reason": "SPAM",
             },
         )
@@ -321,7 +372,7 @@ async def test_nonexistent_user_returns_404(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": 999999999,
+                "target_public_id": str(uuid.uuid4()),
                 "reason": "SPAM",
             },
         )
@@ -341,7 +392,7 @@ async def test_inactive_or_banned_user_target_returns_404(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": banned_user.user_id,
+                "target_public_id": str(banned_user.public_id),
                 "reason": "SPAM",
             },
         )
@@ -362,7 +413,7 @@ async def test_inactive_or_banned_user_target_returns_404(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": inactive_user.user_id,
+                "target_public_id": str(inactive_user.public_id),
                 "reason": "SPAM",
             },
         )
@@ -378,7 +429,7 @@ async def test_valid_user_report_success_201(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SCAM",
                 "description": "Người dùng có dấu hiệu lừa đảo chuyển khoản",
             },
@@ -674,7 +725,7 @@ async def test_duplicate_active_report_returns_409(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SPAM",
             },
         )
@@ -685,7 +736,7 @@ async def test_duplicate_active_report_returns_409(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "INAPPROPRIATE",
             },
         )
@@ -717,7 +768,7 @@ async def test_can_report_again_after_resolved_or_rejected(
             "/api/v1/reports",
             json={
                 "target_type": "USER",
-                "target_id": other_user.user_id,
+                "target_public_id": str(other_user.public_id),
                 "reason": "SCAM",
             },
         )
@@ -793,7 +844,7 @@ async def test_report_creation_has_no_side_effects(
         # Report user
         await test_client.post(
             "/api/v1/reports",
-            json={"target_type": "USER", "target_id": other_user.user_id, "reason": "SPAM"},
+            json={"target_type": "USER", "target_public_id": str(other_user.public_id), "reason": "SPAM"},
         )
         # Report product
         await test_client.post(

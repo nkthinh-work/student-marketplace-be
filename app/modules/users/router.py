@@ -1,3 +1,4 @@
+import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -191,14 +192,14 @@ async def delete_my_bank_account(
 
 
 @router.get(
-    "/{user_id}",
+    "/{public_id}",
     response_model=PublicUserProfileResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy thông tin hồ sơ công khai của người dùng",
 )
 async def get_public_user_profile(
-    user_id: int,
+    public_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> PublicUserProfileResponse:
     """
@@ -206,18 +207,18 @@ async def get_public_user_profile(
     Không làm lộ các thông tin riêng tư / nhạy cảm (email, sđt chưa công khai, tài khoản ngân hàng).
     """
     user_service = UserService(db)
-    return await user_service.get_public_profile(user_id)
+    return await user_service.get_public_profile(public_id)
 
 
 @router.get(
-    "/{user_id}/sold-products",
+    "/{public_id}/sold-products",
     response_model=SoldProductListResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy danh sách lịch sử sản phẩm đã bán hoàn tất",
 )
 async def get_user_sold_products(
-    user_id: int,
+    public_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> SoldProductListResponse:
     """
@@ -225,5 +226,4 @@ async def get_user_sold_products(
     Sanitized: Chỉ hiển thị tên sản phẩm, ảnh đại diện, số lượng đã bán, không để lộ thông tin đơn hàng hay người mua.
     """
     user_service = UserService(db)
-    return await user_service.get_sold_products(user_id)
-
+    return await user_service.get_sold_products(public_id)

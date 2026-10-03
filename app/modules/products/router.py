@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 from typing import Optional
 from fastapi import (
@@ -8,6 +9,7 @@ from fastapi import (
     File,
     UploadFile,
 )
+
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +67,7 @@ async def get_optional_current_user(
 async def list_products(
     category_id: Optional[int] = Query(None, description="Filter by category ID"),
     seller_id: Optional[int] = Query(None, description="Filter by seller ID"),
+    seller_public_id: Optional[uuid.UUID] = Query(None, description="Filter by seller public UUID"),
     listing_type: Optional[ListingType] = Query(None, description="Filter by listing type"),
     min_price: Optional[Decimal] = Query(None, ge=0, description="Minimum price filter"),
     max_price: Optional[Decimal] = Query(None, ge=0, description="Maximum price filter"),
@@ -77,6 +80,7 @@ async def list_products(
     return await service.list_public_products(
         category_id=category_id,
         seller_id=seller_id,
+        seller_public_id=seller_public_id,
         listing_type=listing_type.value if listing_type else None,
         min_price=min_price,
         max_price=max_price,
@@ -84,6 +88,7 @@ async def list_products(
         limit=limit,
         cursor=cursor,
     )
+
 
 
 @router.get(

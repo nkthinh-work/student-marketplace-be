@@ -125,8 +125,10 @@ async def open_or_create_direct_conversation(
 ):
     service = ConversationService(db)
     return await service.create_or_open_direct_conversation(
-        current_user, payload.recipient_user_id
+        current_user,
+        recipient_public_id=payload.recipient_public_id,
     )
+
 
 
 @router.post(

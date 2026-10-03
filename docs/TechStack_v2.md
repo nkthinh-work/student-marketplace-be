@@ -670,6 +670,32 @@ Auction chỉ DONE khi thêm các điều kiện:
   - Redis đóng vai trò là tầng phối hợp tạm thời (ephemeral coordination layer), PostgreSQL là nguồn chân lý nghiệp vụ duy nhất.
   - Khi Redis gặp sự cố kết nối, quá tải hoặc timeout, hệ thống bắt ngoại lệ, ghi log cảnh báo có cấu trúc và **cho phép request đi qua (Fail-Open)**, không bao giờ làm crash tiến trình FastAPI hoặc chặn truy cập của sinh viên.
 - **Chống vét cạn danh tính & Bảo vệ quyền riêng tư (User Enumeration & Privacy Hardening)**:
-  - `GET /api/v1/users/{user_id}`: Áp dụng hạn mức nhạy cảm (Class C — 60 req/60s). DTO trả về (`PublicUserProfileResponse`) chỉ gồm các trường công khai, tuyệt đối không lộ email, số tài khoản ngân hàng, hay Firebase UID.
+  - `GET /api/v1/users/{public_id}`: Áp dụng hạn mức nhạy cảm (Class C — 60 req/60s). DTO trả về (`PublicUserProfileResponse`) chỉ gồm các trường công khai, tuyệt đối không lộ email, số tài khoản ngân hàng, hay Firebase UID.
   - Số điện thoại tuân thủ nghiêm ngặt cờ `show_phone_publicly`: chỉ trả về khi người dùng chủ động cho phép công khai.
   - `GET /api/v1/users/search`: Bắt buộc xác thực (`401 Unauthorized` với khách vãng lai) và bị giới hạn nghiêm ngặt (Class D — 30 req/60s theo `user_id`).
+
+## 16. Architectural Decisions — Internal Numeric Identity + External Opaque Public Identity (Security E-Lite)
+
+- **Nguyên lý kiến trúc cốt lõi**:
+  - Tách bạch hoàn toàn giữa **định danh nghiệp vụ quan hệ nội bộ** (`users.user_id` BIGINT PK) và **định danh giao tiếp công khai phía client** (`users.public_id` UUID v4).
+  - Tất cả các bảng quan hệ nghiệp vụ trong PostgreSQL (`products`, `orders`, `conversations`, `reviews`, `reports`, `notifications`, `auctions`, `daily_needs`, v.v.) tiếp tục sử dụng khóa ngoại trỏ tới `users.user_id` BIGINT để tối ưu hóa triệt để hiệu năng chỉ mục B-Tree, kích thước trang đĩa, tính toàn vẹn khóa ngoại (FK) và độ phức tạp truy vấn.
+  - Tuyệt đối KHÔNG chuyển đổi khóa chính hay khóa ngoại của các thực thể nghiệp vụ (`products`, `orders`, `conversations`, `messages`, `reports`, `auctions`) sang UUID.
+  - Tuyệt đối KHÔNG gán public_id cho mọi bảng trong cơ sở dữ liệu.
+- **Đặc tính của `users.public_id`**:
+  - Kiểu dữ liệu: `UUID NOT NULL UNIQUE`.
+  - Sinh tự động: Sử dụng hàm sinh ngẫu nhiên chuẩn mã hóa (`gen_random_uuid()` của PostgreSQL 15+ hoặc `uuid.uuid4()` trong Python).
+  - Tính bất biến (Immutable): Được khởi tạo một lần duy nhất khi tạo tài khoản, cấm sửa đổi qua bất kỳ API cập nhật hồ sơ nào (`PATCH /api/v1/users/me` chặn tuyệt đối).
+  - Không do client quyết định: Client không được chọn hoặc gửi `public_id` khi tạo tài khoản.
+  - Chỉ mục tối ưu: Được đánh chỉ mục duy nhất (`ux_users_public_id`) cho phép tra cứu $O(1)$ điểm.
+- **Ranh giới Public API Contract**:
+  - Các endpoint công khai đại diện danh tính người dùng chuyển đổi hoàn toàn từ `user_id` sang `public_id`:
+    - `GET /api/v1/users/{public_id}`
+    - `GET /api/v1/users/{public_id}/reviews`
+    - `GET /api/v1/users/{public_id}/sold-products`
+    - `GET /api/v1/daily-needs/users/{public_id}/today`
+  - Các public nested DTO (như `seller` trong `GET /api/v1/products` và `GET /api/v1/products/{id}`, `author` trong `daily_needs`, `supporter` trong `leaderboard`) xuất bản `public_id`, tuyệt đối không để rò rỉ `users.user_id`.
+  - Nghiệp vụ tạo hội thoại trực tiếp (`POST /api/v1/conversations/direct`) và báo cáo người dùng (`POST /api/v1/reports`) chỉ tiếp nhận duy nhất `recipient_public_id` / `target_public_id` (UUID v4) ở ranh giới client công khai (từ chối 422 nếu gửi ID số nguyên), loại bỏ hoàn toàn các trường fallback numeric nhằm đóng kín bề mặt tấn công enumeration.
+  - Các API nội bộ, xác thực và quản trị (`/users/me`, luồng đơn hàng, quản trị báo cáo) duy trì `user_id` nội bộ khi nghiệp vụ thực sự yêu cầu.
+- **Kiểm soát BOLA/IDOR (Broken Object-Level Authorization)**:
+  - UUID là lớp phòng thủ bổ sung (defense-in-depth), không bao giờ được dùng để thay thế cho cơ chế ủy quyền (authorization).
+  - Mọi thao tác truy xuất hoặc biến đổi tài nguyên riêng tư (Đơn hàng, Hội thoại, Tin nhắn, Thông báo, Báo cáo, Đấu giá) phải kiểm tra quyền sở hữu/tham gia của `current_user` sau khi xác thực và trước khi trả về dữ liệu.

@@ -6,7 +6,7 @@ Tài liệu này là **nguồn chuẩn duy nhất (source of truth)** cho schema
 
 - RDBMS: PostgreSQL 15+.
 - Mục tiêu thiết kế cơ sở: 3NF.
-- Định danh nghiệp vụ: `users.user_id` là khoá chính nội bộ được mọi FK nghiệp vụ sử dụng.
+- Định danh nghiệp vụ: `users.user_id` là khoá chính nội bộ (BIGINT) được mọi FK nghiệp vụ sử dụng; `users.public_id` là UUID v4 ngẫu nhiên, UNIQUE, NOT NULL dùng làm định danh công khai phía client nhằm chống duyệt/liệt kê người dùng (anti-enumeration).
 - Xác thực: Firebase Authentication.
 - Danh tính Firebase bên ngoài được tách riêng trong `user_auth_identities`.
 - Việc giữ một `firebase_uid` UNIQUE trong `users` tự nó không vi phạm 3NF vì thuộc tính UNIQUE có thể là candidate key. Tuy nhiên dự án vẫn tách identity vì danh tính xác thực là trách nhiệm khác với hồ sơ nghiệp vụ marketplace và cách tách này cho phép bổ sung nhà cung cấp danh tính khác về sau.
@@ -75,7 +75,8 @@ Dữ liệu hồ sơ/nghiệp vụ của người dùng và quản trị viên m
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
 |---|---|---:|---|---|
-| `user_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT IDENTITY | NO | auto | PK (Nội bộ hệ thống) |
+| `public_id` | UUID | NO | gen_random_uuid() | UNIQUE (`ux_users_public_id`); Opaque client-facing UUID v4 identifier |
 | `email` | VARCHAR(150) | NO | - | UNIQUE; email liên hệ/ứng dụng |
 | `full_name` | VARCHAR(100) | NO | - | |
 | `phone` | VARCHAR(20) | YES | - | Bắt buộc trước khi đăng bán hoặc tham gia giao dịch cần liên hệ |
@@ -697,6 +698,7 @@ Lưu trữ các video hướng dẫn sử dụng nhanh (Quick-Help Tutorial) đ�
 
 ### 4.1. UNIQUE constraints
 
+- `users(public_id)` qua `ux_users_public_id`
 - `users(email)`
 - `user_auth_identities(user_id)`
 - `user_auth_identities(provider, provider_uid)`
@@ -1044,3 +1046,7 @@ Quy tắc nghiệp vụ áp dụng các lệnh hạn chế quyền có thời h�
 Mọi thay đổi schema phải đi qua Alembic. Không chỉnh production schema thủ công ngoài migration có chủ đích. Với thay đổi phá huỷ dữ liệu, phải có kế hoạch data migration/rollback trước khi áp dụng.
 
 Database được dùng chung cho các backend có thể xuất hiện trong tương lai. Backend hiện tại là FastAPI/Python; Spring Boot có thể dùng lại schema sau này. Vì vậy schema phải luôn độc lập với framework implementation.
+
+### 9.1. Ghi chú di trú Security E-Lite (`users.public_id`)
+- Migration `a7b8c9d0e1f2_add_public_id_to_users.py` bổ sung cột `public_id UUID NOT NULL` với giá trị mặc định server `gen_random_uuid()` và duy nhất một cấu trúc ràng buộc UNIQUE / backing index `ux_users_public_id`.
+- Thời gian thực thi dự kiến diễn ra ngắn gọn đối với quy mô bảng `users` hiện tại; thời lượng chính xác cần được kiểm chứng khi thực hiện migration trên production.

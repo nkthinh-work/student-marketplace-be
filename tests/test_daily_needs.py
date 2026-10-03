@@ -79,7 +79,7 @@ async def test_user_can_create_first_note_today(
         assert data["content"] == "Cần mua giáo trình Giải tích 1"
         assert data["note_date"] == str(get_vietnam_today())
         assert data["checkin_created"] is True
-        assert data["author"]["user_id"] == user_a.user_id
+        assert data["author"]["public_id"] == str(user_a.public_id)
         assert data["author"]["full_name"] == "Nguyễn Khắc Thịnh"
         assert data["author"]["avatar_url"] == user_a.avatar_url
 
@@ -270,7 +270,8 @@ async def test_public_dto_does_not_expose_private_fields(
     author = item["author"]
 
     # Allowed safe fields
-    assert "user_id" in author
+    assert "public_id" in author
+    assert "user_id" not in author
     assert "full_name" in author
     assert "avatar_url" in author
 
@@ -570,9 +571,9 @@ async def test_delete_today_journal_preserves_checkin_and_streak(
 
         # Content is removed from public endpoints
         pub_list = (await test_client.get("/api/v1/daily-needs/today")).json()["items"]
-        assert not any(item["author"]["user_id"] == user_a.user_id for item in pub_list)
+        assert not any(item["author"]["public_id"] == str(user_a.public_id) for item in pub_list)
 
-        pub_user = (await test_client.get(f"/api/v1/daily-needs/users/{user_a.user_id}/today")).json()
+        pub_user = (await test_client.get(f"/api/v1/daily-needs/users/{user_a.public_id}/today")).json()
         assert pub_user is None
 
 
@@ -742,7 +743,7 @@ async def test_public_user_today_journal_dto_and_safety(
 
     # User B requests User A's public today journal
     with auth_patch(user_b):
-        res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.user_id}/today")
+        res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.public_id}/today")
         assert res.status_code == 200
         data = res.json()
         assert data is not None
@@ -753,7 +754,8 @@ async def test_public_user_today_journal_dto_and_safety(
 
         # Author safe fields only
         author = data["author"]
-        assert author["user_id"] == user_a.user_id
+        assert author["public_id"] == str(user_a.public_id)
+        assert "user_id" not in author
         assert author["full_name"] == user_a.full_name
         assert author["avatar_url"] == user_a.avatar_url
 
@@ -771,7 +773,7 @@ async def test_public_user_today_journal_returns_null_when_no_post_today(
     test_client: AsyncClient, user_a: User
 ):
     # User A has no note today
-    res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.user_id}/today")
+    res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.public_id}/today")
     assert res.status_code == 200
     assert res.json() is None
 
@@ -792,7 +794,7 @@ async def test_public_user_today_journal_does_not_return_yesterdays_post(
     await db_session.commit()
 
     # User A has only yesterday's note, no note today
-    res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.user_id}/today")
+    res = await test_client.get(f"/api/v1/daily-needs/users/{user_a.public_id}/today")
     assert res.status_code == 200
     assert res.json() is None
 
@@ -837,7 +839,7 @@ async def test_recent_daily_needs_returns_historical_across_dates(
     assert len(items) == 1
     assert items[0]["daily_need_id"] == old_note.daily_need_id
     assert items[0]["content"] == "Nhật ký hôm qua rất vui"
-    assert items[0]["author"]["user_id"] == user_a.user_id
+    assert items[0]["author"]["public_id"] == str(user_a.public_id)
 
 
 @pytest.mark.asyncio

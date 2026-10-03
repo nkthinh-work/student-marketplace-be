@@ -91,7 +91,7 @@ async def test_create_product_success(
         assert Decimal(str(data["price"])) == Decimal(50000)
         assert data["available_stock"] == 1
         assert data["status"] == "AVAILABLE"
-        assert data["seller"]["user_id"] == seller_user.user_id
+        assert data["seller"]["public_id"] == str(seller_user.public_id)
         assert data["category"]["category_id"] == sample_category.category_id
         assert "item_condition" not in data
 

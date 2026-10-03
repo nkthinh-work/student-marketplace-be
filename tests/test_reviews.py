@@ -496,7 +496,7 @@ async def test_public_seller_reviews_keyset_and_privacy(
         )
 
     # Public fetch (page limit=1)
-    resp = await test_client.get(f"/api/v1/users/{seller_user.user_id}/reviews?limit=1")
+    resp = await test_client.get(f"/api/v1/users/{seller_user.public_id}/reviews?limit=1")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["items"]) == 1
@@ -522,7 +522,7 @@ async def test_public_seller_reviews_keyset_and_privacy(
 
     # Fetch next page using cursor
     resp2 = await test_client.get(
-        f"/api/v1/users/{seller_user.user_id}/reviews?limit=1&cursor={data['next_cursor']}"
+        f"/api/v1/users/{seller_user.public_id}/reviews?limit=1&cursor={data['next_cursor']}"
     )
     assert resp2.status_code == 200
     data2 = resp2.json()
@@ -543,7 +543,7 @@ async def test_public_profile_rating_aggregation(
     completed_order_2: Order,
 ):
     # 0 reviews -> rating_average is None, review_count is 0
-    resp_init = await test_client.get(f"/api/v1/users/{seller_user.user_id}")
+    resp_init = await test_client.get(f"/api/v1/users/{seller_user.public_id}")
     assert resp_init.status_code == 200
     assert resp_init.json()["rating_average"] is None
     assert resp_init.json()["review_count"] == 0
@@ -554,7 +554,7 @@ async def test_public_profile_rating_aggregation(
             f"/api/v1/orders/{completed_order.order_id}/review",
             json={"rating": 5},
         )
-    resp_1 = await test_client.get(f"/api/v1/users/{seller_user.user_id}")
+    resp_1 = await test_client.get(f"/api/v1/users/{seller_user.public_id}")
     assert resp_1.status_code == 200
     assert resp_1.json()["rating_average"] == 5.0
     assert resp_1.json()["review_count"] == 1
@@ -565,7 +565,7 @@ async def test_public_profile_rating_aggregation(
             f"/api/v1/orders/{completed_order_2.order_id}/review",
             json={"rating": 4},
         )
-    resp_2 = await test_client.get(f"/api/v1/users/{seller_user.user_id}")
+    resp_2 = await test_client.get(f"/api/v1/users/{seller_user.public_id}")
     assert resp_2.status_code == 200
     assert resp_2.json()["rating_average"] == 4.5
     assert resp_2.json()["review_count"] == 2
@@ -602,7 +602,7 @@ async def test_sold_products_contextual_review_enrichment_and_privacy(
     completed_order_2: Order,
 ):
     # 1. Before reviews are posted: sold products has review_count = 0, rating_average = None, recent_reviews = []
-    res_pre = await test_client.get(f"/api/v1/users/{seller_user.user_id}/sold-products")
+    res_pre = await test_client.get(f"/api/v1/users/{seller_user.public_id}/sold-products")
     assert res_pre.status_code == 200
     data_pre = res_pre.json()
     assert len(data_pre["items"]) == 1
@@ -619,7 +619,7 @@ async def test_sold_products_contextual_review_enrichment_and_privacy(
             json={"rating": 5, "comment": "Giao dịch nhanh, sách rất mới"},
         )
 
-    res_1 = await test_client.get(f"/api/v1/users/{seller_user.user_id}/sold-products")
+    res_1 = await test_client.get(f"/api/v1/users/{seller_user.public_id}/sold-products")
     assert res_1.status_code == 200
     sold_item_1 = res_1.json()["items"][0]
     assert sold_item_1["review_count"] == 1
@@ -646,7 +646,7 @@ async def test_sold_products_contextual_review_enrichment_and_privacy(
             json={"rating": 3, "comment": "Giao dịch ổn"},
         )
 
-    res_2 = await test_client.get(f"/api/v1/users/{seller_user.user_id}/sold-products")
+    res_2 = await test_client.get(f"/api/v1/users/{seller_user.public_id}/sold-products")
     assert res_2.status_code == 200
     sold_item_2 = res_2.json()["items"][0]
     assert sold_item_2["review_count"] == 2
@@ -701,7 +701,7 @@ async def test_get_public_seller_reviews_contract_and_rate_limiting(
             with patch.object(settings, "RATE_LIMIT_USER_PROFILE_LIMIT", 2):
                 # Request 1: Below quota -> 200 OK (unauthenticated public access)
                 res1 = await ac.get(
-                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    f"/api/v1/users/{seller_user.public_id}/reviews",
                     headers=headers,
                 )
                 assert res1.status_code == 200
@@ -723,14 +723,14 @@ async def test_get_public_seller_reviews_contract_and_rate_limiting(
 
                 # Request 2: Boundary -> 200 OK
                 res2 = await ac.get(
-                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    f"/api/v1/users/{seller_user.public_id}/reviews",
                     headers=headers,
                 )
                 assert res2.status_code == 200
 
                 # Request 3: Exceeded -> 429 Too Many Requests
                 res3 = await ac.get(
-                    f"/api/v1/users/{seller_user.user_id}/reviews",
+                    f"/api/v1/users/{seller_user.public_id}/reviews",
                     headers=headers,
                 )
                 assert res3.status_code == 429

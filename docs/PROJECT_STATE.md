@@ -5,19 +5,19 @@
 ---
 
 ## 1. Current Phase (Giai đoạn hiện tại)
-**Phase D-Lite — Minimal Production Monitoring & Operational Visibility**
+**Security E-Lite — Public User Identifier + BOLA/IDOR Hardening**
 
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Phase D-Lite — Minimal Production Monitoring & Operational Visibility (Implemented & Locally Verified; Awaiting User Acceptance)**
-*Parent Task*: Phase 9 — Workers + Optimization + Deploy
-*Deployment State*: LIVE PRODUCTION DEPLOYED ON RAILWAY (PHASE C BACKUP VERIFIED ON PRODUCTION; PHASE D-LITE HEALTH BOUNDED TIMEOUT & AUDIT VERIFIED LOCALLY)
+**Security E-Lite — Public User Identifier + BOLA/IDOR Hardening (Implemented & Locally Verified; Awaiting User Review)**
+*Parent Task*: Security Hardening & Privacy Protection
+*Deployment State*: LOCAL IMPLEMENTATION COMPLETE; ZERO PRODUCTION TOUCH; AWAITING USER REVIEW (DO NOT DEPLOY)
 
 ---
 
 ## 3. Status (Trạng thái)
-**IMPLEMENTED — AWAITING USER ACCEPTANCE (Health check readiness semantics refined with DB 503 gate & Redis fail-open degraded 200, Railway readiness semantics corrected, 5xx logging audited, backup cron failure visibility verified, 927/927 tests PASS, clean git diff --check, ready for manual Railway monitoring configuration)**
+**IMPLEMENTED — AWAITING USER REVIEW — DO NOT DEPLOY (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; 951/951 backend tests PASS; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors)**
 
 ---
 
@@ -202,35 +202,30 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **927/927 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings).
-- **Backend Backup & Remote Retention Tooling Suite**: **32/32 PASS** (`tests/test_db_backup.py`, `tests/test_db_backup_remote.py`).
-- **Backend Health & Readiness Suite**: **8/8 PASS** (`tests/test_health.py`).
-- **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
-- **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
+- **Backend Full Suite**: **951/951 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings in 469s).
+- **Backend Public User ID Suite**: **16/16 PASS** (`tests/test_public_user_id.py`, covering regression tests A through I).
+- **Backend Reports & Notifications Suite**: **35/35 PASS** (`tests/test_reports.py`, `tests/test_admin_and_lifecycle_notifications.py`).
+- **Backend BOLA / IDOR Authorization Suite**: **5/5 PASS** (`tests/test_bola_authorization.py`).
 - **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
 - **Backend Reviews Suite**: **14/14 PASS** (`tests/test_reviews.py`).
 - **Backend User Profile Suite**: **15/15 PASS** (`tests/test_user_profile.py`).
-- **Backend OpenAPI Production Configuration Suite**: **2/2 PASS** (`tests/test_openapi_config.py`).
+- **Backend Rate Limiter Security Suite**: **22/22 PASS** (`tests/test_rate_limiter.py`).
+- **Backend Products CRUD Suite**: **22/22 PASS** (`tests/test_products_crud.py`).
+- **Backend Support Contributions & Claims Suite**: **33/33 PASS** (`tests/test_support_contributions.py`, `tests/test_support_claims.py`).
+- **Backend Health & Readiness Suite**: **8/8 PASS** (`tests/test_health.py`).
+- **Backend Backup & Remote Retention Tooling Suite**: **32/32 PASS** (`tests/test_db_backup.py`, `tests/test_db_backup_remote.py`).
+- **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Auth & Admin Authorization Suite**: **95/95 PASS** (`tests/test_auth.py`, `tests/test_admin_user_enforcement.py`, `tests/test_admin_reports.py`, `tests/test_admin_product_enforcement.py`).
-- **Backend Hardening Suite**: **11/11 PASS** (`tests/test_official_support_and_profile_validation.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
-- **Backend GitHub Actions Release Gate**: **SUCCESS** (`Backend CI & Release Gate`, `Backend Test Suite & Alembic Verification`, `Production Docker Build & Artifact Hardening Gate`).
-- **Frontend GitHub Actions Build Gate**: **SUCCESS** (`Frontend CI & Build Gate`, `Frontend Typecheck & Production Build`).
-- **Production Endpoint Health**: `/health` endpoint trên Railway trả về HTTP 200 `{"status": "healthy", "database": "up", "redis": "up", "service": "up"}`.
-- **Alembic State**: Head `f1a2b3c4d5e6`, 0 schema drift (`alembic check` clean, 0 new migrations).
-- **Cơ sở dữ liệu vật lý**: Baseline hiện tại gồm 32 bảng nghiệp vụ (`application_table_count`) + 1 bảng metadata (`alembic_version`) = 33 bảng vật lý (`physical_table_count`); quy trình sao lưu và đối soát phục hồi đánh giá động theo metadata của manifest, không ràng buộc cứng con số 33.
-- **Firebase Credentials Tests**: 7/7 PASS (`tests/test_firebase.py`).
-- **Frontend Hardening & Acceptance Suite**: **30/30 PASS** (`node src/__tests__/post_deployment_hardening.test.mjs`).
-- **Frontend ESLint Baseline**: **0 errors**, 80 historical warnings (`npm run lint`).
-- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors).
+- **Alembic State**: Head `a7b8c9d0e1f2_add_public_id_to_users.py`, 0 schema drift (`alembic check` clean, 0 new migrations).
+- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, bundle generated).
+- **Git Hygiene**: `git diff --check` clean across both backend and frontend repositories (0 whitespace errors, 0 conflict markers).
 
 ---
 
 ## 9. Next Exact Task (Công việc chính xác tiếp theo)
 
-- **Manual Railway Monitoring Configuration & Release Verification**:
-  1. Cấu hình Healthcheck Path = `/health` trên Railway cho dịch vụ `student-marketplace-be` (Settings -> Deploy -> Healthcheck Path).
-  2. Thực thi nạp 10 danh mục tham chiếu trên Railway PostgreSQL: `python -m scripts.seed_production_reference`.
-  3. Triển khai dịch vụ Background Worker (`python -m app.workers.order_auto_cancel`) độc lập trên Railway kết nối Railway PostgreSQL và Redis.
-  4. Kiểm tra và xác nhận cấu hình Firebase Authorized Domains trên Firebase Console cho domain frontend production.
-  5. Diễn tập kiểm thử thông luồng (Smoke Test) trực tiếp trên môi trường Railway live.
+- **User Review of Security E-Lite (Public User ID + BOLA Hardening)**:
+  1. Trình báo cáo kiểm toán chi tiết 19 mục `SECURITY E-LITE — PUBLIC USER ID + BOLA HARDENING REPORT` cho người dùng.
+  2. Tuyệt đối KHÔNG commit, push, hay triển khai lên Railway production khi chưa có yêu cầu tường minh.
+  3. Sau khi người dùng nghiệm thu, tiến hành lập kế hoạch di trú production chi tiết (Pre-migration backup -> Alembic upgrade head -> Post-migration verification).

@@ -2,7 +2,9 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import List, Literal, Optional
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
 
 from app.core.datetime import ensure_utc_aware
 
@@ -37,8 +39,12 @@ class ConversationCreateRequest(BaseModel):
 class DirectConversationCreateRequest(BaseModel):
     """
     Payload to initiate/open the canonical 1-to-1 Direct conversation directly with a recipient.
+    Strictly accepts recipient_public_id (UUID v4) for client-facing identity.
     """
-    recipient_user_id: int = Field(..., gt=0, description="Recipient User ID")
+    model_config = ConfigDict(extra="forbid")
+
+    recipient_public_id: UUID = Field(..., description="Recipient Public UUID (UUID v4)")
+
 
 
 class ConversationFromOrderRequest(BaseModel):

@@ -1,3 +1,4 @@
+import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,19 +66,19 @@ async def update_order_review(
 
 
 @router.get(
-    "/users/{user_id}/reviews",
+    "/users/{public_id}/reviews",
     response_model=PublicSellerReviewsCursorPage,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(rate_limit_user_profile)],
     summary="Lấy danh sách đánh giá công khai của người bán (phân trang keyset)",
 )
 async def get_public_seller_reviews(
-    user_id: int,
+    public_id: uuid.UUID,
     limit: int = Query(10, ge=1, le=50, description="Số lượng đánh giá mỗi trang"),
     cursor: Optional[str] = Query(None, description="Con trỏ phân trang"),
     db: AsyncSession = Depends(get_db),
 ) -> PublicSellerReviewsCursorPage:
     service = ReviewService(db)
     return await service.get_public_seller_reviews(
-        seller_id=user_id, limit=limit, cursor=cursor
+        seller_public_id=public_id, limit=limit, cursor=cursor
     )

@@ -107,7 +107,7 @@ def format_product_summary(
             slug=product.category.slug,
         ),
         seller=SellerSummary(
-            user_id=product.seller.user_id,
+            public_id=product.seller.public_id,
             full_name=product.seller.full_name,
             avatar_url=product.seller.avatar_url,
         ),
@@ -216,7 +216,7 @@ def format_product_detail(
             slug=product.category.slug,
         ),
         seller=SellerDetailSummary(
-            user_id=product.seller.user_id,
+            public_id=product.seller.public_id,
             full_name=product.seller.full_name,
             avatar_url=product.seller.avatar_url,
             delivery_area=product.seller.delivery_area,
@@ -252,7 +252,7 @@ def format_admin_approval_summary(product: Product) -> AdminProductApprovalSumma
             slug=product.category.slug,
         ),
         seller=SellerSummary(
-            user_id=product.seller.user_id,
+            public_id=product.seller.public_id,
             full_name=product.seller.full_name,
             avatar_url=product.seller.avatar_url,
         ),
@@ -307,7 +307,7 @@ def format_admin_approval_detail(product: Product) -> AdminProductApprovalDetail
             slug=product.category.slug,
         ),
         seller=SellerDetailSummary(
-            user_id=product.seller.user_id,
+            public_id=product.seller.public_id,
             full_name=product.seller.full_name,
             avatar_url=product.seller.avatar_url,
             delivery_area=product.seller.delivery_area,
@@ -541,6 +541,7 @@ class ProductService:
         self,
         category_id: Optional[int] = None,
         seller_id: Optional[int] = None,
+        seller_public_id: Optional[UUID] = None,
         listing_type: Optional[str] = None,
         min_price: Optional[Decimal] = None,
         max_price: Optional[Decimal] = None,
@@ -571,6 +572,7 @@ class ProductService:
         items, has_more, next_cursor_tuple = await self.product_repo.list_public(
             category_id=category_id,
             seller_id=seller_id,
+            seller_public_id=seller_public_id,
             listing_type=listing_type,
             min_price=min_price,
             max_price=max_price,

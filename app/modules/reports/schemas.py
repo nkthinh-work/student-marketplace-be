@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Any, Optional
 
@@ -21,7 +22,8 @@ class ReportCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_type: ReportTargetType
-    target_id: int = Field(..., gt=0, description="ID của đối tượng bị báo cáo")
+    target_id: Optional[int] = Field(None, gt=0, description="ID của đối tượng bị báo cáo")
+    target_public_id: Optional[uuid.UUID] = Field(None, description="Public UUID của người dùng bị báo cáo")
     reason: ReportReason
     description: Optional[str] = Field(
         None, max_length=1000, description="Mô tả chi tiết lý do báo cáo (tối đa 1000 ký tự)"
@@ -37,6 +39,17 @@ class ReportCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_reason_and_description(self) -> "ReportCreateRequest":
+        if self.target_type == ReportTargetType.USER:
+            if self.target_id is not None:
+                raise ValueError("Báo cáo người dùng chỉ chấp nhận target_public_id (UUID), không chấp nhận target_id số nguyên.")
+            if self.target_public_id is None:
+                raise ValueError("target_public_id là bắt buộc khi báo cáo người dùng.")
+        else:
+            if self.target_public_id is not None:
+                raise ValueError("target_public_id chỉ áp dụng cho báo cáo người dùng.")
+            if self.target_id is None:
+                raise ValueError("target_id là bắt buộc đối với báo cáo sản phẩm hoặc đơn hàng.")
+
         allowed_reasons = REPORT_REASON_MATRIX.get(self.target_type, set())
         if self.reason not in allowed_reasons:
             raise ValueError(

@@ -139,10 +139,11 @@ async def test_user_update_delivery_area_success(test_client: AsyncClient, sampl
 @pytest.mark.asyncio
 async def test_get_public_user_profile_success(test_client: AsyncClient, sample_user: User):
     # Unauthenticated client can read public profile
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.status_code == 200
     data = res.json()
-    assert data["user_id"] == sample_user.user_id
+    assert data["public_id"] == str(sample_user.public_id)
+    assert "user_id" not in data
     assert data["full_name"] == "Nguyễn Khắc Thịnh"
     assert data["avatar_url"] == "https://lh3.googleusercontent.com/a/test_avatar"
     assert data["bio"] == "Sinh viên D20 PTIT"
@@ -175,10 +176,11 @@ async def test_get_public_user_profile_admin_role_omitted(test_client: AsyncClie
     db_session.add(admin_user)
     await db_session.flush()
 
-    res = await test_client.get(f"/api/v1/users/{admin_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{admin_user.public_id}")
     assert res.status_code == 200
     data = res.json()
-    assert data["user_id"] == admin_user.user_id
+    assert data["public_id"] == str(admin_user.public_id)
+    assert "user_id" not in data
     assert data["full_name"] == "Admin Privacy Test"
     assert "role" not in data, "Public profile must omit role entirely, even for ADMIN users"
     assert "email" not in data
@@ -226,13 +228,14 @@ async def test_get_my_profile_authenticated_role_preserved(
 
 @pytest.mark.asyncio
 async def test_get_public_user_profile_banned_or_inactive_404(test_client: AsyncClient, banned_user: User):
-    res = await test_client.get(f"/api/v1/users/{banned_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{banned_user.public_id}")
     assert res.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_get_public_user_profile_nonexistent_404(test_client: AsyncClient):
-    res = await test_client.get("/api/v1/users/999999")
+    import uuid
+    res = await test_client.get(f"/api/v1/users/{uuid.uuid4()}")
     assert res.status_code == 404
 
 
@@ -278,7 +281,7 @@ async def test_public_profile_active_listing_count_invariants(
     await db_session.commit()
 
     # Public profile must show active_listing_count == 0
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.status_code == 200
     assert res.json()["active_listing_count"] == 0
 
@@ -297,7 +300,7 @@ async def test_public_profile_active_listing_count_invariants(
     prod.approval_status = ProductApprovalStatus.APPROVED.value
     await db_session.commit()
 
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.status_code == 200
     assert res.json()["active_listing_count"] == 1
 
@@ -308,34 +311,34 @@ async def test_public_profile_active_listing_count_invariants(
     # 3. Product REJECTED: count becomes 0
     prod.approval_status = ProductApprovalStatus.REJECTED.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # 4. Product DRAFT: count becomes 0
     prod.approval_status = ProductApprovalStatus.DRAFT.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # 5. Product HIDDEN: count becomes 0
     prod.approval_status = ProductApprovalStatus.APPROVED.value
     prod.status = ProductStatus.HIDDEN.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # 6. Product BLOCKED by moderation: count becomes 0
     prod.status = ProductStatus.AVAILABLE.value
     prod.moderation_status = ProductModerationStatus.BLOCKED.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # Also SOLD_OUT: count becomes 0
     prod.moderation_status = ProductModerationStatus.CLEAR.value
     prod.status = ProductStatus.SOLD_OUT.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
 
@@ -343,7 +346,7 @@ async def test_public_profile_active_listing_count_invariants(
     prod.status = ProductStatus.AVAILABLE.value
     prod.is_deleted = True
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # Restore product to fully eligible state (count is 1)
@@ -352,7 +355,7 @@ async def test_public_profile_active_listing_count_invariants(
     prod.approval_status = ProductApprovalStatus.APPROVED.value
     prod.moderation_status = ProductModerationStatus.CLEAR.value
     await db_session.commit()
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 1
 
     # 8. Active SELL capability restriction => count becomes 0
@@ -378,14 +381,14 @@ async def test_public_profile_active_listing_count_invariants(
     db_session.add(sell_restr)
     await db_session.commit()
 
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 0
 
     # Revoking restriction restores count to 1
     sell_restr.revoked_at = now_utc
     await db_session.commit()
 
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 1
 
     # 9. Auction product: requires active auction to count publicly
@@ -406,7 +409,7 @@ async def test_public_profile_active_listing_count_invariants(
     await db_session.commit()
 
     # Without active auction, auction product does not increment count
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 1
 
     # With active auction, count becomes 2
@@ -421,7 +424,7 @@ async def test_public_profile_active_listing_count_invariants(
     db_session.add(act_auction)
     await db_session.commit()
 
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res.json()["active_listing_count"] == 2
 
 
@@ -517,7 +520,7 @@ async def test_user_update_social_links_success(test_client: AsyncClient, sample
     assert data["social_links"][0]["url"] == "https://facebook.com/thinh123"
 
     # Verify public profile exposes social links
-    pub_res = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    pub_res = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert pub_res.status_code == 200
     pub_data = pub_res.json()
     assert len(pub_data["social_links"]) == 3
@@ -544,7 +547,7 @@ async def test_user_update_social_links_domain_mismatch_rejected(
 @pytest.mark.asyncio
 async def test_phone_publicity_toggle(test_client: AsyncClient, sample_user: User):
     # 1. By default, phone is hidden on public profile
-    res1 = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res1 = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res1.status_code == 200
     assert res1.json()["phone"] is None
 
@@ -559,7 +562,7 @@ async def test_phone_publicity_toggle(test_client: AsyncClient, sample_user: Use
     assert update_res.json()["show_phone_publicly"] is True
 
     # 3. Now public profile exposes phone
-    res2 = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res2 = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res2.status_code == 200
     assert res2.json()["phone"] == "0352866196"
 
@@ -573,7 +576,7 @@ async def test_phone_publicity_toggle(test_client: AsyncClient, sample_user: Use
     assert update_res2.status_code == 200
 
     # 5. Public profile hides phone again
-    res3 = await test_client.get(f"/api/v1/users/{sample_user.user_id}")
+    res3 = await test_client.get(f"/api/v1/users/{sample_user.public_id}")
     assert res3.status_code == 200
     assert res3.json()["phone"] is None
 
@@ -603,7 +606,7 @@ async def test_products_filter_by_seller_id(
 async def test_user_sold_products_endpoint_privacy(
     test_client: AsyncClient, sample_user: User
 ):
-    res = await test_client.get(f"/api/v1/users/{sample_user.user_id}/sold-products")
+    res = await test_client.get(f"/api/v1/users/{sample_user.public_id}/sold-products")
     assert res.status_code == 200
     data = res.json()
     assert "items" in data

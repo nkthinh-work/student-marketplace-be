@@ -1,6 +1,7 @@
 from datetime import datetime
 import enum
 from typing import Optional, Any
+import uuid
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
@@ -33,12 +35,19 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('STUDENT', 'ADMIN')", name="chk_users_role"),
         UniqueConstraint("email", name="ux_users_email"),
+        UniqueConstraint("public_id", name="ux_users_public_id"),
     )
 
     user_id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True,
         autoincrement=True,
+    )
+    public_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+        nullable=False,
     )
     email: Mapped[str] = mapped_column(
         String(150),

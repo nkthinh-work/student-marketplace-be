@@ -276,20 +276,24 @@ class ReportService:
         self, current_user: User, payload: ReportCreateRequest
     ) -> Report:
         # 1. Resolve and validate target according to canonical access rules
-        if payload.target_type == ReportTargetType.USER:
-            # Self-report rejection
-            if payload.target_id == current_user.user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Không thể tự báo cáo chính mình.",
-                )
+        resolved_target_id = payload.target_id
 
-            # Canonical Public Profile / user lookup rule
-            target_user = await self.user_repo.get_by_id(payload.target_id)
+        if payload.target_type == ReportTargetType.USER:
+            target_user = await self.user_repo.get_by_public_id(payload.target_public_id)
+
             if not target_user or target_user.status != UserStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Không tìm thấy người dùng.",
+                )
+
+            resolved_target_id = target_user.user_id
+
+            # Self-report rejection
+            if resolved_target_id == current_user.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Không thể tự báo cáo chính mình.",
                 )
 
         elif payload.target_type == ReportTargetType.PRODUCT:
@@ -348,7 +352,7 @@ class ReportService:
         is_dup = await self.report_repo.has_active_report(
             reporter_id=current_user.user_id,
             target_type=payload.target_type.value,
-            target_id=payload.target_id,
+            target_id=resolved_target_id,
         )
         if is_dup:
             raise HTTPException(
@@ -360,7 +364,7 @@ class ReportService:
         report = Report(
             reporter_id=current_user.user_id,
             target_type=payload.target_type.value,
-            target_id=payload.target_id,
+            target_id=resolved_target_id,
             reason=payload.reason.value,
             description=payload.description,
             status=ReportStatus.OPEN.value,

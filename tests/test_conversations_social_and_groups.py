@@ -1277,7 +1277,7 @@ async def test_direct_conversation_regression_free(
     with auth_patch(owner_user):
         conv_res = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": member_user.user_id},
+            json={"recipient_public_id": str(member_user.public_id)},
         )
     assert conv_res.status_code in (200, 201)
     conv_id = conv_res.json()["conversation_id"]

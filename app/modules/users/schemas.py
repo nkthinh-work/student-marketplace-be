@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Any
@@ -63,6 +64,7 @@ class SocialLinkItem(BaseModel):
 
 class UserResponse(BaseModel):
     user_id: int
+    public_id: uuid.UUID
     email: str
     full_name: str
     phone: Optional[str] = None
@@ -82,7 +84,7 @@ class UserResponse(BaseModel):
 
 
 class PublicUserProfileResponse(BaseModel):
-    user_id: int
+    public_id: uuid.UUID
     full_name: str
     avatar_url: Optional[str] = None
     bio: Optional[str] = None
@@ -96,6 +98,7 @@ class PublicUserProfileResponse(BaseModel):
     review_count: int = 0
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
 
 
 class SoldProductTransactionReview(BaseModel):

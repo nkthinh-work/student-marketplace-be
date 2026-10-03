@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Optional, Any
 from sqlalchemy import select, update, func
@@ -19,6 +20,21 @@ class UserRepository:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_by_public_id(self, public_id: Any) -> Optional[User]:
+        if not isinstance(public_id, uuid.UUID):
+            try:
+                public_id = uuid.UUID(str(public_id))
+            except (ValueError, TypeError, AttributeError):
+                return None
+        stmt = (
+            select(User)
+            .options(selectinload(User.auth_identity))
+            .where(User.public_id == public_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
 
     async def get_by_id_for_update(self, user_id: int) -> Optional[User]:
         stmt = (

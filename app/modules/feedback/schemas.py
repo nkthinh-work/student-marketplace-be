@@ -1,6 +1,8 @@
 import unicodedata
 from datetime import datetime
 from typing import List, Optional
+from uuid import UUID
+
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -145,10 +147,11 @@ class SupportResponse(BaseModel):
 # ======================================================================
 
 class SupporterPublicIdentity(BaseModel):
-    user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
     profile_path: str
+
 
 
 class SupporterLeaderboardItem(BaseModel):

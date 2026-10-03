@@ -1,3 +1,4 @@
+import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,17 +72,18 @@ async def get_my_daily_need_summary(
 
 
 @router.get(
-    "/users/{user_id}/today",
+    "/users/{public_id}/today",
     response_model=Optional[DailyNeedPublicResponse],
     dependencies=[Depends(rate_limit_user_profile)],
     summary="Nhật ký hôm nay của người dùng công khai",
 )
 async def get_user_today_daily_need(
-    user_id: int,
+    public_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> Optional[DailyNeedPublicResponse]:
     service = DailyNeedService(db)
-    return await service.get_user_today_public_note(user_id)
+    return await service.get_user_today_public_note(public_id)
+
 
 
 

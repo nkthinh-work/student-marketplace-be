@@ -8,7 +8,9 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
+from uuid import UUID
 from fastapi import HTTPException, UploadFile, status
+
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -337,23 +339,27 @@ class ConversationService:
         )
 
     async def create_or_open_direct_conversation(
-        self, current_user: User, recipient_user_id: int
+        self,
+        current_user: User,
+        recipient_public_id: UUID,
     ) -> ConversationDetailResponse:
         """
         Opens or idempotently creates the canonical 1-to-1 Direct conversation
-        with a recipient without product or order context.
+        with a recipient using client-facing recipient_public_id (UUID v4).
         """
-        if recipient_user_id == current_user.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Không thể tự nhắn tin cho chính mình.",
-            )
+        from app.modules.users.repository import UserRepository
+        recipient = await UserRepository(self.db).get_by_public_id(recipient_public_id)
 
-        recipient = await self.db.get(User, recipient_user_id)
         if not recipient:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Người dùng không tồn tại.",
+            )
+
+        if recipient.user_id == current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể tự nhắn tin cho chính mình.",
             )
 
         if recipient.status != UserStatus.ACTIVE:
@@ -363,7 +369,7 @@ class ConversationService:
             )
 
         conv = await self.repo.get_or_create_direct_conversation(
-            current_user.user_id, recipient_user_id
+            current_user.user_id, recipient.user_id
         )
 
         part_summary = ParticipantSummary(
@@ -371,6 +377,7 @@ class ConversationService:
             full_name=recipient.full_name,
             avatar_url=recipient.avatar_url,
         )
+
 
         return ConversationDetailResponse(
             conversation_id=conv.conversation_id,

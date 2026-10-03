@@ -527,7 +527,7 @@ async def test_create_or_open_direct_conversation_canonical_reuse(
         # 1. Open direct conversation from Public Profile (no product)
         resp_direct = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": seller_user.user_id},
+            json={"recipient_public_id": str(seller_user.public_id)},
         )
         assert resp_direct.status_code == 200
         data_direct = resp_direct.json()
@@ -539,7 +539,7 @@ async def test_create_or_open_direct_conversation_canonical_reuse(
         # 2. Repeated call by buyer returns exact same conversation_id
         resp_direct_repeat = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": seller_user.user_id},
+            json={"recipient_public_id": str(seller_user.public_id)},
         )
         assert resp_direct_repeat.status_code == 200
         assert resp_direct_repeat.json()["conversation_id"] == conv_id
@@ -548,7 +548,7 @@ async def test_create_or_open_direct_conversation_canonical_reuse(
     with auth_patch(seller_user):
         resp_seller_direct = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": buyer_user.user_id},
+            json={"recipient_public_id": str(buyer_user.public_id)},
         )
         assert resp_seller_direct.status_code == 200
         assert resp_seller_direct.json()["conversation_id"] == conv_id
@@ -572,7 +572,7 @@ async def test_direct_conversation_validations(
         # Reject self-chat
         resp_self = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": buyer_user.user_id},
+            json={"recipient_public_id": str(buyer_user.public_id)},
         )
         assert resp_self.status_code == 400
         assert "Không thể tự nhắn tin cho chính mình" in resp_self.json()["detail"]
@@ -580,7 +580,7 @@ async def test_direct_conversation_validations(
         # Reject nonexistent user
         resp_not_found = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": 999999},
+            json={"recipient_public_id": "00000000-0000-0000-0000-000000000999"},
         )
         assert resp_not_found.status_code == 404
 
@@ -602,7 +602,7 @@ async def test_reply_cross_conversation_privacy_indistinguishable(
     with auth_patch(buyer_user):
         resp_conv_a = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": seller_user.user_id},
+            json={"recipient_public_id": str(seller_user.public_id)},
         )
         conv_a_id = resp_conv_a.json()["conversation_id"]
 
@@ -621,7 +621,7 @@ async def test_reply_cross_conversation_privacy_indistinguishable(
     with auth_patch(user_c):
         resp_conv_b = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": user_d.user_id},
+            json={"recipient_public_id": str(user_d.public_id)},
         )
         conv_b_id = resp_conv_b.json()["conversation_id"]
 
@@ -662,7 +662,7 @@ async def test_reply_to_deleted_or_system_message_rejected(
     with auth_patch(buyer_user):
         resp_conv = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": seller_user.user_id},
+            json={"recipient_public_id": str(seller_user.public_id)},
         )
         conv_id = resp_conv.json()["conversation_id"]
 
@@ -723,7 +723,7 @@ async def test_reply_original_later_deleted_renders_tombstone(
     with auth_patch(buyer_user):
         resp_conv = await test_client.post(
             "/api/v1/conversations/direct",
-            json={"recipient_user_id": seller_user.user_id},
+            json={"recipient_public_id": str(seller_user.public_id)},
         )
         conv_id = resp_conv.json()["conversation_id"]
 

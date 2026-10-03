@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Sequence
 import unicodedata
+import uuid
 from sqlalchemy import (
     select,
     update,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     exists,
     case,
     String,
+    false,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.auctions.models import Auction, AuctionStatus
@@ -101,6 +103,7 @@ class ProductRepository:
         self,
         category_id: Optional[int] = None,
         seller_id: Optional[int] = None,
+        seller_public_id: Optional[uuid.UUID] = None,
         listing_type: Optional[str] = None,
         min_price: Optional[Decimal] = None,
         max_price: Optional[Decimal] = None,
@@ -140,8 +143,19 @@ class ProductRepository:
         if category_id is not None:
             stmt = stmt.where(Product.category_id == category_id)
 
-        if seller_id is not None:
+        if seller_public_id is not None:
+            if not isinstance(seller_public_id, uuid.UUID):
+                try:
+                    seller_public_id = uuid.UUID(str(seller_public_id))
+                except (ValueError, TypeError, AttributeError):
+                    seller_public_id = None
+            if seller_public_id is not None:
+                stmt = stmt.where(User.public_id == seller_public_id)
+            else:
+                stmt = stmt.where(false())
+        elif seller_id is not None:
             stmt = stmt.where(Product.seller_id == seller_id)
+
 
         # Active auction EXISTS condition for public discovery
         active_auction_exists = exists(

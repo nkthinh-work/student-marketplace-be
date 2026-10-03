@@ -1,7 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 
 from app.modules.orders.models import (
     FulfillmentMethod,
@@ -128,11 +130,14 @@ class OrderDetailResponse(BaseModel):
     order_id: int
     order_code: str
     buyer_id: int
+    buyer_public_id: Optional[UUID] = None
     buyer_name: str
     buyer_avatar_url: Optional[str] = None
     seller_id: int
+    seller_public_id: Optional[UUID] = None
     seller_name: str
     seller_avatar_url: Optional[str] = None
+
     status: str
     payment_method: str
     payment_status: str

@@ -388,17 +388,17 @@ async def test_public_leaderboard_privacy_and_aggregation(test_client: AsyncClie
     items = res.json()["items"]
 
     # Filter to our test students
-    test_uids = {student1.user_id, student2.user_id, student3.user_id, banned.user_id}
-    matched = [it for it in items if it["supporter"]["user_id"] in test_uids]
+    test_pub_ids = {str(student1.public_id), str(student2.public_id), str(student3.public_id), str(banned.public_id)}
+    matched = [it for it in items if it["supporter"]["public_id"] in test_pub_ids]
 
     # student3 and banned MUST NOT be present
-    matched_uids = [it["supporter"]["user_id"] for it in matched]
-    assert student3.user_id not in matched_uids
-    assert banned.user_id not in matched_uids
+    matched_pub_ids = [it["supporter"]["public_id"] for it in matched]
+    assert str(student3.public_id) not in matched_pub_ids
+    assert str(banned.public_id) not in matched_pub_ids
 
     # student2 (200k) should rank higher than student1 (100k)
-    s2_row = next(it for it in matched if it["supporter"]["user_id"] == student2.user_id)
-    s1_row = next(it for it in matched if it["supporter"]["user_id"] == student1.user_id)
+    s2_row = next(it for it in matched if it["supporter"]["public_id"] == str(student2.public_id))
+    s1_row = next(it for it in matched if it["supporter"]["public_id"] == str(student1.public_id))
 
     assert s2_row["total_amount_vnd"] == 200000
     assert s2_row["contribution_count"] == 2
@@ -418,8 +418,8 @@ async def test_public_leaderboard_privacy_and_aggregation(test_client: AsyncClie
         assert "email" not in supporter
         assert "phone" not in supporter
         assert "bank" not in supporter
-        assert "status" not in supporter
-        assert supporter["profile_path"] == f"/users/{supporter['user_id']}"
+        assert "user_id" not in supporter
+        assert supporter["profile_path"] == f"/profile/{supporter['public_id']}"
 
 
 @pytest.mark.asyncio
@@ -467,8 +467,8 @@ async def test_public_leaderboard_tie_breaking_deterministic(test_client: AsyncC
     assert res.status_code == 200
     items = res.json()["items"]
 
-    s1_row = next(it for it in items if it["supporter"]["user_id"] == student1.user_id)
-    s2_row = next(it for it in items if it["supporter"]["user_id"] == student2.user_id)
+    s1_row = next(it for it in items if it["supporter"]["public_id"] == str(student1.public_id))
+    s2_row = next(it for it in items if it["supporter"]["public_id"] == str(student2.public_id))
 
     assert s1_row["total_amount_vnd"] == s2_row["total_amount_vnd"]
     # student1 has earlier last_supported_at, so student1 ranks higher (smaller rank number)

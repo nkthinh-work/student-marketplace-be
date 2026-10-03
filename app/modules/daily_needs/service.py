@@ -1,5 +1,7 @@
+import uuid
 from datetime import timedelta
 from typing import Optional
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.daily_needs.models import DailyNeed
@@ -15,7 +17,8 @@ from app.modules.daily_needs.repository import (
     DailyNeedRepository,
     get_vietnam_today,
 )
-from app.modules.users.models import User
+from app.modules.users.models import User, UserStatus
+from app.modules.users.repository import UserRepository
 
 
 
@@ -28,7 +31,7 @@ class DailyNeedService:
         self, item: DailyNeed, checkin_created: bool = False
     ) -> DailyNeedResponse:
         author = DailyNeedAuthor(
-            user_id=item.user.user_id,
+            public_id=item.user.public_id,
             full_name=item.user.full_name,
             avatar_url=item.user.avatar_url,
         )
@@ -41,6 +44,7 @@ class DailyNeedService:
             author=author,
             checkin_created=checkin_created,
         )
+
 
     async def get_today_public_notes(self, limit: int = 10) -> DailyNeedListResponse:
         today = get_vietnam_today()
@@ -131,16 +135,23 @@ class DailyNeedService:
 
 
     async def get_user_today_public_note(
-        self, user_id: int
+        self, public_id: uuid.UUID
     ) -> Optional[DailyNeedPublicResponse]:
+        user_repo = UserRepository(self.db)
+        user = await user_repo.get_by_public_id(public_id)
+        if not user or user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Không tìm thấy người dùng.",
+            )
         today = get_vietnam_today()
-        note = await self.repo.get_user_note_for_date(user_id, today)
+        note = await self.repo.get_user_note_for_date(user.user_id, today)
         if not note:
             return None
         author = DailyNeedAuthor(
-            user_id=note.user.user_id,
-            full_name=note.user.full_name,
-            avatar_url=note.user.avatar_url,
+            public_id=user.public_id,
+            full_name=user.full_name,
+            avatar_url=user.avatar_url,
         )
         return DailyNeedPublicResponse(
             daily_need_id=note.daily_need_id,
@@ -149,4 +160,3 @@ class DailyNeedService:
             updated_at=note.updated_at,
             author=author,
         )
-

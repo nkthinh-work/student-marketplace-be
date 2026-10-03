@@ -289,6 +289,7 @@ async def get_supporter_leaderboard(
     stmt = (
         select(
             User.user_id,
+            User.public_id,
             User.full_name,
             User.avatar_url,
             func.sum(SupportContribution.amount_vnd).label("total_amount_vnd"),
@@ -300,7 +301,7 @@ async def get_supporter_leaderboard(
             SupportContribution.is_public == True,  # noqa: E712
             User.status.in_([UserStatus.ACTIVE, "ACTIVE"]),
         )
-        .group_by(User.user_id, User.full_name, User.avatar_url)
+        .group_by(User.user_id, User.public_id, User.full_name, User.avatar_url)
         .order_by(
             desc("total_amount_vnd"),
             asc("last_supported_at"),
@@ -315,16 +316,17 @@ async def get_supporter_leaderboard(
         items.append({
             "rank": idx,
             "supporter": {
-                "user_id": row.user_id,
+                "public_id": row.public_id,
                 "full_name": row.full_name,
                 "avatar_url": row.avatar_url,
-                "profile_path": f"/users/{row.user_id}",
+                "profile_path": f"/profile/{row.public_id}",
             },
             "total_amount_vnd": int(row.total_amount_vnd),
             "contribution_count": int(row.contribution_count),
             "last_supported_at": row.last_supported_at,
         })
     return items
+
 
 
 async def create_support_contribution(

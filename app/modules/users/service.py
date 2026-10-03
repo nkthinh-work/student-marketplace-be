@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 import logging
 from typing import Optional
@@ -49,6 +50,7 @@ class UserService:
         # Chặn cập nhật các trường nhạy cảm/hệ thống và trường do Google sync quản lý
         disallowed_fields = {
             "user_id",
+            "public_id",
             "email",
             "role",
             "status",
@@ -74,8 +76,8 @@ class UserService:
         await self.db.refresh(updated_user)
         return updated_user
 
-    async def get_public_profile(self, user_id: int) -> PublicUserProfileResponse:
-        user = await self.user_repo.get_by_id(user_id)
+    async def get_public_profile(self, public_id: uuid.UUID) -> PublicUserProfileResponse:
+        user = await self.user_repo.get_by_public_id(public_id)
         if not user or user.status != UserStatus.ACTIVE:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -148,7 +150,7 @@ class UserService:
             ]
 
         return PublicUserProfileResponse(
-            user_id=user.user_id,
+            public_id=user.public_id,
             full_name=user.full_name,
             avatar_url=user.avatar_url,
             bio=user.bio,
@@ -162,8 +164,8 @@ class UserService:
             review_count=review_count,
         )
 
-    async def get_sold_products(self, user_id: int) -> SoldProductListResponse:
-        user = await self.user_repo.get_by_id(user_id)
+    async def get_sold_products(self, public_id: uuid.UUID) -> SoldProductListResponse:
+        user = await self.user_repo.get_by_public_id(public_id)
         if not user or user.status != UserStatus.ACTIVE:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -181,9 +183,10 @@ class UserService:
             .select_from(OrderItem)
             .join(Order, Order.order_id == OrderItem.order_id)
             .where(
-                Order.seller_id == user_id,
+                Order.seller_id == user.user_id,
                 Order.status == OrderStatus.COMPLETED.value,
             )
+
             .group_by(
                 OrderItem.product_id,
                 OrderItem.product_title,
@@ -210,7 +213,7 @@ class UserService:
             .join(Order, Order.order_id == Review.order_id)
             .join(OrderItem, OrderItem.order_id == Order.order_id)
             .where(
-                Order.seller_id == user_id,
+                Order.seller_id == user.user_id,
                 Order.status == OrderStatus.COMPLETED.value,
                 OrderItem.product_id.in_(product_ids),
             )

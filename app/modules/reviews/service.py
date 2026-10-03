@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -27,6 +28,7 @@ from app.modules.reviews.schemas import (
     ReviewCreateRequest,
     ReviewUpdateRequest,
 )
+from app.modules.users.repository import UserRepository
 from app.modules.users.models import User, UserStatus
 
 logger = logging.getLogger("app.reviews")
@@ -226,12 +228,23 @@ class ReviewService:
         )
 
     async def get_public_seller_reviews(
-        self, seller_id: int, limit: int = 10, cursor: Optional[str] = None
+        self,
+        seller_public_id: Optional[uuid.UUID] = None,
+        seller_id: Optional[int] = None,
+        limit: int = 10,
+        cursor: Optional[str] = None,
     ) -> PublicSellerReviewsCursorPage:
         # Validate seller exists and is ACTIVE
-        stmt = select(User).where(User.user_id == seller_id)
-        result = await self.db.execute(stmt)
-        seller = result.scalar_one_or_none()
+        user_repo = UserRepository(self.db)
+        if seller_public_id is not None:
+            seller = await user_repo.get_by_public_id(seller_public_id)
+        elif seller_id is not None:
+            seller = await user_repo.get_by_id(seller_id)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Không tìm thấy người dùng.",
+            )
         if not seller or seller.status != UserStatus.ACTIVE:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -244,7 +257,7 @@ class ReviewService:
             cursor_dt, cursor_id = decode_review_cursor(cursor)
 
         reviews = await self.review_repo.get_seller_reviews_cursor(
-            seller_id=seller_id,
+            seller_id=seller.user_id,
             limit=limit,
             cursor_dt=cursor_dt,
             cursor_id=cursor_id,
@@ -252,6 +265,7 @@ class ReviewService:
 
         has_more = len(reviews) > limit
         page_items = reviews[:limit]
+
 
         next_cursor = None
         if has_more and page_items:
