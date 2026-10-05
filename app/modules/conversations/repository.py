@@ -515,6 +515,7 @@ class ConversationRepository:
             if conv.type == "DIRECT":
                 part_summary = ParticipantSummary(
                     user_id=other_u.user_id if other_u else 0,
+                    public_id=other_u.public_id if other_u else None,
                     full_name=other_u.full_name if other_u else "Người dùng",
                     avatar_url=other_u.avatar_url if other_u else None,
                 )
@@ -707,6 +708,7 @@ class ConversationRepository:
                     message_id=m.message_id,
                     conversation_id=m.conversation_id,
                     sender_id=m.sender_id,
+                    sender_public_id=m.sender.public_id if m.sender else None,
                     sender_name=m.sender.full_name if m.sender else None,
                     sender_avatar=m.sender.avatar_url if m.sender else None,
                     type=m.type,
@@ -1174,6 +1176,7 @@ class ConversationRepository:
         return [
             ConversationMemberResponse(
                 user_id=m.user_id,
+                public_id=m.user.public_id if m.user else None,
                 full_name=m.user.full_name if m.user else "Người dùng",
                 avatar_url=m.user.avatar_url if m.user else None,
                 role=m.role,
@@ -1381,6 +1384,7 @@ class ConversationRepository:
         return [
             UserSearchResponse(
                 user_id=u.user_id,
+                public_id=u.public_id,
                 full_name=u.full_name,
                 avatar_url=u.avatar_url,
             )

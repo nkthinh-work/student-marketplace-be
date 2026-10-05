@@ -116,6 +116,7 @@ class ParticipantSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
 
@@ -127,6 +128,7 @@ class UserSearchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
 
@@ -138,6 +140,7 @@ class ConversationMemberResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
+    public_id: UUID
     full_name: str
     avatar_url: Optional[str] = None
     role: str
@@ -275,6 +278,7 @@ class MessageResponse(BaseModel):
     message_id: int
     conversation_id: int
     sender_id: int
+    sender_public_id: Optional[UUID] = None
     sender_name: Optional[str] = None
     sender_avatar: Optional[str] = None
     type: MessageType = "TEXT"

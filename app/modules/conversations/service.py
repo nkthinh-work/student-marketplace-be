@@ -285,6 +285,7 @@ class ConversationService:
         other_user = await self.db.get(User, product.seller_id)
         part_summary = ParticipantSummary(
             user_id=product.seller_id,
+            public_id=other_user.public_id if other_user else None,
             full_name=other_user.full_name if other_user else "Người bán",
             avatar_url=other_user.avatar_url if other_user else None,
         )
@@ -330,6 +331,7 @@ class ConversationService:
         other_user = await self.db.get(User, other_uid)
         part_summary = ParticipantSummary(
             user_id=other_uid,
+            public_id=other_user.public_id if other_user else None,
             full_name=other_user.full_name if other_user else "Người dùng",
             avatar_url=other_user.avatar_url if other_user else None,
         )
@@ -377,6 +379,7 @@ class ConversationService:
 
         part_summary = ParticipantSummary(
             user_id=recipient.user_id,
+            public_id=recipient.public_id,
             full_name=recipient.full_name,
             avatar_url=recipient.avatar_url,
         )
@@ -415,6 +418,7 @@ class ConversationService:
             other_u = await self.db.get(User, other_uid)
             part_summary = ParticipantSummary(
                 user_id=other_uid,
+                public_id=other_u.public_id if other_u else None,
                 full_name=other_u.full_name if other_u else "Người dùng",
                 avatar_url=other_u.avatar_url if other_u else None,
             )
@@ -994,6 +998,7 @@ class ConversationService:
             message_id=msg.message_id,
             conversation_id=msg.conversation_id,
             sender_id=msg.sender_id,
+            sender_public_id=current_user.public_id,
             sender_name=current_user.full_name,
             sender_avatar=current_user.avatar_url,
             type=msg.type,
@@ -1068,6 +1073,7 @@ class ConversationService:
                 message_id=msg.message_id,
                 conversation_id=msg.conversation_id,
                 sender_id=msg.sender_id,
+                sender_public_id=current_user.public_id,
                 sender_name=current_user.full_name,
                 sender_avatar=current_user.avatar_url,
                 type=msg.type,
@@ -1134,6 +1140,7 @@ class ConversationService:
             message_id=msg.message_id,
             conversation_id=msg.conversation_id,
             sender_id=msg.sender_id,
+            sender_public_id=current_user.public_id,
             sender_name=current_user.full_name,
             sender_avatar=current_user.avatar_url,
             type=msg.type,
@@ -1640,6 +1647,7 @@ class ConversationService:
         # Return updated ConversationMemberResponse
         return ConversationMemberResponse(
             user_id=current_user.user_id,
+            public_id=current_user.public_id,
             full_name=current_user.full_name,
             avatar_url=current_user.avatar_url,
             role=member.role,

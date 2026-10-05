@@ -5,21 +5,24 @@
 ---
 
 ## 1. Current Phase (Giai đoạn hiện tại)
-**Security E-Lite + Chat Recall & Media Hardening (Locally Verified & User-Accepted — Ready for User-Managed Release)**
+**Security E-Lite + Chat Recall & Media Hardening — PROFILE NAVIGATION PUBLIC_ID REGRESSION IMPLEMENTED — AWAITING USER ACCEPTANCE**
 
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-1. **Pre-Push Clean Pass for Combined Production Release**:
-   - *Status*: COMPLETED & LOCALLY VERIFIED; ZERO PRODUCTION TOUCH.
-   - *Release Bundle*: Security E-Lite (Public User ID, BOLA/IDOR Hardening, migration `a7b8c9d0e1f2`) + Chat Recall & Media Hardening (Message recall, durable cleanup queue, true rolling video quota, mobile long-press popover, high-contrast tombstone, migration `b8c9d0e1f2a3`).
-   - *Deployment State*: LOCAL PREPARATION COMPLETE; AWAITING USER-MANAGED PRODUCTION PUSH.
+1. **Fix Release-Blocking Regression: Chat "Xem trang cá nhân" Navigates with Numeric user_id instead of public_id**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Issue*: Direct Chat "Thông tin cuộc trò chuyện" -> "Xem trang cá nhân" navigated to `/users/{numeric user_id}` (e.g., `/users/4`, `/users/10`), causing `PublicProfilePage` (which strictly requires UUID v4 under Security E-Lite) to render "Không tìm thấy người dùng".
+   - *Root Cause*: Backend conversation participant schemas (`ParticipantSummary`, `ConversationMemberResponse`, `UserSearchResponse`, `MessageResponse`) did not expose `public_id`, and frontend navigated to `/users/${otherUser.user_id}`.
+   - *Resolution*: Extended conversation DTOs to include `public_id: UUID` (Zero N+1: loaded on existing eager `User` models); frontend strictly navigates to `/users/${public_id}` across Direct Chat, Group Chat members, and Message sender avatars/names. Zero numeric fallback (`public_id ?? user_id` forbidden).
+   - *Deployment State*: LOCAL VERIFICATION COMPLETE; AWAITING USER ACCEPTANCE BEFORE RELEASE.
 
 ---
 
 ## 3. Status (Trạng thái)
-- **Security E-Lite**: **USER ACCEPTED LOCALLY — READY FOR USER-MANAGED PRODUCTION RELEASE** (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; 951/951 baseline backend tests PASS; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors).
-- **Chat Recall & Media Hardening**: **USER ACCEPTED LOCALLY — READY FOR USER-MANAGED PRODUCTION RELEASE** (Recall sender endpoint `DELETE /api/v1/conversations/{id}/messages/{id}` with tombstone sanitization; migration `b8c9d0e1f2a3_create_media_cleanup_jobs_table` with `uq_media_cleanup_jobs_storage_key_resource`, composite index `(next_retry_at, cleanup_id)`, and `VARCHAR(500)` for `last_error`; initial retry delay 60s eliminating race with immediate Cloudinary destroy; multi-worker replica concurrency protection via `SELECT ... FOR UPDATE SKIP LOCKED` and atomic lease claim 300s; true rolling sliding-window video quota via Redis ZSET + Lua atomic with dynamic `Retry-After` calculation and fail-open resilience; unified `SwipeToReply` with bottom ~56px video controls safe-zone and horizontal gesture lock; fallback action menu "Trả lời" / "Thu hồi" with confirmation dialog; desktop `Trash2` recall icon; mobile long-press context popover with stacked rows and min-h-[44px]; high-contrast neutral tombstone with `CircleSlash` icon and readable timestamp; frontend required `is_deleted: boolean` contract and 5-query realtime cache invalidation on `MESSAGE_DELETED`; worker process entrypoint `app.workers.order_auto_cancel` validated for production execution; 20/20 targeted backend tests PASS; 15/15 targeted frontend tests PASS; frontend production build PASS; `git diff --check` clean with 0 warnings/errors). Combined migration chain: `a7b8c9d0e1f2 -> b8c9d0e1f2a3 (head)`.
+- **Profile Navigation public_id Regression**: **IMPLEMENTED LOCALLY — AWAITING USER ACCEPTANCE** (Direct chat other participant, group chat member, user search, and message sender DTOs extended with `public_id: UUID` with zero N+1 queries; frontend `DirectInfoDrawer`, `GroupInfoDrawer`, `MessageBubble` updated to navigate strictly to `/users/${public_id}` with zero numeric fallback; 17/17 public user ID backend tests PASS; 103/103 targeted conversation tests PASS; 10/10 targeted frontend regression tests PASS; 45/45 hardening frontend tests PASS; frontend production build PASS; alembic check clean with 0 schema drift).
+- **Security E-Lite**: **USER ACCEPTED LOCALLY — PENDING PROFILE NAVIGATION ACCEPTANCE** (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors).
+- **Chat Recall & Media Hardening**: **USER ACCEPTED LOCALLY — PENDING PROFILE NAVIGATION ACCEPTANCE** (Recall sender endpoint `DELETE /api/v1/conversations/{id}/messages/{id}` with tombstone sanitization; migration `b8c9d0e1f2a3_create_media_cleanup_jobs_table` with `uq_media_cleanup_jobs_storage_key_resource`, composite index `(next_retry_at, cleanup_id)`, and `VARCHAR(500)` for `last_error`; initial retry delay 60s eliminating race with immediate Cloudinary destroy; multi-worker replica concurrency protection via `SELECT ... FOR UPDATE SKIP LOCKED` and atomic lease claim 300s; true rolling sliding-window video quota via Redis ZSET + Lua atomic with dynamic `Retry-After` calculation and fail-open resilience; unified `SwipeToReply` with bottom ~56px video controls safe-zone and horizontal gesture lock; fallback action menu "Trả lời" / "Thu hồi" with confirmation dialog; desktop `Trash2` recall icon; mobile long-press context popover with stacked rows and min-h-[44px]; high-contrast neutral tombstone with `CircleSlash` icon and readable timestamp; frontend required `is_deleted: boolean` contract and 5-query realtime cache invalidation on `MESSAGE_DELETED`; worker process entrypoint `app.workers.order_auto_cancel` validated for production execution; frontend production build PASS; `git diff --check` clean with 0 warnings/errors). Combined migration chain: `a7b8c9d0e1f2 -> b8c9d0e1f2a3 (head)`.
 
 ---
 
@@ -231,9 +234,9 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **971/971 PASS** (`pytest tests/ -q`, 0 failures, 11 warnings in 237.43s).
+- **Backend Full Suite**: **972/972 PASS** (`pytest tests/ -q`, 0 failures, 11 warnings in 212.83s).
 - **Backend Chat Recall & Media Hardening Suite**: **20/20 PASS** (`tests/test_chat_recall_and_media_hardening.py`, including sliding-window boundary, initial retry delay race protection, skip-locked concurrency, and log/error sanitization).
-- **Backend Public User ID Suite**: **16/16 PASS** (`tests/test_public_user_id.py`, covering regression tests A through I).
+- **Backend Public User ID Suite**: **17/17 PASS** (`tests/test_public_user_id.py`, covering regression tests A through I + conversation participants and members `public_id` exposure).
 - **Backend Reports & Notifications Suite**: **35/35 PASS** (`tests/test_reports.py`, `tests/test_admin_and_lifecycle_notifications.py`).
 - **Backend BOLA / IDOR Authorization Suite**: **5/5 PASS** (`tests/test_bola_authorization.py`).
 - **Backend Daily Needs Suite**: **29/29 PASS** (`tests/test_daily_needs.py`).
@@ -248,9 +251,10 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Backend Auth & Admin Authorization Suite**: **95/95 PASS** (`tests/test_auth.py`, `tests/test_admin_user_enforcement.py`, `tests/test_admin_reports.py`, `tests/test_admin_product_enforcement.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
 - **Alembic State**: Head `b8c9d0e1f2a3_create_media_cleanup_jobs_table.py`, 0 schema drift (`alembic check` clean, 0 new migrations, composite index `(next_retry_at, cleanup_id)` verified, `last_error` VARCHAR(500) synchronized).
+- **Frontend Chat Profile Navigation Hardening Suite**: **10/10 PASS** (`src/__tests__/chat_profile_navigation_hardening.test.mjs`, covering reproduction cases `user_id: 4` and `user_id: 10`, absence guard against numeric fallback, group member profile navigation, and message sender profile navigation).
 - **Frontend Full/Hardening Suite**: **45/45 PASS** (`post_deployment_hardening.test.mjs`, `pre_deployment_acceptance_fixes.test.mjs`).
 - **Frontend Chat Recall & Media Hardening Suite**: **15/15 PASS** (`src/__tests__/chat_recall_media_hardening.test.mjs`, covering desktop action bar with Trash2 icon, mobile popover layout with stacked rows, tombstone high contrast and CircleSlash icon, zero parent opacity, and realtime cache invalidation).
-- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, bundle generated in 10.19s).
+- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, bundle generated in 11.51s).
 - **Git Hygiene**: `git diff --check` clean across both backend and frontend repositories (0 whitespace errors, 0 conflict markers).
 
 ---

@@ -552,6 +552,10 @@ async def test_reports_target_type_contracts(
 # 9. DATABASE UNIQUE STRUCTURE SANITY (Test I)
 # =====================================================================
 
+# =====================================================================
+# 9. DATABASE UNIQUE STRUCTURE SANITY (Test I)
+# =====================================================================
+
 @pytest.mark.asyncio
 async def test_no_duplicate_public_id_database_structures(db_session: AsyncSession):
     # Test I: Exactly one unique constraint and one unique index on users.public_id
@@ -574,4 +578,84 @@ async def test_no_duplicate_public_id_database_structures(db_session: AsyncSessi
     assert constraints[0][0] == "ux_users_public_id"
     assert constraints[0][1] in ("u", b"u")
 
+
+# =====================================================================
+# 10. CHAT PARTICIPANT & GROUP MEMBER PUBLIC_ID EXPOSURE
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_conversation_participants_and_members_expose_public_id(
+    test_client: AsyncClient,
+    db_session: AsyncSession,
+    user_a: User,
+    user_b: User,
+):
+    """
+    Verifies that all conversation detail, list, direct creation, and group member
+    endpoints expose user.public_id (UUID v4) for safe public profile navigation,
+    NOT numeric user_id or stringified user_id.
+    """
+    # 1. POST /api/v1/conversations/direct with recipient_public_id
+    with auth_patch(user_a):
+        res_create = await test_client.post(
+            "/api/v1/conversations/direct",
+            json={"recipient_public_id": str(user_b.public_id)},
+        )
+        assert res_create.status_code == 200
+        create_data = res_create.json()
+        assert create_data["other_participant"] is not None
+        assert create_data["other_participant"]["user_id"] == user_b.user_id
+        assert create_data["other_participant"]["public_id"] == str(user_b.public_id)
+        assert create_data["other_participant"]["public_id"] != str(user_b.user_id)
+        conv_id = create_data["conversation_id"]
+
+    # 2. GET /api/v1/conversations/{conv_id}
+    with auth_patch(user_a):
+        res_detail = await test_client.get(f"/api/v1/conversations/{conv_id}")
+        assert res_detail.status_code == 200
+        detail_data = res_detail.json()
+        assert detail_data["other_participant"]["public_id"] == str(user_b.public_id)
+        assert detail_data["other_participant"]["user_id"] == user_b.user_id
+
+    # 3. Messages expose sender_public_id
+    with auth_patch(user_a):
+        res_msg = await test_client.post(
+            f"/api/v1/conversations/{conv_id}/messages",
+            data={"content": "Xin chào từ user A"},
+        )
+        assert res_msg.status_code == 201
+        msg_data = res_msg.json()
+        assert msg_data["sender_public_id"] == str(user_a.public_id)
+        assert msg_data["sender_id"] == user_a.user_id
+
+        res_msgs = await test_client.get(f"/api/v1/conversations/{conv_id}/messages")
+        assert res_msgs.status_code == 200
+        msgs_list = res_msgs.json()["items"]
+        assert len(msgs_list) >= 1
+        assert msgs_list[0]["sender_public_id"] == str(user_a.public_id)
+
+    # 4. GET /api/v1/conversations (list - requires last_message_at for DIRECT)
+    with auth_patch(user_a):
+        res_list = await test_client.get("/api/v1/conversations")
+        assert res_list.status_code == 200
+        list_data = res_list.json()
+        item = next(c for c in list_data["items"] if c["conversation_id"] == conv_id)
+        assert item["other_participant"]["public_id"] == str(user_b.public_id)
+        assert item["other_participant"]["user_id"] == user_b.user_id
+
+    # 5. Group creation and member list
+    with auth_patch(user_a):
+        res_group = await test_client.post(
+            "/api/v1/conversations/groups",
+            json={"title": "Nhóm học tập PTIT", "initial_invitee_ids": [user_b.user_id]},
+        )
+        assert res_group.status_code == 201
+        group_id = res_group.json()["conversation_id"]
+
+        res_members = await test_client.get(f"/api/v1/conversations/groups/{group_id}/members")
+        assert res_members.status_code == 200
+        members = res_members.json()
+        owner_member = next(m for m in members if m["user_id"] == user_a.user_id)
+        assert owner_member["public_id"] == str(user_a.public_id)
+        assert owner_member["public_id"] != str(user_a.user_id)
 

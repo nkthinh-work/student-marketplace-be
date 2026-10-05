@@ -1230,6 +1230,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
     "conversation_id": 1,
     "other_participant": {
       "user_id": 2,
+      "public_id": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
       "full_name": "Nguyễn Văn Bán",
       "avatar_url": "https://lh3.googleusercontent.com/..."
     },
@@ -1263,6 +1264,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - Người nhận phải tồn tại và ở trạng thái `ACTIVE` (`404 Not Found`).
   - Tính đơn nhất: Trả về cùng một `conversation_id` nếu cuộc trò chuyện 1-1 giữa 2 người dùng đã tồn tại (`200 OK`), hoặc tạo mới an toàn tương tranh (`201 Created`).
   - Bên trong tầng service, `recipient_public_id` được phân giải thành `user_id` nội bộ; toàn bộ khóa ngoại và logic nghiệp vụ tiếp tục vận hành trên `users.user_id`.
+  - Phản hồi trả về `other_participant` chứa song song `user_id` (cho tương quan tin nhắn/nội bộ) và `public_id: UUID` (bắt buộc cho điều hướng client tới trang cá nhân công khai `/users/{public_id}`).
 - **Response**: `200 OK` / `201 Created` (`ConversationDetailResponse`)
 
 ---
@@ -1276,7 +1278,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - `limit`: 1..50 (mặc định 20)
   - `cursor`: Chuỗi Base64 keyset pagination `(last_message_at DESC, conversation_id DESC)`.
 - **Inbox Invariant**: Chỉ trả về các cuộc trò chuyện của người dùng theo phân trang keyset chuẩn mực, xác định (deterministic recency ordering). Nhóm hỗ trợ hệ thống được tách bạch hoàn toàn sang endpoint chuyên biệt.
-- **Zero N+1 Query Guarantee**: Batch loading người tham gia, tin nhắn mới nhất, unread counts, và contextual products trong đúng 4 câu truy vấn cố định.
+- **Zero N+1 Query Guarantee**: Batch loading người tham gia (kèm `public_id`), tin nhắn mới nhất, unread counts, và contextual products trong đúng 4 câu truy vấn cố định.
 - **Response**: `200 OK`
   ```json
   {
@@ -1285,6 +1287,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
         "conversation_id": 1,
         "other_participant": {
           "user_id": 2,
+          "public_id": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
           "full_name": "Nguyễn Văn Bán",
           "avatar_url": "https://lh3.googleusercontent.com/..."
         },
@@ -1333,6 +1336,7 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
         "message_id": 12,
         "conversation_id": 1,
         "sender_id": 3,
+        "sender_public_id": "b1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
         "content": "Chào bạn, sách còn không ạ?",
         "product_id": 101,
         "sent_at": "2026-09-02T10:05:00Z",
