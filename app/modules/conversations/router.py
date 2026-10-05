@@ -776,3 +776,23 @@ async def remove_message_reaction(
         conversation_id=conversation_id,
         message_id=message_id,
     )
+
+
+@router.delete(
+    "/{conversation_id}/messages/{message_id}",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Thu hồi tin nhắn đã gửi",
+)
+async def recall_message(
+    conversation_id: int,
+    message_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = ConversationService(db)
+    return await service.recall_message(
+        current_user=current_user,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )

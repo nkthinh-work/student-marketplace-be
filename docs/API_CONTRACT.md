@@ -58,6 +58,7 @@ Tài liệu này định nghĩa hợp đồng API chính thức (REST Endpoints,
 | **Class D: Authenticated Search** | `GET /api/v1/users/search`, invite candidates, member lookup | User ID | 30 req / 60s | Chặn tài khoản sinh viên bị lạm dụng để dò danh tính hàng loạt |
 | **Class E: Write Mutations** | `POST /api/v1/products`, reports, feedback, bids, orders | User ID | 30 req / 60s | Chặn spam tạo dữ liệu, gửi báo cáo và đơn hàng rác |
 | **Class F: Chat Messages** | `POST /api/v1/conversations/{id}/messages` | User ID | 60 req / 60s | Cho phép nhắn tin tự nhiên nhưng chặn bot spam tin nhắn |
+| **Chat Video Upload Quota** | `POST /api/v1/conversations/{id}/messages` (khi có đính kèm video) | User ID | 5 video uploads / 600s sliding window | Thuật toán Sliding Window (Redis Sorted Set ZSET + Lua atomic, namespace `chat:video-upload:u:{user_id}`) trong bất kỳ cửa sổ 600s gần nhất; `Retry-After` trả về thời gian thực đến khi event cũ nhất hết hạn; kiểm tra & chặn bằng HTTP 429 TRƯỚC KHI upload; Fail-Open khi Redis sự cố. Ràng buộc kèm theo: tối đa 1 video / tin nhắn (từ chối HTTP 422 trước khi upload nếu > 1 video). |
 | **Class G: Auth Sensitive** | `PATCH /api/v1/users/me`, `PUT /me/bank-account` | User ID | 20 req / 60s | Bảo vệ tài khoản và cập nhật thông tin nhạy cảm |
 
 ### 1.1.3. Quy chuẩn phản hồi khi vượt hạn mức (HTTP 429 Response Semantics)
@@ -1391,6 +1392,61 @@ Tất cả các endpoints trong mục này yêu cầu người dùng xác thực
   - Tự động phát sự kiện `MESSAGE_CREATED` qua kênh WebSocket `/ws/me` tới các thành viên đang hoạt động (`left_at IS NULL`) sau khi giao dịch commit thành công.
   - Trong `GROUP`, phát sinh thêm sự kiện realtime độc lập `NOTIFICATION_CREATED` tới từng người dùng được nhắc đến (xem mục 12.7).
 - **Response**: `201 Created` (`MessageResponse`)
+
+---
+
+### 9.5.1. Thu hồi tin nhắn (Recall Message)
+- **Method**: `DELETE`
+- **Path**: `/api/v1/conversations/{conversation_id}/messages/{message_id}`
+- **Auth**: Bắt buộc (`Bearer <Firebase ID Token>`)
+- **Trạng thái tài khoản**: `ACTIVE`
+- **Quy tắc phân quyền & Bảo mật (Authorization & Privacy)**:
+  1. Người gọi phải là thành viên đang hoạt động trong hội thoại (`left_at IS NULL`).
+  2. Tin nhắn phải thuộc chính hội thoại này (`message.conversation_id == conversation_id`). Nếu hội thoại không tồn tại, người gọi không thuộc hội thoại, hoặc tin nhắn không thuộc hội thoại -> trả về HTTP `404 Not Found` (non-leaking semantics, tuyệt đối không tiết lộ tin nhắn ở hội thoại khác có tồn tại hay không).
+  3. Chỉ người gửi tin nhắn mới có quyền thu hồi: `message.sender_id == current_user.user_id` -> Nếu là thành viên khác thu hồi -> trả về HTTP `403 Forbidden` (`{"detail": "Only the sender can recall this message."}`).
+  4. Không cho phép thu hồi tin nhắn hệ thống (`type == 'SYSTEM'`) -> trả về HTTP `400 Bad Request` (`{"detail": "Cannot recall system messages."}`).
+  5. Tính lũy thừa (Idempotency): Nếu tin nhắn đã được thu hồi trước đó (`is_deleted == True`), API trả về tombstone hợp lệ thành công mà không gây lỗi hoặc tạo duplicate cleanup jobs.
+- **Hành vi Dữ liệu & Xóa mềm (Tombstone Sanitization)**:
+  - Tuyệt đối **KHÔNG hard-delete** dòng `messages` trong CSDL nhằm bảo toàn cây trả lời (`reply_to_message_id`) và lịch sử hội thoại.
+  - Cập nhật trong DB transaction: `is_deleted = TRUE`, `content = NULL`.
+  - Phản hồi API trả về `MessageResponse` đã được làm sạch hoàn toàn:
+    - `is_deleted: true`
+    - `content: null`
+    - `attachments: []`
+    - `mentions: []`
+    - `reactions: []`
+  - Các tin nhắn khác đang trả lời (`reply_to`) tin nhắn bị thu hồi sẽ hiển thị bản tóm tắt preview: `"Tin nhắn không còn khả dụng"`.
+- **Tách biệt Truy cập Tệp đính kèm (Shared Attachments & Download Protection)**:
+  - Tệp đính kèm thuộc tin nhắn bị thu hồi (`is_deleted == TRUE`) bị loại bỏ hoàn toàn khỏi danh sách tệp đính kèm đã chia sẻ (`GET /api/v1/conversations/{id}/attachments`) và bảng tổng hợp (`GET /api/v1/conversations/{id}/attachments/summary`).
+  - Yêu cầu cấp vé tải (`POST .../attachments/{attachment_id}/download-ticket`) và tải tệp qua auth path (`GET .../attachments/{attachment_id}/download`) đối với tệp thuộc tin nhắn đã thu hồi đều bị từ chối với HTTP `404 Not Found`.
+- **Vòng đời Dọn dẹp Phương tiện Cloudinary Bền vững (Durable Media Cleanup Lifecycle)**:
+  - Trong cùng DB transaction thu hồi: hệ thống tạo các bản ghi hàng đợi `media_cleanup_jobs` với trạng thái chờ xử lý (PostgreSQL là Single Source of Truth).
+  - Tránh tranh chấp với worker (Race Elimination): Bản ghi mới được tạo với `next_retry_at = now() + 60s` (hằng số `MEDIA_CLEANUP_INITIAL_RETRY_SECONDS = 60`). Nhờ đó, luồng xử lý xóa tức thời sau commit và background worker không bao giờ tranh chấp xử lý cùng một job.
+  - Ngay sau khi DB transaction commit thành công: hệ thống cố gắng xóa tài sản trên Cloudinary ngay lập tức (`destroy_asset_async` chạy ngoài luồng không block event loop).
+  - Nếu xóa Cloudinary thành công: bản ghi cleanup job tương ứng được gỡ bỏ khỏi bảng `media_cleanup_jobs`.
+  - Nếu xóa Cloudinary thất bại (lỗi mạng, timeout, service down) hoặc worker định kỳ xử lý:
+    - Worker hỗ trợ chạy đa replica an toàn thông qua câu lệnh `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 50` và cơ chế claim lease nguyên tử (`next_retry_at = now() + 300s`).
+    - Lịch trình thử lại với exponential backoff có chặn trên (1m, 5m, 15m, 1h, 6h, tối đa 24h).
+    - Lỗi ngoại vi được làm sạch bằng `sanitize_external_error` trước khi lưu vào `last_error` (`VARCHAR(500)`), loại bỏ hoàn toàn URL nhạy cảm, query params, tokens, secrets và credentials; logs cũng được che chắn tương tự.
+    - Cloudinary trả về `not found` hoặc `ok` đều được coi là hoàn tất thành công và xóa job khỏi hàng đợi.
+  - **Bất biến**: Trạng thái xóa trong PostgreSQL được bảo toàn tuyệt đối, không bao giờ rollback giao dịch thu hồi chỉ vì Cloudinary gặp lỗi.
+- **Hạn mức Tải lên Video Rolling Thực thụ (True Sliding-Window Video Quota)**:
+  - Tối đa 1 video trên mỗi tin nhắn (`422 Unprocessable Entity` nếu vượt quá).
+  - Hạn mức trượt (Rolling Window): Tối đa 5 lượt tải lên video trong bất kỳ cửa sổ 600 giây nào gần nhất theo `user_id`.
+  - Triển khai nguyên tử: Sử dụng Redis Sorted Set (ZSET) với Lua script (`ZREMRANGEBYSCORE`, `ZCARD`, `ZADD`, `PEXPIRE`). `Retry-After` được tính toán động dựa trên chênh lệch giữa thời điểm hiện tại và mốc thời gian của event cũ nhất trong sliding window (không hard-code 600s).
+  - Khả năng phục hồi (Resilience): Cơ chế fail-open an toàn, ghi nhận cảnh báo khi Redis gián đoạn mà không làm nghẽn tiến trình gửi tin của người dùng.
+- **Đồng bộ Thời gian thực (Realtime Invalidation via WebSocket)**:
+  - Sau khi DB commit thành công, máy chủ phát sự kiện tối giản tới tất cả thành viên đang hoạt động trong hội thoại qua `/ws/me`:
+    ```json
+    {
+      "type": "MESSAGE_DELETED",
+      "conversation_id": 1,
+      "message_id": 12
+    }
+    ```
+  - Tuyệt đối không chứa Cloudinary URLs, `storage_key`, metadata tệp đính kèm, hay nội dung cũ trong WebSocket payload.
+  - Phía Frontend khi nhận `MESSAGE_DELETED` sẽ tiến hành invalidate toàn bộ các query liên quan: `messageLists`, `detail`, `attachments`, `attachments-summary`, và `lists` (inbox preview).
+- **Response**: `200 OK` (`MessageResponse`)
 
 ---
 

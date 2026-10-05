@@ -15,7 +15,9 @@ Provides:
 
 from collections.abc import Callable, Awaitable
 import logging
+import time
 from typing import Optional, Union
+import uuid
 from fastapi import Depends, HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
@@ -30,6 +32,52 @@ from app.modules.auth.dependencies import get_current_user
 from app.modules.users.models import User
 
 logger = logging.getLogger("app.security.rate_limiter")
+
+# Atomic Sliding Window Rate Limiting Lua Script via Sorted Set (ZSET)
+# KEYS[1] = key
+# ARGV[1] = now_ms (integer)
+# ARGV[2] = window_ms (integer)
+# ARGV[3] = limit (integer)
+# ARGV[4] = member (string, timestamp:nonce)
+# Returns {allowed (0/1), current_count (int), retry_after (seconds)}
+SLIDING_WINDOW_LUA = """
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local member = ARGV[4]
+
+local cutoff = now_ms - window_ms
+
+-- 1. Remove events older than or equal to cutoff
+redis.call("ZREMRANGEBYSCORE", key, "-inf", cutoff)
+
+-- 2. Count current events in the sliding window
+local current = redis.call("ZCARD", key)
+
+-- 3. If current >= limit, reject and compute dynamic Retry-After
+if current >= limit then
+    local oldest = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+    local retry_after = 1
+    if oldest and #oldest >= 2 then
+        local oldest_score = tonumber(oldest[2])
+        local retry_after_ms = (oldest_score + window_ms) - now_ms
+        if retry_after_ms > 0 then
+            retry_after = math.ceil(retry_after_ms / 1000)
+        end
+    end
+    return {0, current, retry_after}
+end
+
+-- 4. Within quota: record the new event atomically
+redis.call("ZADD", key, now_ms, member)
+
+-- 5. Set TTL with a safety margin (window_ms + 60s)
+local pexpire_ms = window_ms + 60000
+redis.call("PEXPIRE", key, pexpire_ms)
+
+return {1, current + 1, 0}
+"""
 
 # Atomic Rate Limiting Lua Script
 # ARGV[1] = limit (integer)
@@ -360,3 +408,73 @@ rate_limit_auth_sensitive = UserRateLimiter(
     limit=lambda: settings.RATE_LIMIT_AUTH_SENSITIVE_LIMIT,
     window_seconds=lambda: settings.RATE_LIMIT_AUTH_SENSITIVE_WINDOW,
 )
+
+
+async def check_chat_video_upload_quota(
+    user_id: int,
+    now_ms: Optional[int] = None,
+) -> tuple[bool, int]:
+    """
+    Checks and consumes 1 unit of authenticated user's rolling chat video upload quota
+    using an atomic sliding window via Redis Sorted Set (ZSET).
+    Key: chat:video-upload:u:{user_id}
+    Fails open if Redis is unavailable or encounters an error.
+    Returns (allowed: bool, retry_after: int).
+    """
+    if not settings.RATE_LIMIT_ENABLED:
+        return True, 0
+
+    key = f"chat:video-upload:u:{user_id}"
+    redis_client = get_effective_redis_client()
+    if redis_client is None:
+        try:
+            redis_client = await get_or_reconnect_redis()
+        except Exception:
+            redis_client = None
+
+    if redis_client is None:
+        logger.warning(
+            "Redis rate limiter unavailable (client is None). Failing open for key=%s",
+            key,
+        )
+        return True, 0
+
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+
+    window_ms = settings.CHAT_VIDEO_UPLOAD_WINDOW_SECONDS * 1000
+    limit = settings.CHAT_VIDEO_UPLOAD_LIMIT
+    nonce = uuid.uuid4().hex[:8]
+    member = f"{now_ms}:{nonce}"
+
+    try:
+        raw_result = await redis_client.eval(
+            SLIDING_WINDOW_LUA,
+            1,
+            key,
+            now_ms,
+            window_ms,
+            limit,
+            member,
+        )
+        if isinstance(raw_result, (list, tuple)) and len(raw_result) >= 3:
+            allowed = bool(raw_result[0])
+            count = int(raw_result[1])
+            retry_after = int(raw_result[2])
+            if not allowed:
+                logger.warning(
+                    "Chat video upload quota exceeded [user_id=%s, count=%s, retry_after=%ss]",
+                    user_id,
+                    count,
+                    retry_after,
+                )
+            return allowed, retry_after
+
+        return True, 0
+    except Exception as exc:
+        logger.warning(
+            "Redis sliding window quota check failed (%s). Failing open for key=%s",
+            exc,
+            key,
+        )
+        return True, 0

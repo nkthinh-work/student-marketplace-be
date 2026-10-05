@@ -5,19 +5,21 @@
 ---
 
 ## 1. Current Phase (Giai đoạn hiện tại)
-**Security E-Lite — Public User Identifier + BOLA/IDOR Hardening**
+**Security E-Lite + Chat Recall & Media Hardening (Locally Verified & User-Accepted — Ready for User-Managed Release)**
 
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-**Security E-Lite — Public User Identifier + BOLA/IDOR Hardening (Implemented & Locally Verified; Awaiting User Review)**
-*Parent Task*: Security Hardening & Privacy Protection
-*Deployment State*: LOCAL IMPLEMENTATION COMPLETE; ZERO PRODUCTION TOUCH; AWAITING USER REVIEW (DO NOT DEPLOY)
+1. **Pre-Push Clean Pass for Combined Production Release**:
+   - *Status*: COMPLETED & LOCALLY VERIFIED; ZERO PRODUCTION TOUCH.
+   - *Release Bundle*: Security E-Lite (Public User ID, BOLA/IDOR Hardening, migration `a7b8c9d0e1f2`) + Chat Recall & Media Hardening (Message recall, durable cleanup queue, true rolling video quota, mobile long-press popover, high-contrast tombstone, migration `b8c9d0e1f2a3`).
+   - *Deployment State*: LOCAL PREPARATION COMPLETE; AWAITING USER-MANAGED PRODUCTION PUSH.
 
 ---
 
 ## 3. Status (Trạng thái)
-**IMPLEMENTED — AWAITING USER REVIEW — DO NOT DEPLOY (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; 951/951 backend tests PASS; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors)**
+- **Security E-Lite**: **USER ACCEPTED LOCALLY — READY FOR USER-MANAGED PRODUCTION RELEASE** (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; 951/951 baseline backend tests PASS; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors).
+- **Chat Recall & Media Hardening**: **USER ACCEPTED LOCALLY — READY FOR USER-MANAGED PRODUCTION RELEASE** (Recall sender endpoint `DELETE /api/v1/conversations/{id}/messages/{id}` with tombstone sanitization; migration `b8c9d0e1f2a3_create_media_cleanup_jobs_table` with `uq_media_cleanup_jobs_storage_key_resource`, composite index `(next_retry_at, cleanup_id)`, and `VARCHAR(500)` for `last_error`; initial retry delay 60s eliminating race with immediate Cloudinary destroy; multi-worker replica concurrency protection via `SELECT ... FOR UPDATE SKIP LOCKED` and atomic lease claim 300s; true rolling sliding-window video quota via Redis ZSET + Lua atomic with dynamic `Retry-After` calculation and fail-open resilience; unified `SwipeToReply` with bottom ~56px video controls safe-zone and horizontal gesture lock; fallback action menu "Trả lời" / "Thu hồi" with confirmation dialog; desktop `Trash2` recall icon; mobile long-press context popover with stacked rows and min-h-[44px]; high-contrast neutral tombstone with `CircleSlash` icon and readable timestamp; frontend required `is_deleted: boolean` contract and 5-query realtime cache invalidation on `MESSAGE_DELETED`; worker process entrypoint `app.workers.order_auto_cancel` validated for production execution; 20/20 targeted backend tests PASS; 15/15 targeted frontend tests PASS; frontend production build PASS; `git diff --check` clean with 0 warnings/errors). Combined migration chain: `a7b8c9d0e1f2 -> b8c9d0e1f2a3 (head)`.
 
 ---
 
@@ -130,6 +132,16 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 
 ## 6. Recently Completed (Các công việc vừa hoàn thành)
 
+- **Chat Recall & Media Hardening Pass** (LOCAL WORKSPACE VERIFIED — NOT DEPLOYED):
+  - **Message Sender Recall**: Triển khai `DELETE /api/v1/conversations/{conversation_id}/messages/{message_id}` với kiểm tra xác thực người gửi (`message.sender_id == current_user.user_id`), từ chối SYSTEM message (`400`), non-leaking `404` cho tin nhắn/hội thoại không thuộc quyền truy cập, `403` cho thành viên khác, và xử lý lũy thừa an toàn khi tin nhắn đã thu hồi.
+  - **Tombstone Sanitization**: Soft-delete giữ nguyên dòng `messages` (`is_deleted=True, content=None`) bảo toàn cây trả lời (`reply_to_message_id`), tóm tắt preview trả lời trở thành "Tin nhắn không còn khả dụng", làm sạch hoàn toàn `attachments=[]`, `mentions=[]`, `reactions=[]` trong phản hồi API.
+  - **Durable Media Cleanup Queue (`media_cleanup_jobs`)**: Tạo bảng PostgreSQL bền vững lưu trữ hàng đợi dọn dẹp Cloudinary media với migration Alembic `b8c9d0e1f2a3_create_media_cleanup_jobs_table.py` (`uq_media_cleanup_jobs_storage_key_resource` và chỉ mục `ix_media_cleanup_jobs_next_retry`). DB commit quyết định trạng thái nghiệp vụ trước khi dọn dẹp ngoại vi (không rollback DB delete khi Cloudinary lỗi).
+  - **Immediate Post-Commit Cleanup & Retry Worker**: Xóa Cloudinary tức thì sau commit ngoài luồng (`asyncio.to_thread`), gỡ bỏ job khi thành công; nếu lỗi giữ pending job để background worker định kỳ quét với thuật toán exponential backoff có chặn trên (1m, 5m, 15m, 1h, 6h, tối đa 24h) và xử lý `not found` coi như thành công.
+  - **Chat Video Anti-Spam Quota**: Chặn đứng spam video TRƯỚC KHI upload Cloudinary: tối đa 1 video / tin nhắn (từ chối `422 Unprocessable Content` trước khi upload), hạn ngạch rolling quota Redis 5 video uploads / 600s / user (từ chối `429 Too Many Requests` trước khi upload, chính sách fail-open khi Redis gặp sự cố).
+  - **Video-Safe Swipe-To-Reply**: Xây dựng wrapper `SwipeToReply` dùng Pointer Events đồng nhất, khóa hướng horizontal gesture lock (`dx > 12 && dx > dy * 1.2`), dịch chuyển tối đa 72px, ngưỡng kích hoạt 56px; đặc biệt bảo vệ vùng native controls ~56px dưới cùng của video HTML5 (play, pause, seek, volume, fullscreen hoạt động bình thường, vuốt ngang vùng video phía trên để trả lời).
+  - **Fallback Action Menu**: Bổ sung nút "Trả lời" và "Thu hồi" trong desktop hover bar và context menu / reaction picker, đi kèm modal xác nhận thu hồi an toàn.
+  - **Realtime MESSAGE_DELETED Invalidation**: Phát sự kiện tối giản `{"type": "MESSAGE_DELETED", "conversation_id": ..., "message_id": ...}` qua `/ws/me`, frontend tự động vô hiệu hóa cache và refetch authoritative REST API.
+  - Kiểm thử: 16/16 backend tests chuyên biệt (`tests/test_chat_recall_and_media_hardening.py`) PASS; 967/967 full backend tests PASS; 11/11 targeted frontend tests PASS; frontend production build PASS; `alembic check` clean; `git diff --check` sạch 100%.
 - **Phase D-Lite — Minimal Production Monitoring & Operational Visibility Pass** (LOCAL WORKSPACE VERIFIED — READY FOR MANUAL RAILWAY CONFIGURATION):
   - Bổ sung bounded timeout 2.0s cho probe CSDL PostgreSQL trong `GET /health` (`asyncio.wait_for(..., timeout=2.0)`), đồng bộ với timeout 1.0s của Redis; đảm bảo `/health` phản hồi tức thì và không bị nghẽn (hang) khi mạng CSDL gặp sự cố.
   - Chuẩn hóa ngữ nghĩa Railway deployment readiness gate: `/health` trả về HTTP 200 `healthy` khi cả DB và Redis sẵn sàng; HTTP 200 `degraded` khi Redis gặp sự cố (bảo đảm tính năng fail-open của Redis không chặn việc kích hoạt deployment backend); và HTTP 503 `unhealthy` khi PostgreSQL down hoặc probe timeout (ngăn Railway kích hoạt deployment mới không thể kết nối tới cơ sở dữ liệu chính).
@@ -198,11 +210,29 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Hợp đồng Nhật ký & Marquee Trang chủ (Real-Data Daily Journal & Continuous Marquee Contract)**:
   - `GET /api/v1/daily-needs/recent` (limit clamp 1..10) phục vụ marquee trang chủ; backend không tạo dữ liệu giả.
 
+- **Chat Recall & Media Cleanup Invariants**:
+  - PostgreSQL là persistent source of truth: tin nhắn recall được soft-delete (`is_deleted = TRUE, content = NULL`), dòng `messages` và `reply_to_message_id` không bao giờ bị hard-delete.
+  - Media cleanup queue `media_cleanup_jobs` được ghi bền vững trong cùng giao dịch CSDL; commit CSDL quyết định trạng thái nghiệp vụ trước khi dọn dẹp ngoại vi (không rollback DB delete khi Cloudinary lỗi).
+  - Tránh tranh chấp giữa immediate cleanup và background worker: Khi tạo job mới trong transaction thu hồi, gán `next_retry_at = now() + 60s` (`MEDIA_CLEANUP_INITIAL_RETRY_SECONDS = 60`). Luồng request thực thi immediate destroy ngay sau commit (t=0); worker không tranh chấp xử lý job trước thời hạn 60s.
+  - Bảo vệ đa worker replica (Multi-Worker Concurrency): Worker query sử dụng `SELECT ... FOR UPDATE SKIP LOCKED ORDER BY next_retry_at, cleanup_id LIMIT 50` kết hợp composite index `(next_retry_at, cleanup_id)`. Claim lease nguyên tử gia hạn `next_retry_at = now() + 300s` và commit ngay trước khi thực thi xóa Cloudinary ngoài luồng, không giữ DB lock trong lúc gọi mạng I/O.
+  - Làm sạch lỗi ngoại vi (Sanitized `last_error`): Cột `last_error` kiểu `VARCHAR(500)`. Hàm `sanitize_external_error` tước bỏ toàn bộ sensitive URLs, credentials, query parameters, signed tokens; DB và logger đều chỉ lưu giữ tóm tắt chẩn đoán an toàn, tối đa 500 ký tự.
+  - True Rolling Video Quota: Triển khai atomic sliding-window rate limiter bằng Redis Sorted Set (ZSET) + Lua script (`chat:video-upload:u:{user_id}`). Cửa sổ trượt 600s, tối đa 5 uploads. `Retry-After` tính động từ event cũ nhất còn tồn tại trong rolling window. Fail-open an toàn khi Redis gián đoạn.
+  - Phía Frontend: Kiểu `MessageItem.is_deleted: boolean` bắt buộc (non-optional). Handler sự kiện realtime `MESSAGE_DELETED` thực hiện invalidate toàn diện 5 query authoritative: `messageLists`, `detail`, `attachments`, `attachments-summary`, và `lists` (inbox preview).
+  - Worker Entrypoint Ownership: Worker process chính `python -m app.workers.order_auto_cancel` là canonical background process duy nhất của dự án (được định nghĩa trong `docker-compose.prod.yml` và Railway), điều phối cả hai chu trình `order auto cancel` và `run_media_cleanup_sweep`.
+  - **CẢNH BÁO PHỤ THUỘC MIGRATION (SECURITY E-LITE DEPENDENCY BLOCKER)**:
+    Migration Chat Recall (`b8c9d0e1f2a3`) có `down_revision = 'a7b8c9d0e1f2'` (Security E-Lite).
+    Do Security E-Lite vẫn đang ở trạng thái `AWAITING USER REVIEW — DO NOT DEPLOY`, Chat Recall **TUYỆT ĐỐI KHÔNG ĐƯỢC PUSH/DEPLOY ĐỘC LẬP** lên Railway production.
+    Railway áp dụng migration tự động theo chuỗi pre-deploy (`alembic upgrade head`); push Chat Recall sẽ kéo theo cả migration Security E-Lite chưa được nghiệm thu lên production database. Trước khi push, người dùng phải nghiệm thu Security E-Lite hoặc chuỗi migration phải được chủ động tách/rebase.
+  - **TRẠNG THÁI KIỂM CHỨNG NATIVE VIDEO CONTROLS**:
+    AUTOMATED GESTURE LOGIC VERIFIED (kiểm chứng bằng unit test tự động với layout mock và pointer event filter).
+    NATIVE VIDEO CONTROLS REQUIRE MANUAL BROWSER ACCEPTANCE: Hành vi tương tác thực tế của controls thanh tua, âm lượng, fullscreen trên Chrome desktop, Chrome Android và Safari/iOS bắt buộc phải được người dùng nghiệm thu thủ công trên trình duyệt thật.
+
 ---
 
 ## 8. Verification Baseline (Đường cơ sở kiểm thử)
 
-- **Backend Full Suite**: **951/951 PASS** (`pytest tests/ -q`, 0 failures, 10 warnings in 469s).
+- **Backend Full Suite**: **971/971 PASS** (`pytest tests/ -q`, 0 failures, 11 warnings in 237.43s).
+- **Backend Chat Recall & Media Hardening Suite**: **20/20 PASS** (`tests/test_chat_recall_and_media_hardening.py`, including sliding-window boundary, initial retry delay race protection, skip-locked concurrency, and log/error sanitization).
 - **Backend Public User ID Suite**: **16/16 PASS** (`tests/test_public_user_id.py`, covering regression tests A through I).
 - **Backend Reports & Notifications Suite**: **35/35 PASS** (`tests/test_reports.py`, `tests/test_admin_and_lifecycle_notifications.py`).
 - **Backend BOLA / IDOR Authorization Suite**: **5/5 PASS** (`tests/test_bola_authorization.py`).
@@ -217,15 +247,29 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Auth & Admin Authorization Suite**: **95/95 PASS** (`tests/test_auth.py`, `tests/test_admin_user_enforcement.py`, `tests/test_admin_reports.py`, `tests/test_admin_product_enforcement.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
-- **Alembic State**: Head `a7b8c9d0e1f2_add_public_id_to_users.py`, 0 schema drift (`alembic check` clean, 0 new migrations).
-- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, bundle generated).
+- **Alembic State**: Head `b8c9d0e1f2a3_create_media_cleanup_jobs_table.py`, 0 schema drift (`alembic check` clean, 0 new migrations, composite index `(next_retry_at, cleanup_id)` verified, `last_error` VARCHAR(500) synchronized).
+- **Frontend Full/Hardening Suite**: **45/45 PASS** (`post_deployment_hardening.test.mjs`, `pre_deployment_acceptance_fixes.test.mjs`).
+- **Frontend Chat Recall & Media Hardening Suite**: **15/15 PASS** (`src/__tests__/chat_recall_media_hardening.test.mjs`, covering desktop action bar with Trash2 icon, mobile popover layout with stacked rows, tombstone high contrast and CircleSlash icon, zero parent opacity, and realtime cache invalidation).
+- **Frontend Production Build**: `tsc -b && vite build` PASS (0 errors, bundle generated in 10.19s).
 - **Git Hygiene**: `git diff --check` clean across both backend and frontend repositories (0 whitespace errors, 0 conflict markers).
 
 ---
 
 ## 9. Next Exact Task (Công việc chính xác tiếp theo)
 
-- **User Review of Security E-Lite (Public User ID + BOLA Hardening)**:
-  1. Trình báo cáo kiểm toán chi tiết 19 mục `SECURITY E-LITE — PUBLIC USER ID + BOLA HARDENING REPORT` cho người dùng.
-  2. Tuyệt đối KHÔNG commit, push, hay triển khai lên Railway production khi chưa có yêu cầu tường minh.
-  3. Sau khi người dùng nghiệm thu, tiến hành lập kế hoạch di trú production chi tiết (Pre-migration backup -> Alembic upgrade head -> Post-migration verification).
+**User-Managed Production Release (Quy trình Phát hành do Người dùng Điều phối)**:
+1. **Pre-Deploy Verification**:
+   - Xác nhận phiên sao lưu tự động gần nhất trên Railway (`student-marketplace-backup`) đẩy lên Cloudflare R2 đạt trạng thái `SUCCESS`.
+   - Xác nhận endpoint `/health` trên Railway backend hiện tại trả về HTTP 200 `{"status": "healthy"}`.
+   - Xác nhận không có incident hay alert đang mở trên hạ tầng Railway.
+2. **Push Backend**:
+   - Người dùng tự thực hiện commit và push branch `main` của `student-marketplace-be` lên GitHub.
+   - Theo dõi Railway build & pre-deploy command (`alembic upgrade head`): Áp dụng thành công tuần tự `a7b8c9d0e1f2` (Security E-Lite) và `b8c9d0e1f2a3` (Media Cleanup Jobs).
+   - Xác nhận deployment backend chuyển sang trạng thái Live (màu xanh), endpoint `/health` đạt HTTP 200.
+3. **Push Frontend**:
+   - Sau khi backend live và migration ổn định, người dùng tự thực hiện commit và push branch `main` của `student-marketplace-fe` lên GitHub.
+   - Theo dõi Railway build container frontend (`tsc -b && vite build`) hoàn tất và deploy live thành công.
+4. **Production Smoke Acceptance**:
+   - Kiểm tra định danh công khai: Mở trang cá nhân với `public_id`, mở cuộc trò chuyện trực tiếp.
+   - Kiểm tra Chat Recall & Media Hardening: Gửi tin nhắn text/ảnh/video, vuốt trả lời, thao tác thu hồi trên desktop (Trash2) và mobile (long-press), xác nhận tombstone hiển thị rõ nét, tệp đính kèm bị xóa khỏi danh sách shared attachments, và tài khoản thứ hai nhận realtime `MESSAGE_DELETED`.
+   - Kiểm tra Worker: Xác nhận worker container chạy ổn định, không có vòng lặp lỗi media cleanup hay crash.

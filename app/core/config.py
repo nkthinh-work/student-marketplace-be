@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_AUTH_SENSITIVE_LIMIT: int = 20
     RATE_LIMIT_AUTH_SENSITIVE_WINDOW: int = 60
 
+    # Chat Video Anti-Spam (Feature C)
+    CHAT_VIDEO_UPLOAD_LIMIT: int = 5
+    CHAT_VIDEO_UPLOAD_WINDOW_SECONDS: int = 600
+    CHAT_MAX_VIDEOS_PER_MESSAGE: int = 1
+
     # Firebase
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
     FIREBASE_CREDENTIALS_JSON: Optional[str] = None

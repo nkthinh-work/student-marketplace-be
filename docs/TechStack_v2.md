@@ -545,6 +545,10 @@ Không bắt đầu WebSocket trước khi persistence và authorization ổn đ
   - Cấu hình Production Compose (`docker-compose.prod.yml`) chuẩn hóa 4 services (`api`, `worker`, `postgres`, `redis`), loại bỏ hoàn toàn source bind mounts và dev reload.
   - Phân quyền người dùng an toàn (non-root `appuser`, UID `10001`), cô lập cổng kết nối PostgreSQL và Redis trong mạng nội bộ Compose.
   - Thiết lập cơ chế kiểm tra sức khỏe (Healthchecks) và dừng mượt mà (Graceful SIGTERM handling); migration CSDL được thực thi tường minh qua lệnh của người vận hành, không chạy tự động khi khởi động API.
+- **Phase 9C-E — Durable Cloudinary Media Cleanup Worker**:
+  - Hàng đợi bền vững trên PostgreSQL (`media_cleanup_jobs`) dọn dẹp tài nguyên phương tiện (IMAGE, VIDEO, AUDIO, DOCUMENT) khi người dùng thu hồi tin nhắn chat.
+  - Quét định kỳ qua background worker (`run_media_cleanup_sweep` tích hợp trong vòng lặp `order_auto_cancel`) với thuật toán exponential backoff có chặn trên (1m, 5m, 15m, 1h, 6h, tối đa 24h) và giới hạn batch 50 items/sweep.
+  - Phân tách bất biến: DB transaction commit xác lập tính hợp lệ của việc thu hồi trước khi gọi Cloudinary; lỗi xóa Cloudinary không ảnh hưởng dữ liệu PostgreSQL và được retry tự động.
 - **Phase 9C-D — CI / Deployment**:
   - **CI Provider**: Sử dụng GitHub Actions độc lập cho từng repository (`student-marketplace-be` và `student-marketplace-fe`), tuân thủ nguyên tắc least-privilege (`contents: read`), hủy job cũ khi có commit mới (`cancel-in-progress: true`), không sử dụng secrets sản xuất trong kiểm thử thông thường.
   - **Backend CI Gates**: Python 3.12, container dịch vụ PostgreSQL 15 & Redis 7 cô lập tạm thời, migration Alembic (`alembic upgrade head`), kiểm toán drift (`alembic check`), toàn bộ test suite (`pytest tests/ -q`), kiểm tra cú pháp Production Compose, build image Production Docker, xác thực non-root runtime (`appuser`), kiểm tra toàn vẹn dependencies (`pip check`) và kiểm toán ranh giới tệp tin. Toàn bộ release gates trên GitHub Actions đã đạt `SUCCESS`.

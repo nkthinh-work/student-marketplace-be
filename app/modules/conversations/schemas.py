@@ -283,6 +283,7 @@ class MessageResponse(BaseModel):
     product: Optional[ProductContextSummary] = None
     sent_at: datetime
     is_mine: bool = False
+    is_deleted: bool = False
     attachments: List[MessageAttachmentResponse] = Field(default_factory=list)
     mentions: List[MessageMentionResponse] = Field(default_factory=list)
     reactions: List[ReactionAggregateResponse] = Field(default_factory=list)

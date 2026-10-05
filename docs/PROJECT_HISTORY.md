@@ -29,6 +29,8 @@
 - **Pre-Deployment Acceptance Fix — Product Approval Completion & Inbox/Home UX**: Hoàn thiện toàn diện quy trình kiểm duyệt tin đăng tiền xuất bản (`Product Pre-Publication Approval Completion`), hỗ trợ tin đăng tùy chọn 0 ảnh; dọn dẹp hộp thư thông báo cá nhân bằng cử chỉ vuốt phải trực tiếp trên mobile (`Notification Direct Swipe-Right Delete`); 10 bản ghi nhật ký thật mới nhất kèm marquee hai chiều liên tục (`10 Most Recent Real Journals & Continuous Two-Way Marquee`). 841/841 backend tests PASS, 14/14 frontend acceptance tests PASS, frontend build clean (USER ACCEPTED).
 - **Phase 9C-D (Release Candidate Hygiene & Production Data Preparation)**: Vệ sinh toàn diện mã nguồn BE/FE, loại bỏ debug code, chuẩn hóa tiếng Việt giải thích WHY, zero secrets, .gitignore cập nhật `*.dump`. Phân định không gian lưu trữ Cloudinary theo môi trường (`student-marketplace/dev` vs `student-marketplace/prod`) giữ nguyên 100% tài nguyên legacy. Chiến lược CSDL production sạch qua `alembic upgrade head` + nạp 10 danh mục chuẩn tắc `seed_production_reference.py` + CLI bootstrap admin an toàn `promote_admin.py`. Kiểm toán CSDL dev đọc-chỉ (1.375 bản ghi bảo toàn trên 32 bảng ứng dụng, 0 biến đổi dữ liệu). Hoàn tất dọn dẹp Cloudinary sau rà soát thủ công: 50 legacy referenced assets retained, 4 orphan assets deleted, 0 orphan remaining, 0 unknown remaining. 842/842 tests backend PASS, Alembic head `4414f46b5404`, 32 bảng ứng dụng + 1 bảng `alembic_version` = 33 bảng vật lý (USER ACCEPTED / COMPLETED & VERIFIED).
 - **Phase 9C-D (GitHub Release & CI Verification)**: Đẩy toàn bộ commit Release Candidate lên nhánh `main` của cả hai repo `student-marketplace-be` và `student-marketplace-fe`. Kiểm chứng thực tế thành công trên giao diện GitHub Actions: Backend CI & Release Gate SUCCESS, Backend Test Suite & Alembic Verification SUCCESS, Production Docker Build & Artifact Hardening Gate SUCCESS; Frontend CI & Build Gate SUCCESS, Frontend Typecheck & Production Build SUCCESS. Cảnh báo Node.js 20 deprecation / GitHub runner chỉ là warning, không làm gián đoạn workflow (COMPLETED & VERIFIED / USER ACCEPTED).
+- **Security E-Lite — Public User Identifier & BOLA/IDOR Hardening**: Cột `users.public_id` UUID v4 ngẫu nhiên, UNIQUE (`ux_users_public_id`), NOT NULL với DB default `gen_random_uuid()` (migration `a7b8c9d0e1f2`); bảo toàn 100% khóa chính nội bộ BIGINT `user_id` và các FK quan hệ. Chuẩn hóa ranh giới công khai sang `public_id` (trang cá nhân, điều hướng chat trực tiếp, gửi báo cáo người dùng), loại bỏ hoàn toàn fallback parse int; bảo vệ BOLA/IDOR bằng phản hồi non-leaking HTTP 404; kiểm soát rò rỉ DTO. 951/951 tests backend PASS, frontend build clean (USER ACCEPTED LOCALLY / READY FOR RELEASE).
+- **Chat Recall & Media Hardening + UX Enhancements**: Thu hồi tin nhắn (`DELETE /api/v1/conversations/{id}/messages/{id}`) cho người gửi với cơ chế tombstone; hàng đợi dọn dẹp media Cloudinary bền vững `media_cleanup_jobs` (migration `b8c9d0e1f2a3`) kèm initial delay 60s và cơ chế khóa đa replica `FOR UPDATE SKIP LOCKED`; làm sạch `last_error` (VARCHAR 500); hạn mức tải video rolling sliding-window nguyên tử qua Redis ZSET + Lua (max 1 video/msg -> 422, rolling 5 videos/600s -> 429 dynamic Retry-After fail-open); sự kiện WebSocket `MESSAGE_DELETED` làm mới 5 query cache; cử chỉ `SwipeToReply` bảo vệ vùng video controls ~56px; nút thu hồi desktop icon `Trash2`; mobile long-press context popover với touch targets >=44px; bong bóng tombstone trung tính tương phản cao với icon `CircleSlash`. 971/971 full backend tests PASS, 15/15 frontend tests PASS, frontend build clean (USER ACCEPTED LOCALLY / READY FOR RELEASE).
 
 ---
 
@@ -664,3 +666,50 @@
   - Frontend production build: `npm run build` (`tsc -b && vite build`) PASS 0 errors.
   - Zero reference audit: Tìm kiếm toàn diện không còn dấu vết của `ThemeContext`, `ThemeToggle`, `ptiters-theme` trong mã nguồn hoạt động.
 
+---
+
+### Security E-Lite — Public User Identifier & BOLA/IDOR Hardening [USER ACCEPTED LOCALLY / READY FOR RELEASE]
+- **Mục tiêu & Thực chứng**:
+  - **A. Định danh Công khai Opaque (Anti-Enumeration)**:
+    - Bổ sung cột `users.public_id` kiểu `UUID` v4 với ràng buộc duy nhất `ux_users_public_id`, `NOT NULL`, giá trị mặc định cấp CSDL `gen_random_uuid()` (Alembic migration `a7b8c9d0e1f2_add_public_id_to_users.py`).
+    - Bảo toàn 100% khóa chính nội bộ BIGINT `user_id` và toàn bộ các khóa ngoại quan hệ trong mô hình dữ liệu.
+  - **B. Ranh giới Client-Facing & Triệt tiêu Fallback Parse Int**:
+    - Chuẩn hóa toàn bộ endpoint công khai nhận diện người dùng qua `public_id` (trang hồ sơ công khai `/api/v1/users/{public_id}/profile`, điều hướng tạo cuộc trò chuyện trực tiếp `POST /api/v1/conversations/direct`, gửi báo cáo vi phạm `POST /api/v1/reports`).
+    - Loại bỏ triệt để mọi logic fallback `try UUID else parse int`, bảo vệ hệ thống trước tấn công duyệt vét người dùng (enumeration attack).
+  - **C. Kiểm soát BOLA / IDOR & DTO Leak-Free**:
+    - Mọi truy vấn người dùng không tồn tại hoặc tài nguyên riêng tư của người dùng khác đều trả về HTTP 404 non-leaking semantics.
+    - DTO công khai (`UserProfileResponse`, `CreatorProfileResponse`, `UserSearchItemResponse`) không để lộ khóa chính nội bộ `user_id` hay metadata xác thực Firebase UID.
+  - **D. Kiểm chứng Thực tế**:
+    - Test suite chuyên biệt `tests/test_public_user_id.py` (16/16 PASS) và `tests/test_bola_authorization.py` (5/5 PASS).
+    - 951/951 full backend tests PASS, frontend build clean.
+
+---
+
+### Chat Recall & Media Hardening + Mobile UX [USER ACCEPTED LOCALLY / READY FOR RELEASE]
+- **Mục tiêu & Thực chứng**:
+  - **A. Thu hồi Tin nhắn & Làm sạch Dữ liệu (Message Recall & Tombstone Sanitization)**:
+    - Endpoint người gửi: `DELETE /api/v1/conversations/{id}/messages/{id}`.
+    - Ràng buộc phân quyền: Chỉ người gửi tin nhắn trong cuộc trò chuyện mới có quyền thu hồi (HTTP 403 Forbidden nếu thành viên khác; HTTP 404 nếu không thuộc hội thoại; HTTP 400 nếu là tin nhắn hệ thống; lũy đẳng nếu đã thu hồi trước đó).
+    - Soft-delete: Giữ lại dòng `messages` trong CSDL với `is_deleted = TRUE` và `content = NULL` để bảo toàn cây trả lời (`reply_to_message_id`); phản hồi làm sạch toàn bộ attachments, mentions, reactions. Các tin nhắn đang trích dẫn hiển thị: `"Tin nhắn không còn khả dụng"`.
+    - Loại trừ tệp đính kèm: Attachments của tin nhắn đã thu hồi bị loại bỏ hoàn toàn khỏi shared attachments list, attachments summary, ticket download và file download API.
+  - **B. Hàng đợi Dọn dẹp Cloudinary Bền vững (Durable Media Cleanup Queue)**:
+    - Bảng CSDL `media_cleanup_jobs` (Alembic migration `b8c9d0e1f2a3_create_media_cleanup_jobs_table.py`) với unique constraint `uq_media_cleanup_jobs_storage_key_resource` và composite index `(next_retry_at, cleanup_id)`.
+    - Tránh tranh chấp worker tức thì (Race Elimination): Job mới được tạo với `next_retry_at = now() + 60s` (`MEDIA_CLEANUP_INITIAL_RETRY_SECONDS = 60`). Request thread thực hiện xóa Cloudinary tức thời ngoài luồng sau commit; worker chỉ can thiệp sau 60s nếu request gặp sự cố mạng hoặc crash.
+    - Bảo vệ worker đa replica: Truy vấn `SELECT ... FOR UPDATE SKIP LOCKED ORDER BY next_retry_at, cleanup_id LIMIT 50` kết hợp claim lease nguyên tử (`next_retry_at = now() + 300s`) commit trước khi gọi Cloudinary destroy, không giữ DB lock trong lúc I/O mạng.
+    - Làm sạch lỗi ngoại vi: Hàm `sanitize_external_error` bóc tách URL credentials, signed tokens, query parameters trước khi ghi vào `last_error VARCHAR(500)` và log hệ thống.
+  - **C. Hạn mức Tải Video Rolling Thực thụ (True Sliding-Window Video Quota)**:
+    - Ràng buộc: Tối đa 1 video/tin nhắn (`422 Unprocessable Entity` trước khi upload Cloudinary).
+    - Hạn mức trượt (Rolling Window): Tối đa 5 lượt upload video trong bất kỳ cửa sổ 600 giây gần nhất theo `user_id`, kiểm tra trước khi upload Cloudinary.
+    - Triển khai nguyên tử: Redis Sorted Set (`ZSET`) kết hợp Lua script (`chat:video-upload:u:{user_id}`). Header `Retry-After` tính toán động dựa trên thời điểm event cũ nhất trượt ra ngoài; fail-open an toàn khi Redis gián đoạn.
+  - **D. Đồng bộ Realtime WebSocket**:
+    - Sự kiện `MESSAGE_DELETED` với payload tối giản (`type`, `conversation_id`, `message_id`). Phía frontend làm mới đồng bộ 5 query cache: `messageLists`, `detail`, `attachments`, `attachments-summary`, và `lists` (inbox preview).
+  - **E. Cải tiến Trải nghiệm Người dùng (Desktop & Mobile UX)**:
+    - Nút thu hồi Desktop: Đổi sang icon `Trash2` với tooltip `"Thu hồi"` (loại bỏ hoàn toàn icon mũi tên `Undo2`).
+    - Menu ngữ cảnh Mobile: Kích hoạt qua nhấn giữ (long-press 450ms), tích hợp trực tiếp vào `MessageReactionPicker` hiện có với bố cục phân tầng (lưới emoji phía trên, các hàng tác vụ toàn chiều rộng với touch target >=44px phía dưới; tin nhắn của mình gồm "Trả lời" và "Thu hồi" màu cảnh báo; tin nhắn người khác chỉ có "Trả lời"). Bấm "Thu hồi" mở modal xác nhận chống click đúp.
+    - Bong bóng Tombstone: Loại bỏ parent opacity, áp dụng phong cách trung tính `bg-stone-100 text-stone-700 font-medium` (không in nghiêng), icon chỉ thị trạng thái `CircleSlash`, hiển thị mốc thời gian rõ nét cho cả tin nhắn do mình gửi và người khác gửi.
+    - Cử chỉ `SwipeToReply`: Bảo vệ an toàn vùng thanh tua video HTML5 native controls (~56px dưới đáy).
+  - **F. Kiểm chứng Toàn diện**:
+    - 20/20 backend tests trong `tests/test_chat_recall_and_media_hardening.py` PASS.
+    - 971/971 full backend tests PASS in 237s.
+    - 15/15 frontend tests trong `chat_recall_media_hardening.test.mjs` PASS.
+    - Frontend build sạch (`tsc -b && vite build` PASS in 10.19s).

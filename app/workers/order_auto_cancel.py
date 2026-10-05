@@ -15,6 +15,7 @@ import app.modules.products.models  # noqa: F401
 import app.modules.orders.models  # noqa: F401
 import app.modules.auctions.models  # noqa: F401
 import app.modules.notifications.models  # noqa: F401
+import app.modules.conversations.models  # noqa: F401
 
 from app.core.config import settings
 from app.core.database import SessionLocal, engine
@@ -27,6 +28,7 @@ from app.modules.auctions.service import (
     run_winner_timeout_sweep,
 )
 from app.modules.products.view_counter import run_product_views_flush
+from app.workers.media_cleanup import run_media_cleanup_sweep
 from app.workers.retry import SweepResult, execute_with_retry, is_transient_db_error
 
 logging.basicConfig(
@@ -189,6 +191,18 @@ async def start_worker_loop():
                     logger.info(f"Product views sweep finished: projected {views_res.changed} products.")
             except Exception as e:
                 logger.error(f"Unexpected error during product views flush: {e}", exc_info=True)
+
+        # 6. Media cleanup jobs sweep (Chat Recall Media Hardening)
+        try:
+            cleanup_res = await run_media_cleanup_sweep(SessionLocal)
+            if cleanup_res > 0:
+                logger.info(f"Media cleanup sweep finished: processed {cleanup_res.changed} assets.")
+        except Exception as e:
+            if is_transient_db_error(e):
+                logger.warning(f"Database unavailable during media cleanup sweep: {e}. Backing off 5s...")
+                await asyncio.sleep(5)
+            else:
+                logger.error(f"Unexpected error during media cleanup sweep: {e}", exc_info=True)
 
         for _ in range(settings.WORKER_POLL_INTERVAL_SECONDS):
             if _should_stop:

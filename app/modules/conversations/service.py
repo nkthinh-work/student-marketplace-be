@@ -21,9 +21,12 @@ from app.core.realtime.presence import get_users_presence
 from app.core.redis import get_redis_client, get_or_reconnect_redis
 from app.integrations.cloudinary import (
     destroy_asset,
+    destroy_asset_async,
     generate_delivery_url,
     upload_message_attachment,
 )
+from app.core.rate_limiter import check_chat_video_upload_quota
+from app.workers.media_cleanup import sanitize_external_error
 from app.modules.conversations.models import (
     Conversation,
     ConversationInvite,
@@ -673,6 +676,23 @@ class ConversationService:
 
             validated_files_data.append((file, kind, mime_type, file_bytes))
 
+        # Enforce video anti-spam rules before any Cloudinary upload
+        video_count = sum(1 for _, kind, _, _ in validated_files_data if kind == "VIDEO")
+        if video_count > settings.CHAT_MAX_VIDEOS_PER_MESSAGE:
+            raise HTTPException(
+                status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", status.HTTP_422_UNPROCESSABLE_ENTITY),
+                detail=f"Mỗi tin nhắn chỉ được đính kèm tối đa {settings.CHAT_MAX_VIDEOS_PER_MESSAGE} video.",
+            )
+
+        if video_count > 0 and settings.RATE_LIMIT_ENABLED:
+            allowed, retry_after = await check_chat_video_upload_quota(current_user.user_id)
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Bạn đã tải lên quá nhiều video trong thời gian ngắn. Vui lòng thử lại sau.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
         # Upload files sequentially and track for orphan cleanup
         uploaded_assets: List[Tuple[str, str]] = []
         attachments_data = []
@@ -982,9 +1002,152 @@ class ConversationService:
             product=prod_ctx,
             sent_at=msg.sent_at,
             is_mine=True,
+            is_deleted=False,
             attachments=att_responses,
             mentions=mentions_resp,
             reply_to=build_reply_summary(replied_msg) if replied_msg else None,
+        )
+
+    async def recall_message(
+        self,
+        current_user: User,
+        conversation_id: int,
+        message_id: int,
+    ) -> MessageResponse:
+        """
+        Recalls a sender's own message from a conversation:
+        1. Validates caller is active member of conversation.
+        2. Validates message belongs to conversation, caller is sender, and type != SYSTEM.
+        3. Idempotent: If already deleted, returns tombstone response immediately.
+        4. Transactional DB commit: Enqueues media_cleanup_jobs and sets message.is_deleted = True, content = None.
+        5. Post-commit: Immediate Cloudinary delete attempt; if success, removes cleanup job, otherwise worker retries.
+        6. Post-commit: Emits MESSAGE_DELETED event via /ws/me to all active conversation members.
+        7. Returns sanitized MessageResponse tombstone.
+        """
+        if current_user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tài khoản của bạn không ở trạng thái hoạt động.",
+            )
+
+        # 1. Authorization & access check
+        conv, member = await self.repo.get_conversation_with_member(
+            conversation_id, current_user.user_id
+        )
+        if not conv or not member or member.left_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tin nhắn không tồn tại hoặc bạn không có quyền truy cập.",
+            )
+
+        # 2. Lock & load target message
+        msg = await self.repo.get_message_for_recall(conversation_id, message_id)
+        if not msg or msg.conversation_id != conversation_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tin nhắn không tồn tại hoặc bạn không có quyền truy cập.",
+            )
+
+        # Non-sender cannot recall
+        if msg.sender_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Chỉ người gửi mới có thể thu hồi tin nhắn.",
+            )
+
+        # System messages cannot be recalled
+        if msg.type == "SYSTEM":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot recall system messages.",
+            )
+
+        # Idempotent return if already deleted
+        if msg.is_deleted:
+            return MessageResponse(
+                message_id=msg.message_id,
+                conversation_id=msg.conversation_id,
+                sender_id=msg.sender_id,
+                sender_name=current_user.full_name,
+                sender_avatar=current_user.avatar_url,
+                type=msg.type,
+                content=None,
+                product_id=None,
+                product=None,
+                sent_at=msg.sent_at,
+                is_mine=True,
+                is_deleted=True,
+                attachments=[],
+                mentions=[],
+                reactions=[],
+                my_reaction=None,
+                reply_to=build_reply_summary(msg.reply_to) if msg.reply_to_message_id else None,
+            )
+
+        # 3. Collect media cleanup jobs for any attachments
+        cleanup_jobs: List[Tuple[str, str]] = []
+        if msg.attachments:
+            for att in msg.attachments:
+                if att.storage_key:
+                    res_type = _map_kind_to_resource_type(att.kind)
+                    cleanup_jobs.append((att.storage_key, res_type))
+
+        # 4. Atomic DB transaction: mark deleted + insert durable cleanup jobs + commit
+        await self.repo.recall_message_in_db(msg, cleanup_jobs)
+
+        # 5. Immediate post-commit Cloudinary destroy attempt off the event loop
+        for storage_key, resource_type in cleanup_jobs:
+            try:
+                destroyed = await destroy_asset_async(storage_key, resource_type=resource_type)
+                if destroyed:
+                    await self.repo.delete_media_cleanup_job(storage_key, resource_type)
+            except Exception as cleanup_err:
+                logger.warning(
+                    "Immediate Cloudinary destroy failed for %s (%s): %s. Will retry via worker.",
+                    storage_key,
+                    resource_type,
+                    sanitize_external_error(cleanup_err),
+                )
+
+        # 6. Realtime invalidation signal to all active members
+        try:
+            members_stmt = select(ConversationMember.user_id).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.left_at.is_(None),
+            )
+            active_member_uids = (await self.db.scalars(members_stmt)).all()
+            event_data = {
+                "type": "MESSAGE_DELETED",
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            }
+            for uid in active_member_uids:
+                try:
+                    await publish_user_event(uid, event_data)
+                except Exception as ws_err:
+                    logger.warning(f"Failed to publish MESSAGE_DELETED to user {uid}: {ws_err}")
+        except Exception as ws_err:
+            logger.warning(f"Failed to publish MESSAGE_DELETED realtime event: {ws_err}")
+
+        # 7. Sanitized tombstone response
+        return MessageResponse(
+            message_id=msg.message_id,
+            conversation_id=msg.conversation_id,
+            sender_id=msg.sender_id,
+            sender_name=current_user.full_name,
+            sender_avatar=current_user.avatar_url,
+            type=msg.type,
+            content=None,
+            product_id=None,
+            product=None,
+            sent_at=msg.sent_at,
+            is_mine=True,
+            is_deleted=True,
+            attachments=[],
+            mentions=[],
+            reactions=[],
+            my_reaction=None,
+            reply_to=build_reply_summary(msg.reply_to) if msg.reply_to_message_id else None,
         )
 
     async def mark_as_read(

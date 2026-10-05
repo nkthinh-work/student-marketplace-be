@@ -1,14 +1,14 @@
 import base64
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, case, delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, selectinload
 
 from app.core.config import settings
 from app.core.realtime.presence import get_users_presence
@@ -18,6 +18,7 @@ from app.modules.conversations.models import (
     Conversation,
     ConversationInvite,
     ConversationMember,
+    MediaCleanupJob,
     Message,
     MessageAttachment,
     MessageMention,
@@ -593,7 +594,6 @@ class ConversationRepository:
             )
             .where(
                 Message.conversation_id == conversation_id,
-                Message.is_deleted.is_(False),
             )
         )
 
@@ -636,6 +636,30 @@ class ConversationRepository:
         )
 
         for m in items:
+            if m.is_deleted:
+                responses.append(
+                    MessageResponse(
+                        message_id=m.message_id,
+                        conversation_id=m.conversation_id,
+                        sender_id=m.sender_id,
+                        sender_name=m.sender.full_name if m.sender else None,
+                        sender_avatar=m.sender.avatar_url if m.sender else None,
+                        type=m.type,
+                        content=None,
+                        product_id=None,
+                        product=None,
+                        sent_at=m.sent_at,
+                        is_mine=(current_user_id is not None and m.sender_id == current_user_id),
+                        is_deleted=True,
+                        attachments=[],
+                        mentions=[],
+                        reactions=[],
+                        my_reaction=None,
+                        reply_to=build_reply_summary(m.reply_to) if m.reply_to_message_id else None,
+                    )
+                )
+                continue
+
             att_responses = [
                 MessageAttachmentResponse(
                     attachment_id=att.attachment_id,
@@ -691,6 +715,7 @@ class ConversationRepository:
                     product=prod_ctx,
                     sent_at=m.sent_at,
                     is_mine=(current_user_id is not None and m.sender_id == current_user_id),
+                    is_deleted=False,
                     attachments=att_responses,
                     mentions=mentions_resp,
                     reactions=reactions_map.get(m.message_id, []),
@@ -1792,6 +1817,77 @@ class ConversationRepository:
             Message.is_deleted.is_(False),
         )
         return await self.db.scalar(stmt)
+
+    async def get_message_for_recall(
+        self,
+        conversation_id: int,
+        message_id: int,
+    ) -> Optional[Message]:
+        """
+        Loads a message by ID and conversation with row lock FOR UPDATE and attachments loaded.
+        Does NOT filter is_deleted so caller can handle idempotency.
+        """
+        stmt = (
+            select(Message)
+            .options(
+                lazyload(Message.product),
+                selectinload(Message.attachments),
+                selectinload(Message.sender),
+            )
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.message_id == message_id,
+            )
+            .with_for_update(of=Message)
+        )
+        return await self.db.scalar(stmt)
+
+    async def recall_message_in_db(
+        self,
+        message: Message,
+        cleanup_jobs: List[Tuple[str, str]],
+    ) -> None:
+        """
+        Durable transactional message recall:
+        1. Inserts pending media cleanup jobs for any attachments (with ON CONFLICT DO NOTHING).
+        2. Sets message.is_deleted = True and message.content = None.
+        3. Commits the transaction.
+        """
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        initial_retry_at = now_utc + timedelta(seconds=60)
+        for storage_key, resource_type in cleanup_jobs:
+            stmt = (
+                insert(MediaCleanupJob)
+                .values(
+                    storage_key=storage_key,
+                    resource_type=resource_type,
+                    attempt_count=0,
+                    next_retry_at=initial_retry_at,
+                    created_at=now_utc,
+                    updated_at=now_utc,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_media_cleanup_jobs_key_type"
+                )
+            )
+            await self.db.execute(stmt)
+
+        message.is_deleted = True
+        message.content = None
+        await self.db.commit()
+
+    async def delete_media_cleanup_job(
+        self,
+        storage_key: str,
+        resource_type: str,
+    ) -> None:
+        """Removes a completed media cleanup job upon immediate post-commit delete success."""
+        stmt = delete(MediaCleanupJob).where(
+            MediaCleanupJob.storage_key == storage_key,
+            MediaCleanupJob.resource_type == resource_type,
+        )
+        await self.db.execute(stmt)
+        await self.db.commit()
 
     async def get_active_group_member(
         self, conversation_id: int, user_id: int

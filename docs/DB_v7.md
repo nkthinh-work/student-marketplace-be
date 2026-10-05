@@ -27,7 +27,7 @@ Tài liệu này là **nguồn chuẩn duy nhất (source of truth)** cho schema
 
 ## 1. Danh sách bảng
 
-Schema hiện có **32 bảng** (28 bảng thực thể chính và 4 bảng quan hệ phụ trợ tin nhắn/nhóm):
+Schema hiện có **33 bảng** (28 bảng thực thể chính, 4 bảng quan hệ phụ trợ tin nhắn/nhóm, và 1 bảng hàng đợi dọn dẹp media bền vững):
 
 1. `users`
 2. `user_auth_identities`
@@ -61,8 +61,9 @@ Schema hiện có **32 bảng** (28 bảng thực thể chính và 4 bảng quan
 30. `support_contributions`
 31. `support_claims`
 32. `tutorials`
+33. `media_cleanup_jobs`
 
-> Ngoài ra, cơ sở dữ liệu có 1 bảng quản lý phiên bản di trú hệ thống của Alembic là `alembic_version` (tổng cộng 33 bảng vật lý).
+> Ngoài ra, cơ sở dữ liệu có 1 bảng quản lý phiên bản di trú hệ thống của Alembic là `alembic_version` (tổng cộng 34 bảng vật lý).
 
 
 Giỏ hàng không thuộc phạm vi hệ thống; không định nghĩa bảng `cart_items`.
@@ -659,11 +660,34 @@ Lưu trữ các video hướng dẫn sử dụng nhanh (Quick-Help Tutorial) đ�
 | `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm tạo |
 | `updated_at` | TIMESTAMPTZ | NO | NOW() | Trigger tự động cập nhật thời điểm sửa |
 
+### 2.33. media_cleanup_jobs
+
+Hàng đợi bền vững (durable queue) lưu trữ các tác vụ thu hồi và dọn dẹp asset đa phương tiện trên Cloudinary (IMAGE, VIDEO, AUDIO, DOCUMENT). Đảm bảo giao dịch PostgreSQL commit trạng thái nghiệp vụ thu hồi thành công trước, sau đó worker nền định kỳ quét và retry dọn dẹp asset theo cơ chế bounded exponential backoff.
+
+#### Các cột
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `cleanup_id` | BIGINT IDENTITY | NO | auto | PK |
+| `storage_key` | VARCHAR(255) | NO | - | Cloudinary public_id của asset cần dọn dẹp |
+| `resource_type` | VARCHAR(32) | NO | 'image' | Loại tài nguyên Cloudinary ('image', 'video', 'raw') |
+| `attempt_count` | INTEGER | NO | 0 | Số lần đã retry xử lý xóa, CHECK attempt_count >= 0 |
+| `next_retry_at` | TIMESTAMP | NO | NOW() | Thời điểm retry kế tiếp |
+| `last_error` | VARCHAR(500) | YES | NULL | Nội dung lỗi gần nhất được làm sạch (sanitized, max 500 chars) |
+| `created_at` | TIMESTAMP | NO | NOW() | Thời điểm enqueue job |
+| `updated_at` | TIMESTAMP | NO | NOW() | Thời điểm cập nhật trạng thái gần nhất |
+
+#### Ràng buộc & Chỉ mục
+
+- `uq_media_cleanup_jobs_storage_key_resource`: UNIQUE (`storage_key`, `resource_type`) — chống enqueue trùng lặp tài nguyên.
+- `ix_media_cleanup_jobs_next_retry`: INDEX (`next_retry_at`, `cleanup_id`) — phục vụ worker sweep batch hiệu năng cao (`WHERE next_retry_at <= now() ORDER BY next_retry_at, cleanup_id LIMIT 50`).
+
 ## 3. Khoá và hành động tham chiếu
 
 | Bảng | PK | FK |
 |---|---|---|
 | `users` | user_id | - |
+| `media_cleanup_jobs` | cleanup_id | - |
 | `tutorials` | tutorial_id | created_by -> users (RESTRICT) |
 | `moderation_actions` | moderation_action_id | report_id -> reports (CASCADE); admin_id -> users (RESTRICT) |
 | `community_moments` | moment_id | user_id -> users (CASCADE); reviewed_by -> users (SET NULL) |
@@ -760,6 +784,7 @@ Lưu trữ các video hướng dẫn sử dụng nhanh (Quick-Help Tutorial) đ�
 - `support_claims(reviewed_by)` (`ix_support_claims_reviewed_by`) bảo vệ khoá ngoại Admin đối soát
 - `support_claims(contribution_id)` (`ix_support_claims_contribution_id`) bảo vệ khoá ngoại liên kết đóng góp
 - `tutorials(is_published, feature_key, sort_order, tutorial_id)` (`ix_tutorials_pub_feature_sort`) để tối ưu hóa truy vấn danh sách hướng dẫn công khai và sắp xếp danh mục quản trị
+- `media_cleanup_jobs(next_retry_at, cleanup_id)` (`ix_media_cleanup_jobs_next_retry`) để tối ưu hóa worker sweep batch (`WHERE next_retry_at <= now() ORDER BY next_retry_at, cleanup_id LIMIT 50`)
 
 ## 5. CHECK constraints
 

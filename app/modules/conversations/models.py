@@ -548,3 +548,63 @@ class MessageReaction(Base):
         ),
     )
 
+
+class MediaCleanupJob(Base):
+    """
+    Durable persistent queue for asynchronous Cloudinary media asset cleanup.
+    Ensures safe deletion retries with bounded exponential backoff when external services fail.
+    """
+    __tablename__ = "media_cleanup_jobs"
+
+    cleanup_id = Column(
+        BigInteger,
+        Identity(always=False, start=1),
+        primary_key=True,
+    )
+    storage_key = Column(
+        String(255),
+        nullable=False,
+    )
+    resource_type = Column(
+        String(20),
+        nullable=False,
+    )
+    attempt_count = Column(
+        Integer,
+        server_default="0",
+        nullable=False,
+    )
+    next_retry_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+    last_error = Column(
+        String(500),
+        nullable=True,
+    )
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "storage_key",
+            "resource_type",
+            name="uq_media_cleanup_jobs_key_type",
+        ),
+        Index(
+            "ix_media_cleanup_jobs_next_retry",
+            "next_retry_at",
+            "cleanup_id",
+        ),
+    )
+
