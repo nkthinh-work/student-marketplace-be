@@ -29,3 +29,22 @@ class UnreadCountResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     count: int
+
+
+class PushSubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fcm_token: str
+    device_info: Optional[str] = None
+
+
+class PushUnsubscribeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fcm_token: str
+
+
+class PushSubscriptionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str

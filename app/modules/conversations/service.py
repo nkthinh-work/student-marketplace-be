@@ -948,6 +948,32 @@ class ConversationService:
         except Exception as ws_err:
             logger.warning(f"Failed to publish MESSAGE_CREATED realtime event: {ws_err}")
 
+        # 1.1 Post-commit: background Web Push to remote conversation members
+        try:
+            import asyncio
+            from app.modules.notifications.service import safe_dispatch_push_notification
+            sender_name = current_user.full_name or "Người dùng"
+            body_preview = (msg.content[:80] + "...") if msg.content and len(msg.content) > 80 else (msg.content or "Đã gửi một tệp đính kèm")
+            push_tasks = [
+                safe_dispatch_push_notification(
+                    user_id=uid,
+                    title=f"Tin nhắn mới từ {sender_name}",
+                    body=body_preview,
+                    data={
+                        "type": "MESSAGE_CREATED",
+                        "conversation_id": str(conversation_id),
+                        "ref_type": "CONVERSATION",
+                        "ref_id": str(conversation_id),
+                    },
+                )
+                for uid in active_member_uids
+                if uid != current_user.user_id
+            ]
+            if push_tasks:
+                await asyncio.gather(*push_tasks, return_exceptions=True)
+        except Exception as push_err:
+            logger.warning(f"Failed to dispatch push notification for chat message: {push_err}")
+
         # 2. Post-commit: independently safe attempt NOTIFICATION_CREATED to each mentioned recipient
         for target_uid, notif_dto in notif_snapshots:
             await safe_publish_user_notification(target_uid, notif_dto)

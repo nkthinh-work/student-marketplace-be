@@ -20,7 +20,10 @@ __pycache__/
 # Secrets must never be baked into Docker images
 secrets/
 firebase-service-account.json
+service-account*.json
 *-firebase-adminsdk-*.json
+*.pem
+*.key
 
 # Scratch & coverage artifacts
 scratch/
@@ -30,6 +33,9 @@ htmlcov/
 
 # Database dumps must never be baked into Docker images
 backups/
+production_backups/
+*.dump
+*.dump.part
 
 # Tests & Documentation (không cần thiết trong runtime production image)
 tests/

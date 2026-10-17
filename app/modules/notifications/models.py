@@ -77,3 +77,33 @@ class Notification(Base):
     )
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+class UserDeviceToken(Base):
+    __tablename__ = "user_device_tokens"
+    __table_args__ = (
+        Index("ix_user_device_tokens_user_id", "user_id"),
+    )
+
+    device_token_id: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False, start=1), primary_key=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fcm_token: Mapped[str] = mapped_column(
+        Text, nullable=False, unique=True
+    )
+    device_info: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    user = relationship("User", foreign_keys=[user_id])

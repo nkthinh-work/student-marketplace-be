@@ -27,7 +27,7 @@ from app.modules.auctions.models import Auction, AuctionBid  # noqa: F401
 from app.modules.reviews.models import Review  # noqa: F401
 from app.modules.conversations.models import Conversation, Message  # noqa: F401
 from app.modules.daily_needs.models import DailyNeed, DailyJournalCheckin  # noqa: F401
-from app.modules.notifications.models import Notification  # noqa: F401
+from app.modules.notifications.models import Notification, UserDeviceToken  # noqa: F401
 from app.modules.reports.models import Report  # noqa: F401
 from app.modules.community_moments.models import CommunityMoment  # noqa: F401
 from app.modules.feedback.models import SiteFeedback, SupportContribution, SupportClaim  # noqa: F401

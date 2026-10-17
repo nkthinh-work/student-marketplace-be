@@ -518,6 +518,7 @@ def _upload_tutorial_video_sync(
                 unique_filename=True,
                 filename=filename,
                 chunk_size=20 * 1024 * 1024,
+                timeout=150,
             )
         else:
             result = cloudinary.uploader.upload(
@@ -526,6 +527,7 @@ def _upload_tutorial_video_sync(
                 resource_type="video",
                 unique_filename=True,
                 filename=filename,
+                timeout=150,
             )
 
         if not result or not isinstance(result, dict):

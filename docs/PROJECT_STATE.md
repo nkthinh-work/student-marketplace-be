@@ -5,24 +5,48 @@
 ---
 
 ## 1. Current Phase (Giai đoạn hiện tại)
-**Security E-Lite + Chat Recall & Media Hardening — PROFILE NAVIGATION PUBLIC_ID REGRESSION IMPLEMENTED — AWAITING USER ACCEPTANCE**
+**Production Hotfix & Stabilization (Tutorial Video Upload, CORS, Security ?token= Elimination, Concurrent 401 Refresh, Notification Sound Hardening, Web Push Notification) — IMPLEMENTED — AWAITING USER ACCEPTANCE**
 
 ---
 
 ## 2. Current Task (Công việc hiện tại)
-1. **Fix Release-Blocking Regression: Chat "Xem trang cá nhân" Navigates with Numeric user_id instead of public_id**:
+1. **P0 Tutorial Video Upload Timeout & Progress Feedback**:
    - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
-   - *Issue*: Direct Chat "Thông tin cuộc trò chuyện" -> "Xem trang cá nhân" navigated to `/users/{numeric user_id}` (e.g., `/users/4`, `/users/10`), causing `PublicProfilePage` (which strictly requires UUID v4 under Security E-Lite) to render "Không tìm thấy người dùng".
-   - *Root Cause*: Backend conversation participant schemas (`ParticipantSummary`, `ConversationMemberResponse`, `UserSearchResponse`, `MessageResponse`) did not expose `public_id`, and frontend navigated to `/users/${otherUser.user_id}`.
-   - *Resolution*: Extended conversation DTOs to include `public_id: UUID` (Zero N+1: loaded on existing eager `User` models); frontend strictly navigates to `/users/${public_id}` across Direct Chat, Group Chat members, and Message sender avatars/names. Zero numeric fallback (`public_id ?? user_id` forbidden).
-   - *Deployment State*: LOCAL VERIFICATION COMPLETE; AWAITING USER ACCEPTANCE BEFORE RELEASE.
+   - *Issue*: Video replacement (`13248.mp4`, ~12.8 MB) hung indefinitely (>30s) on production due to missing upload timeouts, lack of upload progress feedback, and potential thread lock with SpooledTemporaryFile.
+   - *Resolution*: Dedicated 180s timeout for video upload on both Axios and Cloudinary SDK; thread-safe `io.BytesIO` buffer stream; visual progress percentage (`Đang tải lên... X%`) and processing status (`Đang xử lý video...`); explicit HTTP 502/503 mapping; query cache invalidation on error/timeout.
+2. **P0 Production Domain & CORS Hardening**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Issue*: Railway CORS variable formatting risk when adding custom production domains (`choptiters.id.vn`).
+   - *Resolution*: Upgraded `assemble_cors_origins` validator in `app/core/config.py` to parse JSON array strings, comma-separated lists, and strip whitespace.
+3. **P0 Security & Sensitive Files**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Resolution*: Excluded `production_backups/`, `*.dump`, `service-account*.json` in `.dockerignore`. Eliminated `?token=` query param from WebSocket `/ws/me` (switched to in-band `{"type": "AUTH"}`) and Admin feedback evidence video streaming (switched to header-authenticated `Blob` URL).
+4. **P1 Concurrent 401 Token Refresh**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Resolution*: Replaced race-prone `isRefreshing` boolean in `apiClient.ts` with single-flight shared Promise; shared refresh call across concurrent 401s; max 1 retry per request; account switch/logout safety.
+5. **P0 Notification Sound & Multi-Tab Echo Hardening**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Issue*: Chat incoming messages did not trigger sound chime; audio chimes played simultaneously in multiple tabs when events were broadcast.
+   - *Resolution*: Hooked `playNotificationSound({ conversationId, isChatMessage: true })` inside `MESSAGE_CREATED` when `!isSelfEcho`; implemented multi-tab echo suppression with 600ms cooldown window via `localStorage: ptit_last_sound_timestamp`; active conversation foreground chime suppression; audio toggle persistence.
+6. **P0 Web Push Notification (FCM Integration)**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER MANUAL ACCEPTANCE.
+   - *Issue*: Users missed order updates and chat messages when tabs were closed or in background.
+   - *Resolution*: End-to-end Web Push system with `user_device_tokens` table (Alembic migration `c9d0e1f2a3b4` with `fcm_token TEXT`); authenticated endpoints `POST /api/v1/notifications/push/subscribe` and `/unsubscribe`; non-blocking worker thread push dispatch (`asyncio.to_thread` with 10s timeout) and concurrent member dispatch (`asyncio.gather`); automatic stale token cleanup; service worker `/firebase-messaging-sw.js` with duplicate suppression (`payload.notification` guard) and notification `tag` deduplication; polite UI banner with 7-day dismissal; settings toggle `WebPushToggle`.
+7. **Pre-Production Audit (Final Hardening Gate)**:
+   - *Status*: AUDITED & REMEDIATED — AWAITING USER ACCEPTANCE.
+   - *Findings & Fixes*:
+     - Backend FCM synchronous blocking eliminated via `asyncio.to_thread` with bounded 10s timeout; group chat push dispatch converted from sequential loop to concurrent `asyncio.gather`.
+     - Service worker duplicate notification prevented by adding `payload.notification` guard in `firebase-messaging-sw.js` and setting `tag` in `WebpushNotification`.
+     - `fcm_token` column upgraded from `VARCHAR(512)` to `TEXT` in model, migration `c9d0e1f2a3b4`, and `DB_v7.md` to prevent future token truncation crashes.
+     - Cloudinary video upload timeout tightened to 150s (downstream < upstream Axios 180s), guaranteeing clean HTTP 502 handling without client-side abort race.
+     - Railway pre-deploy requirement verified: Railway does NOT run migrations automatically without explicit Pre-deploy Command configured in Railway Dashboard.
 
 ---
 
 ## 3. Status (Trạng thái)
-- **Profile Navigation public_id Regression**: **IMPLEMENTED LOCALLY — AWAITING USER ACCEPTANCE** (Direct chat other participant, group chat member, user search, and message sender DTOs extended with `public_id: UUID` with zero N+1 queries; frontend `DirectInfoDrawer`, `GroupInfoDrawer`, `MessageBubble` updated to navigate strictly to `/users/${public_id}` with zero numeric fallback; 17/17 public user ID backend tests PASS; 103/103 targeted conversation tests PASS; 10/10 targeted frontend regression tests PASS; 45/45 hardening frontend tests PASS; frontend production build PASS; alembic check clean with 0 schema drift).
-- **Security E-Lite**: **USER ACCEPTED LOCALLY — PENDING PROFILE NAVIGATION ACCEPTANCE** (`users.public_id` UUID v4 stabilized; migration `a7b8c9d0e1f2` with single `ux_users_public_id` constraint/index and PostgreSQL `gen_random_uuid()` default; internal numeric `user_id` BIGINT PK and all domain FKs strictly preserved; uuid=integer operator bug fully resolved across repository and services; public user boundary strictly typed with numeric fallbacks removed from direct chat and user reports; public DTOs leak-free; BOLA/IDOR matrix verified; frontend `npm run build` PASS; `git diff --check` clean with 0 warnings/errors).
-- **Chat Recall & Media Hardening**: **USER ACCEPTED LOCALLY — PENDING PROFILE NAVIGATION ACCEPTANCE** (Recall sender endpoint `DELETE /api/v1/conversations/{id}/messages/{id}` with tombstone sanitization; migration `b8c9d0e1f2a3_create_media_cleanup_jobs_table` with `uq_media_cleanup_jobs_storage_key_resource`, composite index `(next_retry_at, cleanup_id)`, and `VARCHAR(500)` for `last_error`; initial retry delay 60s eliminating race with immediate Cloudinary destroy; multi-worker replica concurrency protection via `SELECT ... FOR UPDATE SKIP LOCKED` and atomic lease claim 300s; true rolling sliding-window video quota via Redis ZSET + Lua atomic with dynamic `Retry-After` calculation and fail-open resilience; unified `SwipeToReply` with bottom ~56px video controls safe-zone and horizontal gesture lock; fallback action menu "Trả lời" / "Thu hồi" with confirmation dialog; desktop `Trash2` recall icon; mobile long-press context popover with stacked rows and min-h-[44px]; high-contrast neutral tombstone with `CircleSlash` icon and readable timestamp; frontend required `is_deleted: boolean` contract and 5-query realtime cache invalidation on `MESSAGE_DELETED`; worker process entrypoint `app.workers.order_auto_cancel` validated for production execution; frontend production build PASS; `git diff --check` clean with 0 warnings/errors). Combined migration chain: `a7b8c9d0e1f2 -> b8c9d0e1f2a3 (head)`.
+- **Production Hotfix & Stabilization (Pre-Production Audit Remediated)**: **IMPLEMENTED & AUDITED LOCALLY — AWAITING USER ACCEPTANCE** (Backend unit & push tests 5/5 PASS; Frontend unit & hardening tests 13/13 PASS; Frontend `npm run build` PASS with zero errors; `git diff --check` clean with 0 warnings/errors across both repositories).
+- **Profile Navigation public_id Regression**: **IMPLEMENTED LOCALLY — AWAITING USER ACCEPTANCE** (Direct chat other participant, group chat member, user search, and message sender DTOs extended with `public_id: UUID` with zero N+1 queries; frontend `DirectInfoDrawer`, `GroupInfoDrawer`, `MessageBubble` updated to navigate strictly to `/users/${public_id}` with zero numeric fallback).
+- **Security E-Lite & Chat Recall**: **USER ACCEPTED LOCALLY — PENDING RELEASE ACCEPTANCE**.
 
 ---
 

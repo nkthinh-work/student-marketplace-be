@@ -62,8 +62,9 @@ Schema hiện có **33 bảng** (28 bảng thực thể chính, 4 bảng quan h�
 31. `support_claims`
 32. `tutorials`
 33. `media_cleanup_jobs`
+34. `user_device_tokens`
 
-> Ngoài ra, cơ sở dữ liệu có 1 bảng quản lý phiên bản di trú hệ thống của Alembic là `alembic_version` (tổng cộng 34 bảng vật lý).
+> Ngoài ra, cơ sở dữ liệu có 1 bảng quản lý phiên bản di trú hệ thống của Alembic là `alembic_version` (tổng cộng 35 bảng vật lý).
 
 
 Giỏ hàng không thuộc phạm vi hệ thống; không định nghĩa bảng `cart_items`.
@@ -434,6 +435,24 @@ Quy tắc đặt giá:
 | `is_read` | BOOLEAN | NO | FALSE | |
 | `created_at` | TIMESTAMP | NO | NOW() | |
 
+### 2.16.1. user_device_tokens
+
+Lưu trữ token đăng ký thông báo đẩy Firebase Cloud Messaging (FCM Web Push) gắn với từng thiết bị và tài khoản người dùng, phục vụ dispatch thông báo khi người dùng offline hoặc không mở tab.
+
+| Cột | Kiểu | Null | Mặc định | Ghi chú |
+|---|---|---:|---|---|
+| `device_token_id` | BIGINT IDENTITY | NO | auto | PK |
+| `user_id` | BIGINT | NO | - | FK -> users CASCADE |
+| `fcm_token` | TEXT | NO | - | Unique FCM registration token |
+| `device_info` | VARCHAR(255) | YES | - | Thông tin user agent hoặc định danh thiết bị |
+| `created_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm đăng ký lần đầu |
+| `last_seen_at` | TIMESTAMPTZ | NO | NOW() | Thời điểm hoạt động hoặc làm mới token gần nhất |
+
+**Chỉ mục (Indexes)**:
+- `ix_user_device_tokens_fcm_token`: UNIQUE (`fcm_token`)
+- `ix_user_device_tokens_user_id`: B-Tree (`user_id`)
+- `ix_user_device_tokens_user_last_seen`: B-Tree (`user_id`, `last_seen_at`)
+
 ### 2.17. reports
 
 | Cột | Kiểu | Null | Mặc định | Ghi chú |
@@ -713,6 +732,7 @@ Hàng đợi bền vững (durable queue) lưu trữ các tác vụ thu hồi v�
 | `auctions` | auction_id | product_id -> products (CASCADE); winner_id -> users (RESTRICT) |
 | `auction_bids` | bid_id | auction_id -> auctions (CASCADE); bidder_id -> users (RESTRICT) |
 | `notifications` | notification_id | user_id -> users (CASCADE) |
+| `user_device_tokens` | device_token_id | user_id -> users (CASCADE) |
 | `reports` | report_id | reporter_id -> users (CASCADE); handled_by -> users (SET NULL) |
 | `daily_needs` | daily_need_id | user_id -> users (CASCADE) |
 | `daily_journal_checkins` | checkin_id | user_id -> users (CASCADE) |
@@ -724,6 +744,7 @@ Hàng đợi bền vững (durable queue) lưu trữ các tác vụ thu hồi v�
 
 - `users(public_id)` qua `ux_users_public_id`
 - `users(email)`
+- `user_device_tokens(fcm_token)` qua `ix_user_device_tokens_fcm_token`
 - `user_auth_identities(user_id)`
 - `user_auth_identities(provider, provider_uid)`
 - `categories(slug)` WHERE `is_deleted = FALSE`

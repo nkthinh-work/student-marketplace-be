@@ -6,6 +6,8 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.cloudinary import (
+    CloudinaryNotConfiguredError,
+    CloudinaryUploadError,
     destroy_asset_async as destroy_asset,
     upload_tutorial_video,
 )
@@ -121,12 +123,24 @@ class TutorialService:
             )
 
         # 3. Upload media to Cloudinary (non-blocking)
-        await video_file.seek(0)
-        video_upload_res = await upload_tutorial_video(
-            video_file.file,
-            filename=video_file.filename or "tutorial.mp4",
-            file_size=len(video_bytes),
-        )
+        try:
+            video_upload_res = await upload_tutorial_video(
+                io.BytesIO(video_bytes),
+                filename=video_file.filename or "tutorial.mp4",
+                file_size=len(video_bytes),
+            )
+        except CloudinaryNotConfiguredError as e:
+            logger.error(f"Cloudinary not configured: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Dịch vụ lưu trữ video Cloudinary chưa được cấu hình.",
+            ) from e
+        except CloudinaryUploadError as e:
+            logger.error(f"Cloudinary video upload failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Tải video lên máy chủ lưu trữ thất bại hoặc quá thời gian xử lý. Vui lòng thử lại.",
+            ) from e
         video_url = video_upload_res.get("secure_url") or video_upload_res.get("url") or ""
         video_storage_key = video_upload_res.get("public_id") or ""
         duration_sec = video_upload_res.get("duration")
@@ -228,12 +242,24 @@ class TutorialService:
             )
 
         # Upload NEW video (non-blocking)
-        await video_file.seek(0)
-        new_upload_res = await upload_tutorial_video(
-            video_file.file,
-            filename=video_file.filename or "tutorial.mp4",
-            file_size=len(video_bytes),
-        )
+        try:
+            new_upload_res = await upload_tutorial_video(
+                io.BytesIO(video_bytes),
+                filename=video_file.filename or "tutorial.mp4",
+                file_size=len(video_bytes),
+            )
+        except CloudinaryNotConfiguredError as e:
+            logger.error(f"Cloudinary not configured: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Dịch vụ lưu trữ video Cloudinary chưa được cấu hình.",
+            ) from e
+        except CloudinaryUploadError as e:
+            logger.error(f"Cloudinary video upload failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Tải video lên máy chủ lưu trữ thất bại hoặc quá thời gian xử lý. Vui lòng thử lại.",
+            ) from e
         new_video_url = new_upload_res.get("secure_url") or new_upload_res.get("url") or ""
         new_video_storage_key = new_upload_res.get("public_id") or ""
         new_duration_sec = new_upload_res.get("duration")

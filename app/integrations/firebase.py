@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any
+from typing import Any, Optional
 import firebase_admin
 from firebase_admin import credentials, auth
 from app.core.config import settings
@@ -89,3 +89,67 @@ def verify_firebase_token(token: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Unexpected error during Firebase token verification: {e}")
         raise FirebaseVerificationError("Failed to verify Firebase token.") from e
+
+
+def send_multicast_push(
+    tokens: list[str],
+    title: str,
+    body: str,
+    data: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """
+    Send Web Push notification to a list of FCM device registration tokens.
+    Returns list of stale/invalid tokens that should be cleaned up from database.
+    Best-effort execution: never raises an exception to the caller.
+    """
+    if not tokens:
+        return []
+
+    if not firebase_admin._apps:
+        if (settings.FIREBASE_CREDENTIALS_JSON and settings.FIREBASE_CREDENTIALS_JSON.strip()) or settings.FIREBASE_CREDENTIALS_PATH:
+            init_firebase()
+        if not firebase_admin._apps:
+            logger.warning("Firebase Admin SDK is not initialized. Skipping push notification.")
+            return []
+
+    stale_tokens: list[str] = []
+    try:
+        from firebase_admin import messaging
+
+        safe_data = {str(k): str(v) for k, v in (data or {}).items() if v is not None}
+
+        message = messaging.MulticastMessage(
+            tokens=tokens,
+            notification=messaging.Notification(
+                title=title,
+                body=body,
+            ),
+            data=safe_data,
+            webpush=messaging.WebpushConfig(
+                notification=messaging.WebpushNotification(
+                    title=title,
+                    body=body,
+                    icon="/logo.svg",
+                    badge="/logo.svg",
+                    tag=safe_data.get("notification_id") or safe_data.get("conversation_id") or "ptit-notification",
+                ),
+            ),
+        )
+
+        response = messaging.send_each_for_multicast(message)
+
+        if response.failure_count > 0:
+            for idx, resp in enumerate(response.responses):
+                if not resp.success and resp.exception:
+                    exc = resp.exception
+                    if isinstance(exc, (messaging.UnregisteredError, messaging.SenderIdMismatchError)):
+                        stale_tokens.append(tokens[idx])
+                    else:
+                        code = getattr(exc, "code", "")
+                        if "not-registered" in str(code).lower() or "invalid" in str(code).lower():
+                            stale_tokens.append(tokens[idx])
+
+        return stale_tokens
+    except Exception as e:
+        logger.warning(f"Error dispatching FCM multicast push: {e}")
+        return []

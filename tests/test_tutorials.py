@@ -993,6 +993,7 @@ def test_upload_tutorial_video_resource_type_and_normalization():
         mock_small_upload.assert_called_once()
         assert mock_small_upload.call_args[1]["resource_type"] == "video"
         assert mock_small_upload.call_args[1]["filename"] == "small.mp4"
+        assert mock_small_upload.call_args[1]["timeout"] == 180
         assert "vc_auto" in res_small["secure_url"]
 
         # Case 2: Large video (> 20 MB) uses upload_large with chunk_size
@@ -1001,6 +1002,7 @@ def test_upload_tutorial_video_resource_type_and_normalization():
         mock_large_upload.assert_called_once()
         assert mock_large_upload.call_args[1]["resource_type"] == "video"
         assert mock_large_upload.call_args[1]["chunk_size"] == 20 * 1024 * 1024
+        assert mock_large_upload.call_args[1]["timeout"] == 180
         assert "vc_auto" in res_large["secure_url"]
 
 
@@ -1013,5 +1015,69 @@ def test_upload_tutorial_video_invalid_provider_response_rejected():
     with patch("cloudinary.uploader.upload", return_value={"resource_type": "video", "public_id": "no/url"}):
         with pytest.raises(CloudinaryUploadError, match="valid delivery URL"):
             _upload_tutorial_video_sync(io.BytesIO(VALID_MP4_BYTES), filename="test.mp4")
+
+
+def test_upload_tutorial_video_12_8mb_uses_small_upload_with_timeout_180():
+    """Verify 12.8 MB video (matching production 13248.mp4) uses upload with timeout=180 and BytesIO stream."""
+    with patch("cloudinary.uploader.upload") as mock_small_upload, \
+         patch("cloudinary.uploader.upload_large") as mock_large_upload:
+
+        mock_small_upload.return_value = {
+            "resource_type": "video",
+            "public_id": "tutorials/videos/prod_13248",
+            "secure_url": "https://res.cloudinary.com/demo/video/upload/v123/prod_13248.mp4",
+            "duration": 25.0,
+            "width": 1080,
+            "height": 1920,
+        }
+
+        # 12.8 MB = 13,421,772 bytes (<= 20 MB)
+        file_size_12_8mb = int(12.8 * 1024 * 1024)
+        file_stream = io.BytesIO(b"0" * 1024)
+
+        res = _upload_tutorial_video_sync(file_stream, filename="13248.mp4", file_size=file_size_12_8mb)
+
+        mock_small_upload.assert_called_once()
+        mock_large_upload.assert_not_called()
+        assert mock_small_upload.call_args[1]["resource_type"] == "video"
+        assert mock_small_upload.call_args[1]["timeout"] == 180
+        assert mock_small_upload.call_args[1]["filename"] == "13248.mp4"
+        assert "vc_auto" in res["secure_url"]
+
+
+@pytest.mark.asyncio
+async def test_service_maps_cloudinary_errors_to_http_exceptions():
+    """Verify service maps CloudinaryNotConfiguredError to 503 and CloudinaryUploadError to 502."""
+    from fastapi import HTTPException, UploadFile
+    from app.integrations.cloudinary import CloudinaryNotConfiguredError
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_by_id.return_value = MagicMock(tutorial_id=1, video_storage_key="tutorials/videos/old")
+
+    # 1. CloudinaryNotConfiguredError -> 503
+    mock_upload_file_1 = UploadFile(filename="test.mp4", file=io.BytesIO(VALID_MP4_BYTES), headers={"content-type": "video/mp4"})
+    with patch("app.modules.tutorials.service.upload_tutorial_video", side_effect=CloudinaryNotConfiguredError("Not configured")):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.replace_tutorial_video(
+                tutorial_id=1,
+                video_file=mock_upload_file_1,
+            )
+        assert exc_info.value.status_code == 503
+        assert "chưa được cấu hình" in exc_info.value.detail
+
+    # 2. CloudinaryUploadError -> 502
+    mock_upload_file_2 = UploadFile(filename="test.mp4", file=io.BytesIO(VALID_MP4_BYTES), headers={"content-type": "video/mp4"})
+    with patch("app.modules.tutorials.service.upload_tutorial_video", side_effect=CloudinaryUploadError("Upload failed")):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.replace_tutorial_video(
+                tutorial_id=1,
+                video_file=mock_upload_file_2,
+            )
+        assert exc_info.value.status_code == 502
+        assert "máy chủ lưu trữ" in exc_info.value.detail
 
 

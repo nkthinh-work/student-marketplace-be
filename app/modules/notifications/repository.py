@@ -1,13 +1,13 @@
 import base64
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import desc, func, select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.notifications.models import Notification
+from app.modules.notifications.models import Notification, UserDeviceToken
 from app.modules.users.models import User, UserRole, UserStatus
 
 logger = logging.getLogger("app.notifications")
@@ -168,3 +168,49 @@ class NotificationRepository:
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount > 0
+
+    async def upsert_device_token(
+        self, user_id: int, fcm_token: str, device_info: Optional[str] = None
+    ) -> UserDeviceToken:
+        """Upsert device registration token. Reassigns to user_id if token already exists."""
+        stmt = select(UserDeviceToken).where(UserDeviceToken.fcm_token == fcm_token)
+        existing = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            existing.user_id = user_id
+            existing.device_info = device_info
+            existing.last_seen_at = datetime.now(timezone.utc)
+            await self.db.commit()
+            return existing
+
+        token_row = UserDeviceToken(
+            user_id=user_id,
+            fcm_token=fcm_token,
+            device_info=device_info,
+        )
+        self.db.add(token_row)
+        await self.db.commit()
+        return token_row
+
+    async def delete_device_token(self, user_id: int, fcm_token: str) -> bool:
+        """Remove a specific device token belonging to user."""
+        stmt = delete(UserDeviceToken).where(
+            UserDeviceToken.user_id == user_id,
+            UserDeviceToken.fcm_token == fcm_token,
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return (result.rowcount or 0) > 0
+
+    async def get_device_tokens_for_user(self, user_id: int) -> list[str]:
+        """Fetch all registered FCM tokens for user."""
+        stmt = select(UserDeviceToken.fcm_token).where(UserDeviceToken.user_id == user_id)
+        result = await self.db.scalars(stmt)
+        return list(result.all())
+
+    async def delete_stale_device_tokens(self, tokens: list[str]) -> None:
+        """Prune invalid or unregistered tokens."""
+        if not tokens:
+            return
+        stmt = delete(UserDeviceToken).where(UserDeviceToken.fcm_token.in_(tokens))
+        await self.db.execute(stmt)
+        await self.db.commit()

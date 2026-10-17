@@ -8,11 +8,58 @@ from app.modules.auth.dependencies import get_current_active_user
 from app.modules.notifications.schemas import (
     NotificationListResponse,
     UnreadCountResponse,
+    PushSubscribeRequest,
+    PushUnsubscribeRequest,
+    PushSubscriptionResponse,
 )
 from app.modules.notifications.service import NotificationService
 from app.modules.users.models import User
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+
+@router.post(
+    "/push/subscribe",
+    response_model=PushSubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Đăng ký hoặc cập nhật FCM Web Push token của thiết bị",
+)
+async def subscribe_push_token(
+    payload: PushSubscribeRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> PushSubscriptionResponse:
+    if not payload.fcm_token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="FCM token không được để trống.",
+        )
+    service = NotificationService(db)
+    await service.subscribe_push_token(
+        user_id=current_user.user_id,
+        fcm_token=payload.fcm_token.strip(),
+        device_info=payload.device_info,
+    )
+    return PushSubscriptionResponse(status="subscribed")
+
+
+@router.post(
+    "/push/unsubscribe",
+    response_model=PushSubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Hủy đăng ký FCM Web Push token của thiết bị",
+)
+async def unsubscribe_push_token(
+    payload: PushUnsubscribeRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> PushSubscriptionResponse:
+    service = NotificationService(db)
+    await service.unsubscribe_push_token(
+        user_id=current_user.user_id,
+        fcm_token=payload.fcm_token.strip(),
+    )
+    return PushSubscriptionResponse(status="unsubscribed")
 
 
 @router.get(

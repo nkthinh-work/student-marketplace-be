@@ -2148,6 +2148,63 @@ Thông báo in-app bền vững được phát sinh tự động khi một thàn
 
 ---
 
+### 12.10. Web Push Notifications (FCM Push Integration)
+
+#### 1. POST /api/v1/notifications/push/subscribe
+- **Mô tả**: Đăng ký hoặc làm mới thiết bị nhận thông báo đẩy Firebase Cloud Messaging (FCM Web Push) cho người dùng hiện tại.
+- **Auth**: Bắt buộc (`get_current_active_user`)
+- **Rate Limit**: Không áp dụng nghiêm ngặt, tự động upsert bảo đảm tính lũy thừa (idempotency).
+- **Request Body**:
+  ```json
+  {
+    "fcm_token": "fcm_registration_token_string",
+    "device_info": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ..."
+  }
+  ```
+- **Xử lý Backend**:
+  - Ghi hoặc cập nhật bản ghi trong bảng `user_device_tokens`.
+  - Nếu `fcm_token` đã tồn tại cho tài khoản khác (trường hợp chia sẻ máy tính): chuyển quyền sở hữu sang `current_user.user_id` và cập nhật `last_seen_at = NOW()`.
+- **Response**: `200 OK`
+  ```json
+  {
+    "success": true,
+    "message": "Push token subscribed successfully."
+  }
+  ```
+
+#### 2. POST /api/v1/notifications/push/unsubscribe
+- **Mô tả**: Hủy đăng ký một thiết bị khỏi việc nhận thông báo đẩy (khi người dùng tắt tính năng thông báo đẩy trong Cài đặt hoặc khi Đăng xuất `signOut`).
+- **Auth**: Bắt buộc (`get_current_active_user`)
+- **Request Body**:
+  ```json
+  {
+    "fcm_token": "fcm_registration_token_string"
+  }
+  ```
+- **Xử lý Backend**:
+  - Xóa bản ghi có `fcm_token = :fcm_token AND user_id = current_user.user_id` khỏi bảng `user_device_tokens`.
+  - Hoạt động mang tính lũy thừa (idempotent), trả về thành công ngay cả khi token đã bị xóa trước đó.
+- **Response**: `200 OK`
+  ```json
+  {
+    "success": true,
+    "message": "Push token unsubscribed successfully."
+  }
+  ```
+
+#### 3. Push Dispatch Mechanism & Lifecycle
+- **Kích hoạt tự động**:
+  - Phát sinh thông báo in-app: Tích hợp trong `safe_publish_user_notification`, sau khi tạo `Notification` và phát tán WebSocket `/ws/me`, hệ thống lấy danh sách device tokens của người nhận và gửi multicast push qua Firebase Admin SDK (`send_each_for_multicast`).
+  - Tin nhắn trò chuyện mới (`post_message`): Bắn FCM push nền tới toàn bộ thành viên khác trong cuộc trò chuyện (bao gồm cả Direct và Group chat), ngoại trừ chính người gửi tin (zero self-echo).
+- **Dọn dẹp Token Hết hạn (Stale Token Cleanup)**:
+  - Khi Firebase Admin SDK phản hồi lỗi `registration-token-not-registered` hoặc `invalid-argument`, backend tự động xóa vĩnh viễn các token không hợp lệ khỏi bảng `user_device_tokens`.
+- **Bảo mật & Giảm phiền toái (Non-Intrusive UX)**:
+  - Frontend chỉ hiển thị banner lịch sự (Polite Prompt) khi người dùng đã đăng nhập, trình duyệt hỗ trợ Service Worker + Push, trạng thái quyền là `default`, chưa đăng ký và chưa tạm ẩn.
+  - Tùy chọn "Để sau" ẩn banner trong 7 ngày (lưu tại `localStorage: ptit_push_banner_dismissed_until`).
+  - Nếu người dùng từ chối quyền trên dialog trình duyệt (`denied`), ẩn banner trong 30 ngày và hiển thị trạng thái bị chặn trong trang Cài đặt thông báo.
+
+---
+
 ## Group Self-Nickname API Contract (Biệt danh trong nhóm)
 
 ### Endpoint: Cập nhật hoặc xóa biệt danh bản thân trong nhóm
