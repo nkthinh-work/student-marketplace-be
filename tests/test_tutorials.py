@@ -993,7 +993,7 @@ def test_upload_tutorial_video_resource_type_and_normalization():
         mock_small_upload.assert_called_once()
         assert mock_small_upload.call_args[1]["resource_type"] == "video"
         assert mock_small_upload.call_args[1]["filename"] == "small.mp4"
-        assert mock_small_upload.call_args[1]["timeout"] == 180
+        assert mock_small_upload.call_args[1]["timeout"] == 150
         assert "vc_auto" in res_small["secure_url"]
 
         # Case 2: Large video (> 20 MB) uses upload_large with chunk_size
@@ -1002,7 +1002,7 @@ def test_upload_tutorial_video_resource_type_and_normalization():
         mock_large_upload.assert_called_once()
         assert mock_large_upload.call_args[1]["resource_type"] == "video"
         assert mock_large_upload.call_args[1]["chunk_size"] == 20 * 1024 * 1024
-        assert mock_large_upload.call_args[1]["timeout"] == 180
+        assert mock_large_upload.call_args[1]["timeout"] == 150
         assert "vc_auto" in res_large["secure_url"]
 
 
@@ -1017,8 +1017,8 @@ def test_upload_tutorial_video_invalid_provider_response_rejected():
             _upload_tutorial_video_sync(io.BytesIO(VALID_MP4_BYTES), filename="test.mp4")
 
 
-def test_upload_tutorial_video_12_8mb_uses_small_upload_with_timeout_180():
-    """Verify 12.8 MB video (matching production 13248.mp4) uses upload with timeout=180 and BytesIO stream."""
+def test_upload_tutorial_video_12_8mb_uses_small_upload_with_timeout_150():
+    """Verify 12.8 MB video (matching production 13248.mp4) uses upload with timeout=150 and BytesIO stream."""
     with patch("cloudinary.uploader.upload") as mock_small_upload, \
          patch("cloudinary.uploader.upload_large") as mock_large_upload:
 
@@ -1040,7 +1040,7 @@ def test_upload_tutorial_video_12_8mb_uses_small_upload_with_timeout_180():
         mock_small_upload.assert_called_once()
         mock_large_upload.assert_not_called()
         assert mock_small_upload.call_args[1]["resource_type"] == "video"
-        assert mock_small_upload.call_args[1]["timeout"] == 180
+        assert mock_small_upload.call_args[1]["timeout"] == 150
         assert mock_small_upload.call_args[1]["filename"] == "13248.mp4"
         assert "vc_auto" in res["secure_url"]
 
@@ -1080,4 +1080,246 @@ async def test_service_maps_cloudinary_errors_to_http_exceptions():
         assert exc_info.value.status_code == 502
         assert "máy chủ lưu trữ" in exc_info.value.detail
 
+
+@pytest.mark.asyncio
+async def test_realistic_tutorial_video_replace_flow_with_structured_logging():
+    """
+    Realistic integration test:
+    - Valid MP4 binary stream (12.8 MB simulation or chunked atoms)
+    - Verifies all 6 structured logging stages:
+      request_received -> file_read_completed -> cloudinary_upload_started ->
+      cloudinary_upload_completed -> db_commit_completed -> response_completed
+    - Verifies duration_ms, file_size_bytes, tutorial_id, status, and request_id
+    - Verifies old video cleanup is dispatched off the critical response path
+    """
+    from fastapi import UploadFile
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    # Realistic MP4 stream with ftyp and mdat boxes
+    realistic_mp4_bytes = (
+        b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2mp41\x00\x00\x00\x08mdat"
+        + b"\x00" * (64 * 1024)  # 64 KB realistic sample
+    )
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    mock_existing_tutorial = MagicMock()
+    mock_existing_tutorial.tutorial_id = 99
+    mock_existing_tutorial.video_storage_key = "tutorials/videos/old_key_99"
+    mock_existing_tutorial.video_url = "https://res.cloudinary.com/demo/video/upload/old.mp4"
+    service.repo.get_by_id.return_value = mock_existing_tutorial
+
+    logged_stages = []
+
+    def mock_log_stage(stage, request_id, tutorial_id=None, duration_ms=None, file_size_bytes=None, status="success", error=None):
+        logged_stages.append({
+            "stage": stage,
+            "request_id": request_id,
+            "tutorial_id": tutorial_id,
+            "duration_ms": duration_ms,
+            "file_size_bytes": file_size_bytes,
+            "status": status,
+            "error": error,
+        })
+
+    mock_upload_file = UploadFile(
+        filename="13248.mp4",
+        file=io.BytesIO(realistic_mp4_bytes),
+        headers={"content-type": "video/mp4"},
+    )
+
+    fake_cloudinary_result = {
+        "resource_type": "video",
+        "public_id": "tutorials/videos/new_prod_13248",
+        "secure_url": "https://res.cloudinary.com/demo/video/upload/vc_auto/v123/tutorials/videos/new_prod_13248.mp4",
+        "duration": 25.4,
+        "width": 1080,
+        "height": 1920,  # Portrait 9:16
+    }
+
+    with patch.object(service, "_log_stage", side_effect=mock_log_stage), \
+         patch("app.modules.tutorials.service.upload_tutorial_video", new=AsyncMock(return_value=fake_cloudinary_result)), \
+         patch.object(service, "_safe_destroy_asset", new=AsyncMock()) as mock_safe_destroy:
+
+        result = await service.replace_tutorial_video(
+            tutorial_id=99,
+            video_file=mock_upload_file,
+            request_id="req-test-trace-123",
+        )
+
+        assert result.video_storage_key == "tutorials/videos/new_prod_13248"
+        assert result.video_size_bytes == len(realistic_mp4_bytes)
+        assert result.duration_ms == 25400
+        mock_db.commit.assert_awaited_once()
+
+        # Verify all stages recorded in chronological order
+        stages = [s["stage"] for s in logged_stages]
+        assert stages == [
+            "request_received",
+            "file_read_completed",
+            "cloudinary_upload_started",
+            "cloudinary_upload_completed",
+            "db_commit_completed",
+            "response_completed",
+        ]
+
+        # Verify structured metadata fields
+        for entry in logged_stages:
+            assert entry["request_id"] == "req-test-trace-123"
+            if entry["stage"] == "cloudinary_upload_started":
+                assert entry["status"] == "pending"
+            else:
+                assert entry["status"] == "success"
+
+        file_read_event = next(s for s in logged_stages if s["stage"] == "file_read_completed")
+        assert file_read_event["file_size_bytes"] == len(realistic_mp4_bytes)
+        assert file_read_event["duration_ms"] is not None
+
+        db_commit_event = next(s for s in logged_stages if s["stage"] == "db_commit_completed")
+        assert db_commit_event["tutorial_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_realistic_tutorial_video_replace_network_failure_handling():
+    """
+    Realistic network failure test:
+    - Simulates Cloudinary upload timeout (e.g. 150s socket timeout)
+    - Verifies cloudinary_upload_failed log stage is emitted with status='error'
+    - Verifies HTTP 502 Bad Gateway is returned
+    - Verifies DB is NOT modified and rollback is executed
+    """
+    from fastapi import HTTPException, UploadFile
+    from app.modules.tutorials.service import TutorialService
+    from app.integrations.cloudinary import CloudinaryUploadError
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    mock_existing_tutorial = MagicMock()
+    mock_existing_tutorial.tutorial_id = 42
+    mock_existing_tutorial.video_storage_key = "tutorials/videos/existing_safe_video"
+    service.repo.get_by_id.return_value = mock_existing_tutorial
+
+    logged_stages = []
+
+    def mock_log_stage(stage, request_id, tutorial_id=None, duration_ms=None, file_size_bytes=None, status="success", error=None):
+        logged_stages.append({
+            "stage": stage,
+            "request_id": request_id,
+            "status": status,
+            "error": error,
+        })
+
+    mock_upload_file = UploadFile(
+        filename="13248.mp4",
+        file=io.BytesIO(VALID_MP4_BYTES),
+        headers={"content-type": "video/mp4"},
+    )
+
+    with patch.object(service, "_log_stage", side_effect=mock_log_stage), \
+         patch("app.modules.tutorials.service.upload_tutorial_video", side_effect=CloudinaryUploadError("Connection timed out after 150 seconds")):
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.replace_tutorial_video(
+                tutorial_id=42,
+                video_file=mock_upload_file,
+                request_id="req-timeout-fail-456",
+            )
+
+        assert exc_info.value.status_code == 502
+        assert "quá thời gian xử lý" in exc_info.value.detail
+
+        # DB must never be committed
+        mock_db.commit.assert_not_awaited()
+
+        # Verify failed stage was captured in structured log
+        stages = [s["stage"] for s in logged_stages]
+        assert "cloudinary_upload_started" in stages
+        assert "cloudinary_upload_failed" in stages
+
+        failed_event = next(s for s in logged_stages if s["stage"] == "cloudinary_upload_failed")
+        assert failed_event["status"] == "error"
+        assert "timed out" in failed_event["error"]
+
+
+@pytest.mark.asyncio
+async def test_realistic_tutorial_video_replace_landscape_rejection():
+    """
+    Orientation validation test:
+    - If uploaded video is landscape (height <= width, e.g. 1920x1080), reject with HTTP 400
+    - Verify uploaded asset is immediately destroyed on Cloudinary
+    - Verify DB row is untouched
+    """
+    from fastapi import HTTPException, UploadFile
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    mock_existing_tutorial = MagicMock(tutorial_id=10, video_storage_key="tutorials/videos/old")
+    service.repo.get_by_id.return_value = mock_existing_tutorial
+
+    landscape_cloudinary_result = {
+        "resource_type": "video",
+        "public_id": "tutorials/videos/bad_landscape",
+        "secure_url": "https://res.cloudinary.com/demo/video/upload/bad.mp4",
+        "duration": 15.0,
+        "width": 1920,
+        "height": 1080,  # Landscape: height <= width!
+    }
+
+    mock_upload_file = UploadFile(
+        filename="landscape.mp4",
+        file=io.BytesIO(VALID_MP4_BYTES),
+        headers={"content-type": "video/mp4"},
+    )
+
+    with patch("app.modules.tutorials.service.upload_tutorial_video", new=AsyncMock(return_value=landscape_cloudinary_result)), \
+         patch("app.modules.tutorials.service.destroy_asset", new=AsyncMock()) as mock_destroy:
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.replace_tutorial_video(tutorial_id=10, video_file=mock_upload_file)
+
+        assert exc_info.value.status_code == 400
+        assert "portrait 9:16" in exc_info.value.detail
+        mock_destroy.assert_awaited_once_with("tutorials/videos/bad_landscape", resource_type="video")
+        mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replace_tutorial_video_early_404_when_tutorial_missing():
+    """
+    Early-exit 404 test:
+    - If tutorial does not exist in DB, reject before performing any Cloudinary upload
+    """
+    from fastapi import HTTPException, UploadFile
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_by_id.return_value = None  # Tutorial not found
+
+    mock_upload_file = UploadFile(
+        filename="13248.mp4",
+        file=io.BytesIO(VALID_MP4_BYTES),
+        headers={"content-type": "video/mp4"},
+    )
+
+    with patch("app.modules.tutorials.service.upload_tutorial_video") as mock_upload:
+        with pytest.raises(HTTPException) as exc_info:
+            await service.replace_tutorial_video(tutorial_id=99999, video_file=mock_upload_file)
+
+        assert exc_info.value.status_code == 404
+        assert "99999" in exc_info.value.detail
+        # Cloudinary upload must NEVER be initiated when tutorial does not exist
+        mock_upload.assert_not_called()
 

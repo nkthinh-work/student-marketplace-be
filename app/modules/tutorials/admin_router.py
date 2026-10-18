@@ -1,5 +1,6 @@
 from typing import Optional, Sequence
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+import uuid
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -52,6 +53,7 @@ async def get_admin_tutorial_detail(
     summary="Tạo mới video tutorial với video MP4 9:16",
 )
 async def create_tutorial(
+    request: Request,
     video: UploadFile = File(..., description="Tệp video MP4 dọc 9:16"),
     feature_key: str = Form(..., description="Mã nhóm tính năng hợp lệ"),
     title: str = Form(..., description="Tiêu đề tutorial (tối đa 120 ký tự)"),
@@ -61,6 +63,11 @@ async def create_tutorial(
     current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminTutorialResponse:
+    request_id = (
+        request.headers.get("x-railway-request-id")
+        or request.headers.get("x-request-id")
+        or f"req_{uuid.uuid4().hex[:8]}"
+    )
     service = TutorialService(db)
     return await service.create_tutorial(
         current_admin_id=current_admin.user_id,
@@ -70,6 +77,7 @@ async def create_tutorial(
         action_key=action_key,
         is_published=is_published,
         video_file=video,
+        request_id=request_id,
     )
 
 
@@ -115,14 +123,21 @@ async def update_tutorial_metadata(
 )
 async def replace_tutorial_video(
     tutorial_id: int,
+    request: Request,
     video: UploadFile = File(..., description="Tệp video MP4 mới"),
     current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminTutorialResponse:
+    request_id = (
+        request.headers.get("x-railway-request-id")
+        or request.headers.get("x-request-id")
+        or f"req_{uuid.uuid4().hex[:8]}"
+    )
     service = TutorialService(db)
     return await service.replace_tutorial_video(
         tutorial_id=tutorial_id,
         video_file=video,
+        request_id=request_id,
     )
 
 

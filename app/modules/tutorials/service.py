@@ -1,5 +1,8 @@
+import asyncio
 import io
+import json
 import logging
+import time
 from typing import Optional, Sequence
 
 from fastapi import HTTPException, UploadFile, status
@@ -31,6 +34,38 @@ class TutorialService:
         self.db = db
         self.repo = TutorialRepository(db)
 
+    @staticmethod
+    def _log_stage(
+        stage: str,
+        request_id: str,
+        tutorial_id: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+        file_size_bytes: Optional[int] = None,
+        status: str = "success",
+        error: Optional[str] = None,
+    ) -> None:
+        """Structured JSON logging for tutorial video upload lifecycle stages."""
+        payload = {
+            "event": "tutorial_upload",
+            "stage": stage,
+            "request_id": request_id,
+            "tutorial_id": tutorial_id,
+            "file_size_bytes": file_size_bytes,
+            "duration_ms": duration_ms,
+            "status": status,
+        }
+        if error:
+            payload["error"] = error
+        logger.info(f"[TUTORIAL_UPLOAD] {json.dumps(payload)}")
+
+    @staticmethod
+    async def _safe_destroy_asset(storage_key: str, resource_type: str = "video") -> None:
+        """Asynchronously cleans up an asset in the background without blocking HTTP responses."""
+        try:
+            await asyncio.wait_for(destroy_asset(storage_key, resource_type=resource_type), timeout=15.0)
+        except Exception as e:
+            logger.warning(f"Background cleanup of old tutorial asset {storage_key} failed: {e}")
+
     async def get_public_tutorials(self) -> Sequence[Tutorial]:
         """Lấy danh sách các tutorial đã xuất bản phục vụ hiển thị công khai."""
         return await self.repo.get_published_tutorials()
@@ -60,8 +95,16 @@ class TutorialService:
         action_key: Optional[str],
         is_published: bool,
         video_file: UploadFile,
+        request_id: str = "unknown",
     ) -> Tutorial:
         """Tạo tutorial mới với upload video MP4 9:16."""
+        start_time = time.monotonic()
+        self._log_stage(
+            stage="request_received",
+            request_id=request_id,
+            status="success",
+        )
+
         # 1. Validate metadata
         feature_key = feature_key.strip()
         if feature_key not in ALLOWED_FEATURE_KEYS:
@@ -110,7 +153,10 @@ class TutorialService:
                 detail="Định dạng video không được hỗ trợ. Chỉ chấp nhận tệp video MP4 (video/mp4).",
             )
 
+        read_start = time.monotonic()
         video_bytes = await video_file.read()
+        read_duration_ms = int((time.monotonic() - read_start) * 1000)
+
         if len(video_bytes) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -122,25 +168,67 @@ class TutorialService:
                 detail=f"Dung lượng video vượt quá giới hạn cho phép ({MAX_TUTORIAL_VIDEO_SIZE_BYTES // (1024 * 1024)} MB).",
             )
 
+        self._log_stage(
+            stage="file_read_completed",
+            request_id=request_id,
+            file_size_bytes=len(video_bytes),
+            duration_ms=read_duration_ms,
+            status="success",
+        )
+
         # 3. Upload media to Cloudinary (non-blocking)
+        self._log_stage(
+            stage="cloudinary_upload_started",
+            request_id=request_id,
+            file_size_bytes=len(video_bytes),
+            status="pending",
+        )
+        upload_start = time.monotonic()
         try:
             video_upload_res = await upload_tutorial_video(
                 io.BytesIO(video_bytes),
                 filename=video_file.filename or "tutorial.mp4",
                 file_size=len(video_bytes),
             )
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_completed",
+                request_id=request_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="success",
+            )
         except CloudinaryNotConfiguredError as e:
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_failed",
+                request_id=request_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="error",
+                error=str(e),
+            )
             logger.error(f"Cloudinary not configured: {e}")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Dịch vụ lưu trữ video Cloudinary chưa được cấu hình.",
             ) from e
         except CloudinaryUploadError as e:
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_failed",
+                request_id=request_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="error",
+                error=str(e),
+            )
             logger.error(f"Cloudinary video upload failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Tải video lên máy chủ lưu trữ thất bại hoặc quá thời gian xử lý. Vui lòng thử lại.",
             ) from e
+
         video_url = video_upload_res.get("secure_url") or video_upload_res.get("url") or ""
         video_storage_key = video_upload_res.get("public_id") or ""
         duration_sec = video_upload_res.get("duration")
@@ -157,6 +245,7 @@ class TutorialService:
             )
 
         # 4. DB transaction with compensation
+        commit_start = time.monotonic()
         try:
             max_order = await self.repo.get_max_sort_order(feature_key)
             new_order = max_order + 10
@@ -178,12 +267,40 @@ class TutorialService:
             await self.repo.create(tutorial)
             await self.db.commit()
             await self.db.refresh(tutorial)
-            return tutorial
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_completed",
+                request_id=request_id,
+                tutorial_id=tutorial.tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=commit_duration_ms,
+                status="success",
+            )
         except Exception as e:
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_failed",
+                request_id=request_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=commit_duration_ms,
+                status="error",
+                error=str(e),
+            )
             await self.db.rollback()
             logger.error(f"Failed to persist tutorial in DB, cleaning up Cloudinary video: {e}")
             await destroy_asset(video_storage_key, resource_type="video")
             raise e
+
+        total_duration_ms = int((time.monotonic() - start_time) * 1000)
+        self._log_stage(
+            stage="response_completed",
+            request_id=request_id,
+            tutorial_id=tutorial.tutorial_id,
+            file_size_bytes=len(video_bytes),
+            duration_ms=total_duration_ms,
+            status="success",
+        )
+        return tutorial
 
     async def update_tutorial_metadata(
         self, tutorial_id: int, payload: AdminTutorialUpdate
@@ -218,10 +335,29 @@ class TutorialService:
         return tutorial
 
     async def replace_tutorial_video(
-        self, tutorial_id: int, video_file: UploadFile
+        self,
+        tutorial_id: int,
+        video_file: UploadFile,
+        request_id: str = "unknown",
     ) -> Tutorial:
         """Thay thế video của Tutorial một cách an toàn."""
-        # Validate video
+        start_time = time.monotonic()
+        self._log_stage(
+            stage="request_received",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            status="success",
+        )
+
+        # 0. Early check existence before expensive media read/upload
+        tutorial_exists = await self.repo.get_by_id(tutorial_id)
+        if not tutorial_exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy Tutorial với ID {tutorial_id}",
+            )
+
+        # 1. Validate video format & headers
         video_content_type = (video_file.content_type or "").lower()
         if video_content_type not in ALLOWED_VIDEO_MIMES and not (video_file.filename or "").lower().endswith(".mp4"):
             raise HTTPException(
@@ -229,7 +365,10 @@ class TutorialService:
                 detail="Định dạng video không được hỗ trợ. Chỉ chấp nhận tệp video MP4 (video/mp4).",
             )
 
+        read_start = time.monotonic()
         video_bytes = await video_file.read()
+        read_duration_ms = int((time.monotonic() - read_start) * 1000)
+
         if len(video_bytes) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -241,25 +380,72 @@ class TutorialService:
                 detail=f"Dung lượng video vượt quá giới hạn ({MAX_TUTORIAL_VIDEO_SIZE_BYTES // (1024 * 1024)} MB).",
             )
 
-        # Upload NEW video (non-blocking)
+        self._log_stage(
+            stage="file_read_completed",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            file_size_bytes=len(video_bytes),
+            duration_ms=read_duration_ms,
+            status="success",
+        )
+
+        # 2. Upload NEW video to Cloudinary (non-blocking)
+        self._log_stage(
+            stage="cloudinary_upload_started",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            file_size_bytes=len(video_bytes),
+            status="pending",
+        )
+        upload_start = time.monotonic()
         try:
             new_upload_res = await upload_tutorial_video(
                 io.BytesIO(video_bytes),
                 filename=video_file.filename or "tutorial.mp4",
                 file_size=len(video_bytes),
             )
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_completed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="success",
+            )
         except CloudinaryNotConfiguredError as e:
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_failed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="error",
+                error=str(e),
+            )
             logger.error(f"Cloudinary not configured: {e}")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Dịch vụ lưu trữ video Cloudinary chưa được cấu hình.",
             ) from e
         except CloudinaryUploadError as e:
+            upload_duration_ms = int((time.monotonic() - upload_start) * 1000)
+            self._log_stage(
+                stage="cloudinary_upload_failed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=upload_duration_ms,
+                status="error",
+                error=str(e),
+            )
             logger.error(f"Cloudinary video upload failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Tải video lên máy chủ lưu trữ thất bại hoặc quá thời gian xử lý. Vui lòng thử lại.",
             ) from e
+
         new_video_url = new_upload_res.get("secure_url") or new_upload_res.get("url") or ""
         new_video_storage_key = new_upload_res.get("public_id") or ""
         new_duration_sec = new_upload_res.get("duration")
@@ -274,7 +460,8 @@ class TutorialService:
                 detail="Video phải có định dạng dọc (portrait 9:16). Vui lòng không tải lên video ngang hoặc vuông.",
             )
 
-        # Lock DB row
+        # 3. Lock DB row & commit
+        commit_start = time.monotonic()
         tutorial = await self.repo.get_by_id(tutorial_id, for_update=True)
         if not tutorial:
             await destroy_asset(new_video_storage_key, resource_type="video")
@@ -294,19 +481,46 @@ class TutorialService:
 
             await self.db.commit()
             await self.db.refresh(tutorial)
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_completed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=commit_duration_ms,
+                status="success",
+            )
         except Exception as e:
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_failed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=len(video_bytes),
+                duration_ms=commit_duration_ms,
+                status="error",
+                error=str(e),
+            )
             await self.db.rollback()
             logger.error(f"Failed to update tutorial video in DB, cleaning up new video: {e}")
             await destroy_asset(new_video_storage_key, resource_type="video")
             raise e
 
-        # Post-commit cleanup of old video
-        if old_video_storage_key:
-            try:
-                await destroy_asset(old_video_storage_key, resource_type="video")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup old video {old_video_storage_key}: {e}")
+        # 4. Post-commit cleanup of old video off critical HTTP path
+        if old_video_storage_key and old_video_storage_key != new_video_storage_key:
+            asyncio.create_task(
+                self._safe_destroy_asset(old_video_storage_key, resource_type="video")
+            )
 
+        total_duration_ms = int((time.monotonic() - start_time) * 1000)
+        self._log_stage(
+            stage="response_completed",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            file_size_bytes=len(video_bytes),
+            duration_ms=total_duration_ms,
+            status="success",
+        )
         return tutorial
 
     async def reorder_tutorials(

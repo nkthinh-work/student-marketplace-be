@@ -40,11 +40,16 @@
      - `fcm_token` column upgraded from `VARCHAR(512)` to `TEXT` in model, migration `c9d0e1f2a3b4`, and `DB_v7.md` to prevent future token truncation crashes.
      - Cloudinary video upload timeout tightened to 150s (downstream < upstream Axios 180s), guaranteeing clean HTTP 502 handling without client-side abort race.
      - Railway pre-deploy requirement verified: Railway does NOT run migrations automatically without explicit Pre-deploy Command configured in Railway Dashboard.
+8. **GitHub Actions CI Hotfix & Tutorial Video Upload Instrumentation**:
+   - *Status*: IMPLEMENTED & LOCALLY VERIFIED; AWAITING USER ACCEPTANCE.
+   - *CI Failure Root Cause*: Commit `2badd82` set Cloudinary timeout to 150s in `app/integrations/cloudinary.py`, but `tests/test_tutorials.py` still asserted `timeout == 180` (lines 996, 1005, 1043), failing GitHub CI (`2 failed, 977 passed`).
+   - *CI Fix*: Updated all three assertions to 150s, renamed test to `test_upload_tutorial_video_12_8mb_uses_small_upload_with_timeout_150`, updated docstring.
+   - *Video Upload Hardening*: Injected `request: Request` with `request_id` extraction into Admin routes; added structured JSON logs `[TUTORIAL_UPLOAD]` covering all 6 stages (`request_received`, `file_read_completed`, `cloudinary_upload_started`, `cloudinary_upload_completed`/`failed`, `db_commit_completed`/`failed`, `response_completed`); added fast pre-upload 404 existence check; decoupled post-commit old video destruction into bounded non-blocking background task (15s timeout); added realistic integration test suite with valid MP4 container and mocked network timeout (7/7 targeted tutorial tests PASS).
 
 ---
 
 ## 3. Status (Trạng thái)
-- **Production Hotfix & Stabilization (Pre-Production Audit Remediated)**: **IMPLEMENTED & AUDITED LOCALLY — AWAITING USER ACCEPTANCE** (Backend unit & push tests 5/5 PASS; Frontend unit & hardening tests 13/13 PASS; Frontend `npm run build` PASS with zero errors; `git diff --check` clean with 0 warnings/errors across both repositories).
+- **Production Hotfix & Stabilization (CI Hotfix & Tutorial Upload Hardened)**: **IMPLEMENTED & AUDITED LOCALLY — AWAITING USER ACCEPTANCE** (Backend targeted tutorial tests 7/7 PASS, push tests 5/5 PASS; Frontend unit & hardening tests 17/17 PASS; Frontend `npm run build` PASS with zero errors in 12.66s; `git diff --check` clean with 0 warnings/errors across both repositories).
 - **Profile Navigation public_id Regression**: **IMPLEMENTED LOCALLY — AWAITING USER ACCEPTANCE** (Direct chat other participant, group chat member, user search, and message sender DTOs extended with `public_id: UUID` with zero N+1 queries; frontend `DirectInfoDrawer`, `GroupInfoDrawer`, `MessageBubble` updated to navigate strictly to `/users/${public_id}` with zero numeric fallback).
 - **Security E-Lite & Chat Recall**: **USER ACCEPTED LOCALLY — PENDING RELEASE ACCEPTANCE**.
 
@@ -274,7 +279,9 @@ Mọi coding agent bắt buộc phải phân biệt rạch ròi 6 thao tác:
 - **Backend Auction WebSocket Hardening Suite**: **6/6 PASS** (`tests/test_auctions_websocket_hardening.py`).
 - **Backend Auth & Admin Authorization Suite**: **95/95 PASS** (`tests/test_auth.py`, `tests/test_admin_user_enforcement.py`, `tests/test_admin_reports.py`, `tests/test_admin_product_enforcement.py`).
 - **Backend Conversations Regression Suite**: **58/58 PASS** (`tests/test_conversations_social_and_groups.py`, `tests/test_conversations_phase7c.py`, `tests/test_group_mention_notifications.py`).
-- **Alembic State**: Head `b8c9d0e1f2a3_create_media_cleanup_jobs_table.py`, 0 schema drift (`alembic check` clean, 0 new migrations, composite index `(next_retry_at, cleanup_id)` verified, `last_error` VARCHAR(500) synchronized).
+- **Alembic State**: Head `c9d0e1f2a3b4_create_user_device_tokens_table.py`, 0 schema drift (`alembic heads` clean).
+- **Backend Tutorial Video Upload Hardening Suite**: **7/7 PASS** (`tests/test_tutorials.py`, covering Cloudinary 150s timeout sync, realistic MP4 container upload lifecycle with all 6 structured logging stages, mocked network failure/timeout 502 mapping, landscape rejection 400, and early 404 exit).
+- **Frontend Tutorial Upload & Timeout Suite**: **2/2 PASS** (`src/__tests__/tutorial_upload_timeout.test.mjs`, covering 180s Axios timeout, upload progress event handler, and accurate HTTP 413/502/timeout error mapping).
 - **Frontend Chat Profile Navigation Hardening Suite**: **10/10 PASS** (`src/__tests__/chat_profile_navigation_hardening.test.mjs`, covering reproduction cases `user_id: 4` and `user_id: 10`, absence guard against numeric fallback, group member profile navigation, and message sender profile navigation).
 - **Frontend Full/Hardening Suite**: **45/45 PASS** (`post_deployment_hardening.test.mjs`, `pre_deployment_acceptance_fixes.test.mjs`).
 - **Frontend Chat Recall & Media Hardening Suite**: **15/15 PASS** (`src/__tests__/chat_recall_media_hardening.test.mjs`, covering desktop action bar with Trash2 icon, mobile popover layout with stacked rows, tombstone high contrast and CircleSlash icon, zero parent opacity, and realtime cache invalidation).
