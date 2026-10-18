@@ -1323,3 +1323,324 @@ async def test_replace_tutorial_video_early_404_when_tutorial_missing():
         # Cloudinary upload must NEVER be initiated when tutorial does not exist
         mock_upload.assert_not_called()
 
+
+@pytest.mark.asyncio
+async def test_generate_tutorial_upload_signature():
+    """Verify admin upload signature contains only safe parameters and never leaks API secret."""
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+
+    with patch("app.integrations.cloudinary.is_cloudinary_configured", return_value=True), \
+         patch("app.integrations.cloudinary.settings.CLOUDINARY_CLOUD_NAME", "ptit_cloud"), \
+         patch("app.integrations.cloudinary.settings.CLOUDINARY_API_KEY", "ptit_key_123"), \
+         patch("app.integrations.cloudinary.settings.CLOUDINARY_API_SECRET", "super_secret_never_leak"), \
+         patch("app.integrations.cloudinary.get_tutorial_video_cloudinary_folder", return_value="student-marketplace/dev/tutorials/videos"):
+
+        res = service.get_upload_signature("session_test_abc")
+        assert res.cloud_name == "ptit_cloud"
+        assert res.api_key == "ptit_key_123"
+        assert res.folder == "student-marketplace/dev/tutorials/videos"
+        assert res.upload_session_id == "session_test_abc"
+        assert res.public_id == "tut_session_test_abc"
+        assert res.overwrite == "false"
+        assert isinstance(res.timestamp, int)
+        assert len(res.signature) > 10
+        # Ensure secret is never in the schema
+        res_dict = res.model_dump()
+        assert "super_secret_never_leak" not in str(res_dict)
+        assert "api_secret" not in res_dict
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_success_and_lifecycle():
+    """
+    Verify confirm_direct_video_replacement:
+    - Validates folder prefix and session-bound public_id
+    - Verifies metadata from Cloudinary Admin API
+    - Atomic DB update
+    - Post-commit old video cleanup
+    """
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    mock_tut = MagicMock()
+    mock_tut.tutorial_id = 42
+    mock_tut.video_storage_key = "student-marketplace/dev/tutorials/videos/old_asset_42"
+    mock_tut.video_url = "https://res.cloudinary.com/demo/video/upload/old.mp4"
+    service.repo.get_by_id.return_value = mock_tut
+    service.repo.get_by_storage_key.return_value = None
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    new_public_id = f"{valid_folder}/tut_session_42"
+
+    mock_cloudinary_resource = {
+        "resource_type": "video",
+        "format": "mp4",
+        "bytes": 13421772,  # 12.8 MB
+        "width": 720,
+        "height": 1280,
+        "duration": 15.2,
+        "secure_url": "https://res.cloudinary.com/ptit/video/upload/v123/tut_session_42.mp4",
+    }
+
+    payload = AdminTutorialConfirmDirectVideo(
+        public_id=new_public_id,
+        upload_session_id="session_42",
+    )
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder), \
+         patch("app.modules.tutorials.service.get_cloudinary_video_resource_async", new=AsyncMock(return_value=mock_cloudinary_resource)), \
+         patch("app.modules.tutorials.service.destroy_asset", new=AsyncMock()):
+
+        result = await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+
+        assert result.tutorial_id == 42
+        assert mock_tut.video_storage_key == new_public_id
+        assert "vc_auto" in mock_tut.video_url
+        assert mock_tut.video_size_bytes == 13421772
+        assert mock_tut.duration_ms == 15200
+        mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_rejects_foreign_folder():
+    """Verify confirm_direct_video_replacement rejects public_id outside allowed folder prefix."""
+    from fastapi import HTTPException
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_by_id.return_value = MagicMock(tutorial_id=42)
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value="student-marketplace/dev/tutorials/videos"):
+        payload = AdminTutorialConfirmDirectVideo(
+            public_id="student-marketplace/dev/products/malicious_asset",
+            upload_session_id="session_bad",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+
+        assert exc_info.value.status_code == 400
+        assert "không khớp với phiên tải lên" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_rejects_session_mismatch():
+    """Verify confirm_direct_video_replacement rejects arbitrary public_id not matching session."""
+    from fastapi import HTTPException
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_by_id.return_value = MagicMock(tutorial_id=42, video_storage_key="old_key")
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder):
+        # Attacker tries to steal or delete old production video
+        payload = AdminTutorialConfirmDirectVideo(
+            public_id=f"{valid_folder}/old_production_video_target",
+            upload_session_id="fresh_session_attacker",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+
+        assert exc_info.value.status_code == 400
+        assert "không khớp với phiên tải lên" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_idempotency_returns_early():
+    """Verify confirm_direct_video_replacement returns existing tutorial immediately if already confirmed."""
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    target_storage_key = f"{valid_folder}/tut_session_idempotent"
+
+    mock_tut = MagicMock(tutorial_id=42, video_storage_key=target_storage_key)
+    service.repo.get_by_id.return_value = mock_tut
+
+    payload = AdminTutorialConfirmDirectVideo(
+        public_id=target_storage_key,
+        upload_session_id="session_idempotent",
+    )
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder), \
+         patch("app.modules.tutorials.service.get_cloudinary_video_resource_async") as mock_get_res:
+
+        res = await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+        assert res.tutorial_id == 42
+        # Cloudinary API must NOT be called on idempotent replay
+        mock_get_res.assert_not_called()
+        mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_rejects_already_used_storage_key():
+    """Verify confirm_direct_video_replacement rejects asset that belongs to a different tutorial."""
+    from fastapi import HTTPException
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    target_storage_key = f"{valid_folder}/tut_session_conflict"
+
+    mock_tut = MagicMock(tutorial_id=42, video_storage_key="old_video_42")
+    service.repo.get_by_id.return_value = mock_tut
+    # Other tutorial already owns this storage key
+    service.repo.get_by_storage_key.return_value = MagicMock(tutorial_id=99, video_storage_key=target_storage_key)
+
+    payload = AdminTutorialConfirmDirectVideo(
+        public_id=target_storage_key,
+        upload_session_id="session_conflict",
+    )
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+
+        assert exc_info.value.status_code == 400
+        assert "đã thuộc về một video hướng dẫn khác" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_confirm_direct_video_replacement_rejects_landscape_and_cleans_asset():
+    """Verify confirm_direct_video_replacement destroys asset and rejects landscape video."""
+    from fastapi import HTTPException
+    from app.modules.tutorials.schemas import AdminTutorialConfirmDirectVideo
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_by_id.return_value = MagicMock(tutorial_id=42)
+    service.repo.get_by_storage_key.return_value = None
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    bad_public_id = f"{valid_folder}/tut_session_bad_ls"
+
+    landscape_resource = {
+        "resource_type": "video",
+        "format": "mp4",
+        "bytes": 5000000,
+        "width": 1920,
+        "height": 1080,  # Landscape: width > height
+    }
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder), \
+         patch("app.modules.tutorials.service.get_cloudinary_video_resource_async", new=AsyncMock(return_value=landscape_resource)), \
+         patch("app.modules.tutorials.service.destroy_asset", new=AsyncMock()) as mock_destroy:
+
+        payload = AdminTutorialConfirmDirectVideo(
+            public_id=bad_public_id,
+            upload_session_id="session_bad_ls",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await service.confirm_direct_video_replacement(tutorial_id=42, payload=payload)
+
+        assert exc_info.value.status_code == 400
+        assert "portrait 9:16" in exc_info.value.detail
+        mock_destroy.assert_awaited_once_with(bad_public_id, resource_type="video")
+        mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_direct_tutorial_lifecycle():
+    """Verify create_direct_tutorial validates Cloudinary asset and inserts Tutorial row."""
+    from app.modules.tutorials.schemas import AdminTutorialCreateDirect
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+    service.repo.get_max_sort_order.return_value = 20
+    service.repo.get_by_storage_key.return_value = None
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    new_public_id = f"{valid_folder}/tut_session_new_1"
+
+    mock_resource = {
+        "resource_type": "video",
+        "format": "mp4",
+        "bytes": 8000000,
+        "width": 720,
+        "height": 1280,
+        "duration": 22.0,
+        "secure_url": "https://res.cloudinary.com/ptit/video/upload/new.mp4",
+    }
+
+    payload = AdminTutorialCreateDirect(
+        feature_key="HOME",
+        title="Hướng dẫn Trang chủ mới",
+        description="Mô tả hướng dẫn",
+        public_id=new_public_id,
+        upload_session_id="session_new_1",
+    )
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder), \
+         patch("app.modules.tutorials.service.get_cloudinary_video_resource_async", new=AsyncMock(return_value=mock_resource)):
+
+        tut = await service.create_direct_tutorial(current_admin_id=1, payload=payload)
+        assert tut.feature_key == "HOME"
+        assert tut.title == "Hướng dẫn Trang chủ mới"
+        assert tut.sort_order == 30
+        assert tut.video_storage_key == new_public_id
+        mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_direct_tutorial_rejects_already_used_storage_key():
+    """Verify create_direct_tutorial rejects asset already registered in DB."""
+    from fastapi import HTTPException
+    from app.modules.tutorials.schemas import AdminTutorialCreateDirect
+    from app.modules.tutorials.service import TutorialService
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_db = AsyncMock()
+    service = TutorialService(mock_db)
+    service.repo = AsyncMock()
+
+    valid_folder = "student-marketplace/dev/tutorials/videos"
+    target_storage_key = f"{valid_folder}/tut_session_dup"
+
+    service.repo.get_by_storage_key.return_value = MagicMock(tutorial_id=88)
+
+    payload = AdminTutorialCreateDirect(
+        feature_key="HOME",
+        title="Trùng lặp video",
+        public_id=target_storage_key,
+        upload_session_id="session_dup",
+    )
+
+    with patch("app.modules.tutorials.service.get_tutorial_video_cloudinary_folder", return_value=valid_folder):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.create_direct_tutorial(current_admin_id=1, payload=payload)
+
+        assert exc_info.value.status_code == 400
+        assert "đã thuộc về một video hướng dẫn khác" in exc_info.value.detail

@@ -6,14 +6,58 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.modules.auth.dependencies import require_admin
 from app.modules.tutorials.schemas import (
+    AdminTutorialConfirmDirectVideo,
+    AdminTutorialCreateDirect,
     AdminTutorialReorderRequest,
     AdminTutorialResponse,
     AdminTutorialUpdate,
+    TutorialUploadSignatureResponse,
 )
 from app.modules.tutorials.service import TutorialService
 from app.modules.users.models import User
 
 router = APIRouter(prefix="/admin/tutorials", tags=["Admin Tutorials"])
+
+
+@router.post(
+    "/upload-signature",
+    response_model=TutorialUploadSignatureResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Tạo chữ ký tải lên Cloudinary trực tiếp dành cho Quản trị viên",
+)
+async def get_direct_upload_signature(
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> TutorialUploadSignatureResponse:
+    session_id = f"tut_up_{uuid.uuid4().hex}"
+    service = TutorialService(db)
+    return service.get_upload_signature(upload_session_id=session_id)
+
+
+@router.post(
+    "/create-direct",
+    response_model=AdminTutorialResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Tạo mới video tutorial từ video đã tải trực tiếp lên Cloudinary",
+)
+async def create_direct_tutorial(
+    payload: AdminTutorialCreateDirect,
+    request: Request,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminTutorialResponse:
+    request_id = (
+        request.headers.get("x-railway-request-id")
+        or request.headers.get("x-request-id")
+        or f"req_{uuid.uuid4().hex[:8]}"
+    )
+    service = TutorialService(db)
+    return await service.create_direct_tutorial(
+        current_admin_id=current_admin.user_id,
+        payload=payload,
+        request_id=request_id,
+    )
+
 
 
 @router.get(
@@ -139,6 +183,33 @@ async def replace_tutorial_video(
         video_file=video,
         request_id=request_id,
     )
+
+
+@router.post(
+    "/{tutorial_id}/confirm-direct-video",
+    response_model=AdminTutorialResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Xác thực và thay thế video của tutorial từ video đã tải trực tiếp lên Cloudinary",
+)
+async def confirm_direct_tutorial_video(
+    tutorial_id: int,
+    payload: AdminTutorialConfirmDirectVideo,
+    request: Request,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminTutorialResponse:
+    request_id = (
+        request.headers.get("x-railway-request-id")
+        or request.headers.get("x-request-id")
+        or f"req_{uuid.uuid4().hex[:8]}"
+    )
+    service = TutorialService(db)
+    return await service.confirm_direct_video_replacement(
+        tutorial_id=tutorial_id,
+        payload=payload,
+        request_id=request_id,
+    )
+
 
 
 @router.delete(

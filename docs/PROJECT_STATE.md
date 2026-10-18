@@ -49,7 +49,7 @@
 ---
 
 ## 3. Status (Trạng thái)
-- **Production Hotfix & Stabilization (CI Hotfix & Tutorial Upload Hardened)**: **IMPLEMENTED & AUDITED LOCALLY — AWAITING USER ACCEPTANCE** (Backend targeted tutorial tests 7/7 PASS, push tests 5/5 PASS; Frontend unit & hardening tests 17/17 PASS; Frontend `npm run build` PASS with zero errors in 12.66s; `git diff --check` clean with 0 warnings/errors across both repositories).
+- **Production Hotfix & Stabilization (Signed Direct-to-Cloudinary Tutorial Upload & Web Push Hardened)**: **IMPLEMENTED & AUDITED LOCALLY — AWAITING USER ACCEPTANCE** (Backend targeted tutorial tests 9/9 PASS, push tests 5/5 PASS; Frontend unit & hardening tests 23/23 PASS; Frontend `npm run build` PASS with zero errors in 5.22s; `git diff --check` clean with 0 warnings/errors across both repositories).
 - **Profile Navigation public_id Regression**: **IMPLEMENTED LOCALLY — AWAITING USER ACCEPTANCE** (Direct chat other participant, group chat member, user search, and message sender DTOs extended with `public_id: UUID` with zero N+1 queries; frontend `DirectInfoDrawer`, `GroupInfoDrawer`, `MessageBubble` updated to navigate strictly to `/users/${public_id}` with zero numeric fallback).
 - **Security E-Lite & Chat Recall**: **USER ACCEPTED LOCALLY — PENDING RELEASE ACCEPTANCE**.
 

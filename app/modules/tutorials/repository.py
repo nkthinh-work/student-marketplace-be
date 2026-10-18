@@ -56,6 +56,14 @@ class TutorialRepository:
         result = await self.db.execute(stmt)
         return result.scalars().all()
 
+    async def get_by_storage_key(
+        self, video_storage_key: str
+    ) -> Optional[Tutorial]:
+        """Lấy một tutorial theo video_storage_key để đối soát tính duy nhất của video asset."""
+        stmt = select(Tutorial).where(Tutorial.video_storage_key == video_storage_key)
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
+
     async def get_max_sort_order(self, feature_key: str) -> int:
         """Lấy giá trị sort_order lớn nhất hiện tại của một feature_key."""
         stmt = select(func.coalesce(func.max(Tutorial.sort_order), 0)).where(

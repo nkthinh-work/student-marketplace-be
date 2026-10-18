@@ -140,3 +140,79 @@ class AdminTutorialReorderRequest(BaseModel):
         if len(v) != len(set(v)):
             raise ValueError("Danh sách tutorial_ids không được chứa ID trùng lặp")
         return v
+
+
+class TutorialUploadSignatureResponse(BaseModel):
+    cloud_name: str
+    api_key: str
+    timestamp: int
+    signature: str
+    folder: str
+    public_id: str
+    overwrite: str = "false"
+    upload_session_id: str
+
+
+class AdminTutorialConfirmDirectVideo(BaseModel):
+    public_id: str = Field(..., description="Cloudinary public_id của video vừa tải lên")
+    upload_session_id: str = Field(..., description="ID phiên tải lên để đối soát")
+    secure_url: Optional[str] = None
+    video_size_bytes: Optional[int] = None
+    duration_ms: Optional[int] = None
+
+
+class AdminTutorialCreateDirect(BaseModel):
+    feature_key: str
+    title: str
+    description: Optional[str] = None
+    action_key: Optional[str] = None
+    is_published: bool = False
+    public_id: str = Field(..., description="Cloudinary public_id của video vừa tải lên")
+    upload_session_id: str = Field(..., description="ID phiên tải lên để đối soát")
+    secure_url: Optional[str] = None
+    video_size_bytes: Optional[int] = None
+    duration_ms: Optional[int] = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        v_trimmed = v.strip()
+        if not v_trimmed:
+            raise ValueError("Tiêu đề không được để trống")
+        if len(v_trimmed) > 120:
+            raise ValueError("Tiêu đề không được vượt quá 120 ký tự")
+        return v_trimmed
+
+    @field_validator("feature_key")
+    @classmethod
+    def validate_feature_key(cls, v: str) -> str:
+        v_trimmed = v.strip()
+        if v_trimmed not in ALLOWED_FEATURE_KEYS:
+            raise ValueError(
+                f"Tính năng '{v_trimmed}' không hợp lệ. Cho phép: {', '.join(sorted(ALLOWED_FEATURE_KEYS))}"
+            )
+        return v_trimmed
+
+    @field_validator("action_key")
+    @classmethod
+    def validate_action_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v_trimmed = v.strip()
+            if not v_trimmed:
+                return None
+            if v_trimmed not in ALLOWED_ACTION_KEYS:
+                raise ValueError(
+                    f"Hành động '{v_trimmed}' không hợp lệ. Cho phép: {', '.join(sorted(ALLOWED_ACTION_KEYS))}"
+                )
+            return v_trimmed
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v_trimmed = v.strip()
+            if len(v_trimmed) > 500:
+                raise ValueError("Mô tả không được vượt quá 500 ký tự")
+            return v_trimmed if v_trimmed else None
+        return v

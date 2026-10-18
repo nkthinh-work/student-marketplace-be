@@ -12,6 +12,10 @@ from app.integrations.cloudinary import (
     CloudinaryNotConfiguredError,
     CloudinaryUploadError,
     destroy_asset_async as destroy_asset,
+    generate_tutorial_upload_signature,
+    get_cloudinary_video_resource_async,
+    get_tutorial_video_cloudinary_folder,
+    get_tutorial_video_delivery_url,
     upload_tutorial_video,
 )
 from app.modules.tutorials.models import Tutorial
@@ -19,8 +23,11 @@ from app.modules.tutorials.repository import TutorialRepository
 from app.modules.tutorials.schemas import (
     ALLOWED_ACTION_KEYS,
     ALLOWED_FEATURE_KEYS,
+    AdminTutorialConfirmDirectVideo,
+    AdminTutorialCreateDirect,
     AdminTutorialReorderRequest,
     AdminTutorialUpdate,
+    TutorialUploadSignatureResponse,
 )
 
 logger = logging.getLogger("app")
@@ -573,3 +580,359 @@ class TutorialService:
 
         return {"message": "Đã xóa Tutorial thành công"}
 
+    def get_upload_signature(self, upload_session_id: str) -> TutorialUploadSignatureResponse:
+        """Cấp chữ ký an toàn cho Admin tải trực tiếp video lên Cloudinary (Signed Direct Upload)."""
+        sig_data = generate_tutorial_upload_signature(upload_session_id)
+        return TutorialUploadSignatureResponse(**sig_data)
+
+    async def confirm_direct_video_replacement(
+        self,
+        tutorial_id: int,
+        payload: AdminTutorialConfirmDirectVideo,
+        request_id: str = "unknown",
+    ) -> Tutorial:
+        """
+        Xác thực và thay thế video tutorial từ kết quả tải trực tiếp lên Cloudinary.
+        1. Kiểm tra existence của tutorial.
+        2. Thẩm định namespace folder của public_id.
+        3. Kiểm chứng metadata từ Cloudinary Admin API (resource_type, mp4, <=100MB, dọc 9:16).
+        4. Atomic DB update & commit. Giữ video cũ nếu thất bại.
+        5. Xóa video cũ sau khi commit thành công.
+        """
+        start_time = time.monotonic()
+        self._log_stage(
+            stage="direct_confirm_received",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            status="success",
+        )
+
+        # 0. Early check existence
+        tutorial = await self.repo.get_by_id(tutorial_id)
+        if not tutorial:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy Tutorial với ID {tutorial_id}",
+            )
+
+        # 1. Thẩm định public_id nằm trong đúng namespace folder và khớp phiên tải lên
+        expected_folder = get_tutorial_video_cloudinary_folder()
+        clean_public_id = payload.public_id.strip()
+        expected_public_id = f"{expected_folder}/tut_{payload.upload_session_id.strip()}"
+        if clean_public_id != expected_public_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Public ID video không khớp với phiên tải lên (upload session) hợp lệ.",
+            )
+
+        # Idempotency check: nếu tutorial đã trỏ đúng storage key này thì trả về ngay
+        if tutorial.video_storage_key == clean_public_id:
+            return tutorial
+
+        # Đảm bảo không thể xác nhận video asset đã thuộc về tutorial khác
+        existing_with_key = await self.repo.get_by_storage_key(clean_public_id)
+        if existing_with_key and existing_with_key.tutorial_id != tutorial_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tệp video này đã thuộc về một video hướng dẫn khác.",
+            )
+
+        # 2. Server-side authoritative verification from Cloudinary
+        verify_start = time.monotonic()
+        try:
+            resource = await get_cloudinary_video_resource_async(clean_public_id)
+            verify_duration_ms = int((time.monotonic() - verify_start) * 1000)
+            self._log_stage(
+                stage="direct_verification_completed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=resource.get("bytes"),
+                duration_ms=verify_duration_ms,
+                status="success",
+            )
+        except Exception as e:
+            verify_duration_ms = int((time.monotonic() - verify_start) * 1000)
+            self._log_stage(
+                stage="direct_verification_failed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                duration_ms=verify_duration_ms,
+                status="error",
+                error=str(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể xác thực tệp video trên Cloudinary. Vui lòng tải lại video.",
+            ) from e
+
+        # Validate resource_type
+        if resource.get("resource_type") != "video":
+            await destroy_asset(clean_public_id, resource_type=resource.get("resource_type") or "raw")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tài nguyên trên Cloudinary không phải video hợp lệ.",
+            )
+
+        # Validate format
+        fmt = (resource.get("format") or "").lower()
+        if fmt not in ("mp4", "m4v"):
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Định dạng video không được hỗ trợ. Chỉ chấp nhận tệp video MP4 (video/mp4).",
+            )
+
+        # Validate file size
+        file_size_bytes = resource.get("bytes") or payload.video_size_bytes or 0
+        if file_size_bytes <= 0:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tệp video không được rỗng.",
+            )
+        if file_size_bytes > MAX_TUTORIAL_VIDEO_SIZE_BYTES:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Dung lượng video vượt quá giới hạn ({MAX_TUTORIAL_VIDEO_SIZE_BYTES // (1024 * 1024)} MB).",
+            )
+
+        # Validate aspect ratio
+        v_width = resource.get("width")
+        v_height = resource.get("height")
+        if v_width and v_height and v_height <= v_width:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Video phải có định dạng dọc (portrait 9:16). Vui lòng không tải lên video ngang hoặc vuông.",
+            )
+
+        # 3. Lock DB row & update atomically
+        commit_start = time.monotonic()
+        tutorial = await self.repo.get_by_id(tutorial_id, for_update=True)
+        if not tutorial:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy Tutorial với ID {tutorial_id}",
+            )
+
+        # Idempotency check: if tutorial already points to this storage key
+        if tutorial.video_storage_key == clean_public_id:
+            return tutorial
+
+        old_video_storage_key = tutorial.video_storage_key
+
+        raw_url = resource.get("secure_url") or resource.get("url") or payload.secure_url or ""
+        delivery_url = get_tutorial_video_delivery_url(raw_url)
+        duration_sec = resource.get("duration")
+        duration_ms = int(float(duration_sec) * 1000) if duration_sec is not None else payload.duration_ms
+
+        try:
+            tutorial.video_url = delivery_url
+            tutorial.video_storage_key = clean_public_id
+            tutorial.video_mime_type = "video/mp4"
+            tutorial.video_size_bytes = file_size_bytes
+            tutorial.duration_ms = duration_ms
+
+            await self.db.commit()
+            await self.db.refresh(tutorial)
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_completed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=file_size_bytes,
+                duration_ms=commit_duration_ms,
+                status="success",
+            )
+        except Exception as e:
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_failed",
+                request_id=request_id,
+                tutorial_id=tutorial_id,
+                file_size_bytes=file_size_bytes,
+                duration_ms=commit_duration_ms,
+                status="error",
+                error=str(e),
+            )
+            await self.db.rollback()
+            logger.error(f"Failed to update tutorial video in DB, cleaning up new video: {e}")
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise e
+
+        # 4. Post-commit cleanup of old video off critical path
+        if old_video_storage_key and old_video_storage_key != clean_public_id:
+            asyncio.create_task(
+                self._safe_destroy_asset(old_video_storage_key, resource_type="video")
+            )
+
+        total_duration_ms = int((time.monotonic() - start_time) * 1000)
+        self._log_stage(
+            stage="response_completed",
+            request_id=request_id,
+            tutorial_id=tutorial_id,
+            file_size_bytes=file_size_bytes,
+            duration_ms=total_duration_ms,
+            status="success",
+        )
+        return tutorial
+
+    async def create_direct_tutorial(
+        self,
+        current_admin_id: int,
+        payload: AdminTutorialCreateDirect,
+        request_id: str = "unknown",
+    ) -> Tutorial:
+        """
+        Tạo tutorial mới từ video đã tải trực tiếp lên Cloudinary.
+        """
+        start_time = time.monotonic()
+        self._log_stage(
+            stage="direct_create_received",
+            request_id=request_id,
+            status="success",
+        )
+
+        expected_folder = get_tutorial_video_cloudinary_folder()
+        clean_public_id = payload.public_id.strip()
+        expected_public_id = f"{expected_folder}/tut_{payload.upload_session_id.strip()}"
+        if clean_public_id != expected_public_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Public ID video không khớp với phiên tải lên (upload session) hợp lệ.",
+            )
+
+        existing_with_key = await self.repo.get_by_storage_key(clean_public_id)
+        if existing_with_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tệp video này đã thuộc về một video hướng dẫn khác.",
+            )
+
+        # Server-side authoritative verification
+        verify_start = time.monotonic()
+        try:
+            resource = await get_cloudinary_video_resource_async(clean_public_id)
+            verify_duration_ms = int((time.monotonic() - verify_start) * 1000)
+            self._log_stage(
+                stage="direct_verification_completed",
+                request_id=request_id,
+                file_size_bytes=resource.get("bytes"),
+                duration_ms=verify_duration_ms,
+                status="success",
+            )
+        except Exception as e:
+            verify_duration_ms = int((time.monotonic() - verify_start) * 1000)
+            self._log_stage(
+                stage="direct_verification_failed",
+                request_id=request_id,
+                duration_ms=verify_duration_ms,
+                status="error",
+                error=str(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không thể xác thực tệp video trên Cloudinary. Vui lòng tải lại video.",
+            ) from e
+
+        if resource.get("resource_type") != "video":
+            await destroy_asset(clean_public_id, resource_type=resource.get("resource_type") or "raw")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tài nguyên trên Cloudinary không phải video hợp lệ.",
+            )
+
+        fmt = (resource.get("format") or "").lower()
+        if fmt not in ("mp4", "m4v"):
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Định dạng video không được hỗ trợ. Chỉ chấp nhận tệp video MP4 (video/mp4).",
+            )
+
+        file_size_bytes = resource.get("bytes") or payload.video_size_bytes or 0
+        if file_size_bytes <= 0:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tệp video không được rỗng.",
+            )
+        if file_size_bytes > MAX_TUTORIAL_VIDEO_SIZE_BYTES:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Dung lượng video vượt quá giới hạn ({MAX_TUTORIAL_VIDEO_SIZE_BYTES // (1024 * 1024)} MB).",
+            )
+
+        v_width = resource.get("width")
+        v_height = resource.get("height")
+        if v_width and v_height and v_height <= v_width:
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Video phải có định dạng dọc (portrait 9:16). Vui lòng không tải lên video ngang hoặc vuông.",
+            )
+
+        raw_url = resource.get("secure_url") or resource.get("url") or payload.secure_url or ""
+        delivery_url = get_tutorial_video_delivery_url(raw_url)
+        duration_sec = resource.get("duration")
+        duration_ms = int(float(duration_sec) * 1000) if duration_sec is not None else payload.duration_ms
+
+        commit_start = time.monotonic()
+        try:
+            max_order = await self.repo.get_max_sort_order(payload.feature_key)
+            new_order = max_order + 10
+
+            tutorial = Tutorial(
+                feature_key=payload.feature_key,
+                title=payload.title,
+                description=payload.description,
+                video_url=delivery_url,
+                video_storage_key=clean_public_id,
+                video_mime_type="video/mp4",
+                video_size_bytes=file_size_bytes,
+                duration_ms=duration_ms,
+                action_key=payload.action_key,
+                sort_order=new_order,
+                is_published=payload.is_published,
+                created_by=current_admin_id,
+            )
+            await self.repo.create(tutorial)
+            await self.db.commit()
+            await self.db.refresh(tutorial)
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_completed",
+                request_id=request_id,
+                tutorial_id=tutorial.tutorial_id,
+                file_size_bytes=file_size_bytes,
+                duration_ms=commit_duration_ms,
+                status="success",
+            )
+        except Exception as e:
+            commit_duration_ms = int((time.monotonic() - commit_start) * 1000)
+            self._log_stage(
+                stage="db_commit_failed",
+                request_id=request_id,
+                file_size_bytes=file_size_bytes,
+                duration_ms=commit_duration_ms,
+                status="error",
+                error=str(e),
+            )
+            await self.db.rollback()
+            logger.error(f"Failed to persist direct tutorial in DB, cleaning up Cloudinary video: {e}")
+            await destroy_asset(clean_public_id, resource_type="video")
+            raise e
+
+        total_duration_ms = int((time.monotonic() - start_time) * 1000)
+        self._log_stage(
+            stage="response_completed",
+            request_id=request_id,
+            tutorial_id=tutorial.tutorial_id,
+            file_size_bytes=file_size_bytes,
+            duration_ms=total_duration_ms,
+            status="success",
+        )
+        return tutorial

@@ -562,3 +562,67 @@ async def upload_tutorial_video(
     Asynchronously uploads a tutorial MP4 video to Cloudinary off the event loop thread.
     """
     return await asyncio.to_thread(_upload_tutorial_video_sync, file, filename=filename, file_size=file_size)
+
+
+def generate_tutorial_upload_signature(upload_session_id: str) -> dict[str, Any]:
+    """
+    Sinh chữ ký xác thực tải video trực tiếp lên Cloudinary (Signed Direct Upload).
+    Chỉ ký folder tutorials/videos và timestamp. Bí mật API secret tuyệt đối ở backend.
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    import time
+    timestamp = int(time.time())
+    folder = get_tutorial_video_cloudinary_folder()
+    leaf_public_id = f"tut_{upload_session_id}"
+
+    params_to_sign = {
+        "folder": folder,
+        "overwrite": "false",
+        "public_id": leaf_public_id,
+        "timestamp": timestamp,
+    }
+    signature = cloudinary.utils.api_sign_request(
+        params_to_sign, settings.CLOUDINARY_API_SECRET
+    )
+
+    return {
+        "cloud_name": settings.CLOUDINARY_CLOUD_NAME,
+        "api_key": settings.CLOUDINARY_API_KEY,
+        "timestamp": timestamp,
+        "signature": signature,
+        "folder": folder,
+        "public_id": leaf_public_id,
+        "overwrite": "false",
+        "upload_session_id": upload_session_id,
+    }
+
+
+def get_cloudinary_video_resource(public_id: str) -> dict[str, Any]:
+    """
+    Truy vấn thông tin tài nguyên video trực tiếp từ Cloudinary API để kiểm chứng metadata phía server.
+    """
+    if not is_cloudinary_configured():
+        raise CloudinaryNotConfiguredError(
+            "Cloudinary storage service is not configured."
+        )
+
+    try:
+        import cloudinary.api
+        resource = cloudinary.api.resource(public_id, resource_type="video")
+        if not resource or not isinstance(resource, dict):
+            raise CloudinaryUploadError(f"Không tìm thấy tài nguyên Cloudinary với public_id: {public_id}")
+        return resource
+    except Exception as e:
+        logger.error(f"Failed to fetch Cloudinary video resource {public_id}: {e}")
+        raise CloudinaryUploadError(f"Kiểm chứng tài nguyên video Cloudinary thất bại: {e}") from e
+
+
+async def get_cloudinary_video_resource_async(public_id: str) -> dict[str, Any]:
+    """
+    Truy vấn metadata Cloudinary bất đồng bộ ngoài luồng asyncio chính.
+    """
+    return await asyncio.to_thread(get_cloudinary_video_resource, public_id)
